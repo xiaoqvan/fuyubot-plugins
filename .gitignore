@@ -1,5 +1,5 @@
 # Rust
-/target
+target/
 **/*.rs.bk
 
 # 打包产物
