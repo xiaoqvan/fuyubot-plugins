@@ -15,10 +15,10 @@ use crate::runtime::Runtime;
 use crate::store::doc_id;
 
 /// `/admatch <文本>`
-pub fn ad_match(rt: &Runtime, command: &Command, sender: Sender) {
+pub async fn ad_match(rt: &Runtime, command: &Command, sender: Sender) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
-    if !flow::ensure_owner(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_owner(rt, chat_id, sender, reply_to).await {
         return;
     }
     let query = command.args.trim().to_owned();
@@ -29,15 +29,15 @@ pub fn ad_match(rt: &Runtime, command: &Command, sender: Sender) {
             "用法:\n/admatch <文本>\n\n示例:\n/admatch 兼职日赚500加微信\n\n同时查询以下库:\n- ads_blacklist（关键词组 AND 匹配）\n- bio_blacklist（全文精确匹配）\n- name_blacklist（名称精确）\n- username_blacklist（用户名包含）\n- ai_fulltext_blacklist（全文精确）",
             reply_to,
             60,
-        );
+        ).await;
         return;
     }
 
-    let ads = rt.db.match_ad_keywords(&query);
-    let bio = rt.db.match_bio(&query);
-    let name = rt.db.match_name(&query);
-    let username = rt.db.match_username(&query);
-    let fulltext = rt.db.match_ai_fulltext(&query);
+    let ads = rt.db.match_ad_keywords(&query).await;
+    let bio = rt.db.match_bio(&query).await;
+    let name = rt.db.match_name(&query).await;
+    let username = rt.db.match_username(&query).await;
+    let fulltext = rt.db.match_ai_fulltext(&query).await;
 
     let mut lines: Vec<String> = Vec::new();
     let mut hits: Vec<&str> = Vec::new();
@@ -123,7 +123,7 @@ pub fn ad_match(rt: &Runtime, command: &Command, sender: Sender) {
         lines.join("\n\n"),
     ]
     .join("\n\n");
-    flow::send_tip(rt, chat_id, &body, reply_to, 60);
+    flow::send_tip(rt, chat_id, &body, reply_to, 60).await;
     log::info(
         &rt.host,
         format!(
@@ -138,10 +138,10 @@ pub fn ad_match(rt: &Runtime, command: &Command, sender: Sender) {
 }
 
 /// `/adaiadd <文本>`
-pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
+pub async fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
-    if !flow::ensure_owner(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_owner(rt, chat_id, sender, reply_to).await {
         return;
     }
     let ad_text = command.args.trim().to_owned();
@@ -152,11 +152,11 @@ pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
             "用法:\n/adaiadd <广告文本>\n\n示例:\n/adaiadd 兼职日赚800，有微信的来\n\n说明：仅对消息文本做 AI 判断；判定为广告且关键词>3 时写入 ads_blacklist 并返回 ID。",
             reply_to,
             60,
-        );
+        ).await;
         return;
     }
 
-    flow::send_tip(rt, chat_id, "正在 AI 判断，请稍候…", reply_to, 0);
+    flow::send_tip(rt, chat_id, "正在 AI 判断，请稍候…", reply_to, 0).await;
     let result = ai::review(
         rt,
         &ModerationInput::text(ad_text),
@@ -167,7 +167,8 @@ pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
             message_type: None,
             force_default: true,
         },
-    );
+    )
+    .await;
 
     if ai::is_failure_reason(&result.reason) || result.confidence <= 0.0 {
         flow::send_tip(
@@ -183,7 +184,8 @@ pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
             ),
             reply_to,
             60,
-        );
+        )
+        .await;
         return;
     }
     if !result.ad_detected {
@@ -201,7 +203,8 @@ pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
             ),
             reply_to,
             60,
-        );
+        )
+        .await;
         return;
     }
     let keywords = &result.message.keywords;
@@ -231,10 +234,10 @@ pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
             ),
             reply_to,
             60,
-        );
+        ).await;
         return;
     }
-    match rt.db.add_ad_keywords(keywords, result.r18) {
+    match rt.db.add_ad_keywords(keywords, result.r18).await {
         Ok(id) => {
             let rendered = keywords
                 .iter()
@@ -257,7 +260,7 @@ pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
                 ),
                 reply_to,
                 60,
-            );
+            ).await;
             log::info(
                 &rt.host,
                 format!(
@@ -277,7 +280,8 @@ pub fn ad_ai_add(rt: &Runtime, command: &Command, sender: Sender) {
                 ),
                 reply_to,
                 60,
-            );
+            )
+            .await;
         }
     }
 }

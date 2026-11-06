@@ -1,22 +1,26 @@
 //! TDLib 调用层：请求 → 响应 → 类型化结果。
 //!
-//! 插件不直接碰 `tdjson`，所有请求经宿主 `td_invoke_simplified` 发出，响应按
-//! `request_id` 从 `"response"` 通道回来（见 [`Simplify::wait_response`]）。
+//! 插件不直接碰 `tdjson`，所有请求经 [`ResponseRouter`]（宿主 `td_invoke_simplified`
+//! 的 async 封装）发出，响应按 `request_id` 路由回对应的 future。
 //!
-//! ## 线程约束（最容易写出事故的一条）
+//! ## 线程模型
 //!
-//! 这里的每个方法都**阻塞当前线程**等响应。宿主的事件回调跑在接收循环线程上，
-//! 在回调里等 = 自己等自己 = 必然超时。所以本插件的所有事件回调只做一件事：
-//! 把更新丢进工作队列（见 `runtime::Runtime::submit`），真正的调用都在工作线程里。
+//! 每个方法都是 `async fn`：`call` 里 `tokio::time::timeout` 包住响应 future，
+//! **不会占住线程干等**。所有调用都发生在 tokio 工作任务里（事件回调只排队），
+//! 宿主的接收循环线程永远不参与等待——这是「回调里不能等响应」约束的 async 形态。
 //!
 //! ## 方法名以 `td_api.tl` 为准
 //!
 //! 全部按 TDLib 1.8.69 的真签名写（`banChatMember` / `setChatMemberStatus` /
 //! `getChatMember` …）。Bot API 那套（`kickChatMember`、`restrictChatMember`）不存在。
 
+use std::time::Duration;
+
 use fuyubot_abi::HostApi;
-use crate::simplify::{EditTextParams, ReplyButton, SendMessageParams, Simplify, Text, Topic};
+use fuyubot_abi::ResponseRouter;
 use serde_json::{Value, json};
+
+use crate::simplify::{EditTextParams, ReplyButton, SendMessageParams, Simplify, Text, Topic};
 
 /// 普通请求的等待上限。发消息另算（`send_message` 自带 30 秒预算）。
 pub const CALL_TIMEOUT_MS: u64 = 15_000;
@@ -132,92 +136,110 @@ impl ApiError {
 
 // ── 门面 ──────────────────────────────────────────────────────────
 
-/// TDLib 门面。`HostApi` 是 `Copy` 的，随手传。
-#[derive(Debug, Clone, Copy)]
+/// TDLib 门面。`HostApi` 是 `Copy` 的；`ResponseRouter` 只能 `Clone`（内部共享）。
+#[derive(Debug, Clone)]
 pub struct Td {
     host: HostApi,
+    router: ResponseRouter,
 }
 
 impl Td {
-    pub fn new(host: HostApi) -> Self {
-        Self { host }
+    /// `router` 必须在插件 `start` 里建（宿主作用域栈顶是本插件），
+    /// 由 [`crate::runtime::Runtime::new`] 创建后传进来。
+    pub fn new(host: HostApi, router: ResponseRouter) -> Self {
+        Self { host, router }
     }
 
     /// 发一条请求并等它的响应；`@type == "error"` 变成 [`ApiError`]。
-    pub fn call(&self, method: &str, params: Value) -> Result<Value, ApiError> {
-        let simplify = Simplify::new(self.host);
-        let request_id = self
-            .host
-            .td_invoke_simplified(method, &params.to_string())
+    ///
+    /// 响应 future 由 [`ResponseRouter`] 按 `request_id` 路由；超时用
+    /// [`tokio::time::timeout`] 包一层（drop future 即取消等待）。
+    pub async fn call(&self, method: &str, params: Value) -> Result<Value, ApiError> {
+        let (_id, response) = self
+            .router
+            .invoke_simplified(method, &params.to_string())
             .map_err(|error| ApiError::from_host(method, error))?;
-        let Some(response) = simplify.wait_response(request_id, CALL_TIMEOUT_MS) else {
-            return Err(ApiError::timeout(method));
-        };
-        if response.get("@type").and_then(Value::as_str) == Some("error") {
-            return Err(ApiError::from_response(method, &response));
+        match tokio::time::timeout(Duration::from_millis(CALL_TIMEOUT_MS), response).await {
+            Err(_elapsed) => Err(ApiError::timeout(method)),
+            Ok(Err(error)) => Err(ApiError::from_host(method, error)),
+            Ok(Ok(response)) => {
+                if response.get("@type").and_then(Value::as_str) == Some("error") {
+                    Err(ApiError::from_response(method, &response))
+                } else {
+                    Ok(response)
+                }
+            }
         }
-        Ok(response)
     }
 
-    pub fn call_ok(&self, method: &str, params: Value) -> Result<(), ApiError> {
-        self.call(method, params).map(|_| ())
+    pub async fn call_ok(&self, method: &str, params: Value) -> Result<(), ApiError> {
+        self.call(method, params).await.map(|_| ())
     }
 
     // ── 查询 ──────────────────────────────────────────────────────
 
-    pub fn chat(&self, chat_id: i64) -> Result<Value, ApiError> {
-        self.call("getChat", json!({ "chat_id": chat_id }))
+    pub async fn chat(&self, chat_id: i64) -> Result<Value, ApiError> {
+        self.call("getChat", json!({ "chat_id": chat_id })).await
     }
 
-    pub fn user(&self, user_id: i64) -> Result<Value, ApiError> {
-        self.call("getUser", json!({ "user_id": user_id }))
+    pub async fn user(&self, user_id: i64) -> Result<Value, ApiError> {
+        self.call("getUser", json!({ "user_id": user_id })).await
     }
 
-    pub fn user_full(&self, user_id: i64) -> Result<Value, ApiError> {
+    pub async fn user_full(&self, user_id: i64) -> Result<Value, ApiError> {
         self.call("getUserFullInfo", json!({ "user_id": user_id }))
+            .await
     }
 
     /// 取不到（用户不在群里之类）就当 `None`——调用方九成只想「能用就用」。
-    pub fn chat_member(&self, chat_id: i64, sender: Sender) -> Option<Value> {
+    pub async fn chat_member(&self, chat_id: i64, sender: Sender) -> Option<Value> {
         self.call(
             "getChatMember",
             json!({ "chat_id": chat_id, "member_id": sender.to_json() }),
         )
+        .await
         .ok()
     }
 
-    pub fn supergroup(&self, supergroup_id: i64) -> Result<Value, ApiError> {
+    pub async fn supergroup(&self, supergroup_id: i64) -> Result<Value, ApiError> {
         self.call("getSupergroup", json!({ "supergroup_id": supergroup_id }))
+            .await
     }
 
-    pub fn supergroup_full(&self, supergroup_id: i64) -> Result<Value, ApiError> {
+    pub async fn supergroup_full(&self, supergroup_id: i64) -> Result<Value, ApiError> {
         self.call(
             "getSupergroupFullInfo",
             json!({ "supergroup_id": supergroup_id }),
         )
+        .await
     }
 
-    pub fn basic_group(&self, basic_group_id: i64) -> Result<Value, ApiError> {
+    pub async fn basic_group(&self, basic_group_id: i64) -> Result<Value, ApiError> {
         self.call("getBasicGroup", json!({ "basic_group_id": basic_group_id }))
+            .await
     }
 
-    pub fn sticker_set(&self, set_id: i64) -> Option<Value> {
-        self.call("getStickerSet", json!({ "set_id": set_id })).ok()
+    pub async fn sticker_set(&self, set_id: i64) -> Option<Value> {
+        self.call("getStickerSet", json!({ "set_id": set_id }))
+            .await
+            .ok()
     }
 
-    pub fn message(&self, chat_id: i64, message_id: i64) -> Option<Value> {
+    pub async fn message(&self, chat_id: i64, message_id: i64) -> Option<Value> {
         self.call(
             "getMessage",
             json!({ "chat_id": chat_id, "message_id": message_id }),
         )
+        .await
         .ok()
     }
 
-    pub fn search_public_chat(&self, username: &str) -> Result<Value, ApiError> {
+    pub async fn search_public_chat(&self, username: &str) -> Result<Value, ApiError> {
         self.call("searchPublicChat", json!({ "username": username }))
+            .await
     }
 
-    pub fn message_link(&self, chat_id: i64, message_id: i64) -> Option<String> {
+    pub async fn message_link(&self, chat_id: i64, message_id: i64) -> Option<String> {
         self.call(
             "getMessageLink",
             json!({
@@ -230,6 +252,7 @@ impl Td {
                 "in_message_thread": false,
             }),
         )
+        .await
         .ok()
         .and_then(|link| link.get("link").and_then(Value::as_str).map(str::to_owned))
     }
@@ -238,12 +261,13 @@ impl Td {
     ///
     /// 两步：`getRemoteFile` 拿到 `file.id`，再 `downloadFile(synchronous = true)`。
     /// TDLib 的 `file.id` 才是下载入口（`remote.unique_id` 只是标识）。
-    pub fn download_remote(&self, remote_id: &str, file_type: &str) -> Option<String> {
+    pub async fn download_remote(&self, remote_id: &str, file_type: &str) -> Option<String> {
         let file = self
             .call(
                 "getRemoteFile",
                 json!({ "remote_file_id": remote_id, "file_type": json!({"@type": file_type}) }),
             )
+            .await
             .ok()?;
         let file_id = file.get("id").and_then(Value::as_i64)?;
         let downloaded = self
@@ -257,6 +281,7 @@ impl Td {
                     "synchronous": true,
                 }),
             )
+            .await
             .ok()?;
         downloaded
             .get("local")
@@ -269,8 +294,8 @@ impl Td {
     // ── 群 / 成员判断 ─────────────────────────────────────────────
 
     /// 是「群」吗（超级群的非频道形态，或基本群）。
-    pub fn chat_is_group(&self, chat_id: i64) -> bool {
-        let Ok(chat) = self.chat(chat_id) else {
+    pub async fn chat_is_group(&self, chat_id: i64) -> bool {
+        let Ok(chat) = self.chat(chat_id).await else {
             return false;
         };
         match chat
@@ -288,16 +313,17 @@ impl Td {
         }
     }
 
-    pub fn chat_title(&self, chat_id: i64) -> String {
+    pub async fn chat_title(&self, chat_id: i64) -> String {
         self.chat(chat_id)
+            .await
             .ok()
             .and_then(|chat| chat.get("title").and_then(Value::as_str).map(str::to_owned))
             .unwrap_or_else(|| chat_id.to_string())
     }
 
     /// 聊天成员的 `status.@type`（`chatMemberStatusMember` / `…Administrator` / …）。
-    pub fn member_status(&self, chat_id: i64, sender: Sender) -> Option<String> {
-        self.chat_member(chat_id, sender).and_then(|member| {
+    pub async fn member_status(&self, chat_id: i64, sender: Sender) -> Option<String> {
+        self.chat_member(chat_id, sender).await.and_then(|member| {
             member
                 .get("status")
                 .and_then(|status| status.get("@type"))
@@ -307,9 +333,9 @@ impl Td {
     }
 
     #[allow(dead_code)]
-    pub fn is_member(&self, chat_id: i64, sender: Sender) -> bool {
+    pub async fn is_member(&self, chat_id: i64, sender: Sender) -> bool {
         matches!(
-            self.member_status(chat_id, sender).as_deref(),
+            self.member_status(chat_id, sender).await.as_deref(),
             Some("chatMemberStatusMember")
                 | Some("chatMemberStatusAdministrator")
                 | Some("chatMemberStatusCreator")
@@ -318,8 +344,8 @@ impl Td {
     }
 
     /// 自己（Bot）在这个群里有没有这些管理员权限。
-    pub fn am_i_admin(&self, chat_id: i64, rights: &[&str]) -> bool {
-        let Ok(chat) = self.chat(chat_id) else {
+    pub async fn am_i_admin(&self, chat_id: i64, rights: &[&str]) -> bool {
+        let Ok(chat) = self.chat(chat_id).await else {
             return false;
         };
         let status = match chat
@@ -327,18 +353,34 @@ impl Td {
             .and_then(|kind| kind.get("@type"))
             .and_then(Value::as_str)
         {
-            Some("chatTypeBasicGroup") => chat
-                .get("type")
-                .and_then(|kind| kind.get("basic_group_id"))
-                .and_then(Value::as_i64)
-                .and_then(|id| self.basic_group(id).ok())
-                .and_then(|group| group.get("status").cloned()),
-            Some("chatTypeSupergroup") => chat
-                .get("type")
-                .and_then(|kind| kind.get("supergroup_id"))
-                .and_then(Value::as_i64)
-                .and_then(|id| self.supergroup(id).ok())
-                .and_then(|group| group.get("status").cloned()),
+            Some("chatTypeBasicGroup") => {
+                let id = chat
+                    .get("type")
+                    .and_then(|kind| kind.get("basic_group_id"))
+                    .and_then(Value::as_i64);
+                match id {
+                    Some(id) => self
+                        .basic_group(id)
+                        .await
+                        .ok()
+                        .and_then(|group| group.get("status").cloned()),
+                    None => None,
+                }
+            }
+            Some("chatTypeSupergroup") => {
+                let id = chat
+                    .get("type")
+                    .and_then(|kind| kind.get("supergroup_id"))
+                    .and_then(Value::as_i64);
+                match id {
+                    Some(id) => self
+                        .supergroup(id)
+                        .await
+                        .ok()
+                        .and_then(|group| group.get("status").cloned()),
+                    None => None,
+                }
+            }
             _ => None,
         };
         status
@@ -347,16 +389,16 @@ impl Td {
     }
 
     /// 某个发送者是不是该群的管理员（含「群自身」与关联频道这两条特例）。
-    pub fn is_admin(&self, chat_id: i64, sender: Sender) -> bool {
+    pub async fn is_admin(&self, chat_id: i64, sender: Sender) -> bool {
         if sender == Sender::Chat(chat_id) {
             return true;
         }
-        if let Ok(chat) = self.chat(chat_id)
+        if let Ok(chat) = self.chat(chat_id).await
             && let Some(supergroup_id) = chat
                 .get("type")
                 .and_then(|kind| kind.get("supergroup_id"))
                 .and_then(Value::as_i64)
-            && let Ok(full) = self.supergroup_full(supergroup_id)
+            && let Ok(full) = self.supergroup_full(supergroup_id).await
             && let Some(linked) = full.get("linked_chat_id").and_then(Value::as_i64)
             && sender == Sender::Chat(linked)
         {
@@ -364,6 +406,7 @@ impl Td {
         }
         let Some(status) = self
             .chat_member(chat_id, sender)
+            .await
             .and_then(|member| member.get("status").cloned())
         else {
             return false;
@@ -374,7 +417,7 @@ impl Td {
     // ── 处置 ──────────────────────────────────────────────────────
 
     /// 永久封禁（`chatMemberStatusBanned`，`banned_until_date = 0`）。
-    pub fn ban(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
+    pub async fn ban(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
         self.call_ok(
             "setChatMemberStatus",
             json!({
@@ -386,13 +429,14 @@ impl Td {
                 },
             }),
         )
+        .await
     }
 
     /// 永久禁言（`chatMemberStatusRestricted`，所有发言权限关掉）。
     ///
     /// 字段名照 `td_api.tl` 的 `chatPermissions`（1.8.69 的 `can_send_basic_messages`
     /// 而不是老的 `can_send_messages`）。
-    pub fn restrict(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
+    pub async fn restrict(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
         self.call_ok(
             "setChatMemberStatus",
             json!({
@@ -424,10 +468,11 @@ impl Td {
                 },
             }),
         )
+        .await
     }
 
     /// 解除封禁 / 解除限制：设回普通成员。
-    pub fn unban(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
+    pub async fn unban(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
         self.call_ok(
             "setChatMemberStatus",
             json!({
@@ -439,15 +484,17 @@ impl Td {
                 },
             }),
         )
+        .await
     }
 
     /// 删消息（`revoke = true`：对所有人撤回）。
-    pub fn delete_messages(&self, chat_id: i64, message_ids: &[i64]) -> Result<(), ApiError> {
+    pub async fn delete_messages(&self, chat_id: i64, message_ids: &[i64]) -> Result<(), ApiError> {
         if message_ids.is_empty() {
             return Ok(());
         }
         Simplify::new(self.host)
             .delete_message(chat_id, message_ids.iter().copied(), true, 15_000)
+            .await
             .map_err(|error| ApiError {
                 method: "deleteMessages".to_owned(),
                 code: 0,
@@ -458,7 +505,7 @@ impl Td {
     /// 给消息加一个 emoji 回应（AI 审查时的 👀）。
     ///
     /// Bot 账号必须用 `setMessageReactions`：`addMessageReaction` 只对 user 账号开放。
-    pub fn react(&self, chat_id: i64, message_id: i64, emoji: &str) -> Result<(), ApiError> {
+    pub async fn react(&self, chat_id: i64, message_id: i64, emoji: &str) -> Result<(), ApiError> {
         self.call_ok(
             "setMessageReactions",
             json!({
@@ -468,6 +515,7 @@ impl Td {
                 "is_big": false,
             }),
         )
+        .await
     }
 
     // ── 消息收发 ──────────────────────────────────────────────────
@@ -475,18 +523,22 @@ impl Td {
     /// 发一条消息，等到「真的发出去了」再返回最终消息。
     ///
     /// `None` 表示失败（网络 / 权限 / 超时），调用方一般只需要记日志。
-    pub fn send(&self, chat_id: i64, params: &SendMessageParams) -> Option<Value> {
-        Simplify::new(self.host).send_message(chat_id, params).ok()
+    pub async fn send(&self, chat_id: i64, params: &SendMessageParams) -> Option<Value> {
+        Simplify::new(self.host)
+            .send_message(chat_id, params)
+            .await
+            .ok()
     }
 
     /// 发纯文本（不带格式化）。
-    pub fn send_plain(&self, chat_id: i64, text: impl Into<String>) -> Option<Value> {
+    pub async fn send_plain(&self, chat_id: i64, text: impl Into<String>) -> Option<Value> {
         self.send(chat_id, &SendMessageParams::text(text.into()))
+            .await
     }
 
     /// 发格式化文本（`text::markdown` 的产物），可带回复 / 话题 / 键盘。
     #[allow(clippy::too_many_arguments)]
-    pub fn send_text(
+    pub async fn send_text(
         &self,
         chat_id: i64,
         text: Text,
@@ -506,10 +558,11 @@ impl Td {
                 ..SendMessageParams::default()
             },
         )
+        .await
     }
 
     /// 改一条消息的文本（可同时换键盘）。消息被删 / 超过 48 小时会失败。
-    pub fn edit_text(
+    pub async fn edit_text(
         &self,
         chat_id: i64,
         message_id: i64,
@@ -528,21 +581,24 @@ impl Td {
                     ..EditTextParams::default()
                 },
             )
+            .await
             .ok()
     }
 
     /// 回一条 callback query（带 `cache_time`，用于「5 分钟内别重复点」）。
-    pub fn answer_callback(&self, query_id: i64, text: &str, alert: bool, cache_time: u32) {
-        let _ = self.call_ok(
-            "answerCallbackQuery",
-            json!({
-                "callback_query_id": query_id,
-                "text": text,
-                "show_alert": alert,
-                "url": "",
-                "cache_time": cache_time,
-            }),
-        );
+    pub async fn answer_callback(&self, query_id: i64, text: &str, alert: bool, cache_time: u32) {
+        let _ = self
+            .call_ok(
+                "answerCallbackQuery",
+                json!({
+                    "callback_query_id": query_id,
+                    "text": text,
+                    "show_alert": alert,
+                    "url": "",
+                    "cache_time": cache_time,
+                }),
+            )
+            .await;
     }
 
     // ── 展示 ──────────────────────────────────────────────────────
@@ -551,7 +607,7 @@ impl Td {
     ///
     /// `name = true` 时链接文字用**名字**（用户在群里被处置时更有用），
     /// 否则用 ID。行为与 TS 版一致，包括那个「频道用 `tg://resolve`」的分支。
-    pub fn sender_mention(&self, sender: Sender, name: bool) -> String {
+    pub async fn sender_mention(&self, sender: Sender, name: bool) -> String {
         match sender {
             Sender::User(user_id) => {
                 if !name {
@@ -559,6 +615,7 @@ impl Td {
                 }
                 let (first, last) = self
                     .user(user_id)
+                    .await
                     .map(|user| {
                         (
                             user.get("first_name")
@@ -575,7 +632,7 @@ impl Td {
                 format!("[{first} {last}](tg://user?id={user_id})")
             }
             Sender::Chat(chat_id) => {
-                let Ok(chat) = self.chat(chat_id) else {
+                let Ok(chat) = self.chat(chat_id).await else {
                     return format!("[{chat_id}]");
                 };
                 let title = chat
@@ -587,7 +644,7 @@ impl Td {
                     .get("type")
                     .and_then(|kind| kind.get("supergroup_id"))
                     .and_then(Value::as_i64)
-                    && let Ok(supergroup) = self.supergroup(supergroup_id)
+                    && let Ok(supergroup) = self.supergroup(supergroup_id).await
                     && let Some(username) = supergroup
                         .get("usernames")
                         .and_then(|names| names.get("active_usernames"))

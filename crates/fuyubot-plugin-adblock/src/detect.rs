@@ -12,6 +12,9 @@
 //!
 //! 命中结果是 [`SpamHit`]：`kind` 会原样进日志与封禁记录（`Text` / `Username` /
 //! `group_FileRule` …），排查时能分清是哪一条规则干的。
+//!
+//! 检查器要查库（`rt.db` 是 async），所以它们都是 `async fn`；纯字符串处理
+//! （[`text_of_field`]）保持同步。
 
 use serde_json::Value;
 
@@ -46,42 +49,42 @@ impl SpamHit {
 }
 
 /// 按内容类型分发。
-pub fn detect(rt: &Runtime, message: &Value) -> SpamHit {
+pub async fn detect(rt: &Runtime, message: &Value) -> SpamHit {
     let Some(content) = message.get("content") else {
         return SpamHit::none();
     };
     let kind = content.get("@type").and_then(Value::as_str).unwrap_or("");
     match kind {
-        "messageText" => check_text(rt, &text::message_text(message)),
-        "messageRichMessage" => check_text(rt, &text::rich_message_text(content)),
-        "messagePhoto" => check_photo(rt, message),
-        "messageVideo" => check_video(rt, message),
-        "messageContact" => check_contact(rt, content),
-        "messageSticker" => check_sticker(rt, message),
+        "messageText" => check_text(rt, &text::message_text(message)).await,
+        "messageRichMessage" => check_text(rt, &text::rich_message_text(content)).await,
+        "messagePhoto" => check_photo(rt, message).await,
+        "messageVideo" => check_video(rt, message).await,
+        "messageContact" => check_contact(rt, content).await,
+        "messageSticker" => check_sticker(rt, message).await,
         _ => SpamHit::none(),
     }
 }
 
 /// 文本：关键词组（全部词都在文本里）→ 用户名黑名单。
-pub fn check_text(rt: &Runtime, text: &str) -> SpamHit {
+pub async fn check_text(rt: &Runtime, text: &str) -> SpamHit {
     if text.trim().is_empty() {
         return SpamHit::none();
     }
-    if let Some(group) = rt.db.match_ad_keywords(text) {
+    if let Some(group) = rt.db.match_ad_keywords(text).await {
         return SpamHit::hit("Text", Some(doc_id(&group)), "hasAdKeyword");
     }
-    if let Some(record) = rt.db.match_username(text) {
+    if let Some(record) = rt.db.match_username(text).await {
         return SpamHit::hit("Username", Some(doc_id(&record)), "hasUsername");
     }
     SpamHit::none()
 }
 
 /// 图片：标题 → 群规则 → 全局文件 ID。
-fn check_photo(rt: &Runtime, message: &Value) -> SpamHit {
+async fn check_photo(rt: &Runtime, message: &Value) -> SpamHit {
     let content = message.get("content").unwrap_or(&Value::Null);
     let caption = text_of_field(content, "caption");
     if !caption.is_empty() {
-        let hit = check_text(rt, &caption);
+        let hit = check_text(rt, &caption).await;
         if hit.matched {
             return hit;
         }
@@ -93,7 +96,7 @@ fn check_photo(rt: &Runtime, message: &Value) -> SpamHit {
     }
 
     let chat_id = message.get("chat_id").and_then(Value::as_i64).unwrap_or(0);
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     if config
         .spam_file_id
         .iter()
@@ -106,18 +109,18 @@ fn check_photo(rt: &Runtime, message: &Value) -> SpamHit {
         );
     }
 
-    if let Some(record) = rt.db.match_file_ids(&ids) {
+    if let Some(record) = rt.db.match_file_ids(&ids).await {
         return SpamHit::hit("Photo", Some(doc_id(&record)), "hasSpamFileid");
     }
     SpamHit::none()
 }
 
 /// 视频：标题 → 群规则 → 全局文件 ID。
-fn check_video(rt: &Runtime, message: &Value) -> SpamHit {
+async fn check_video(rt: &Runtime, message: &Value) -> SpamHit {
     let content = message.get("content").unwrap_or(&Value::Null);
     let caption = text_of_field(content, "caption");
     if !caption.is_empty() {
-        let hit = check_text(rt, &caption);
+        let hit = check_text(rt, &caption).await;
         if hit.matched {
             return hit;
         }
@@ -132,18 +135,18 @@ fn check_video(rt: &Runtime, message: &Value) -> SpamHit {
     };
 
     let chat_id = message.get("chat_id").and_then(Value::as_i64).unwrap_or(0);
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     if config.spam_file_id.iter().any(|id| id == &unique_id) {
         return SpamHit::hit("group_rule", Some(format!("uq:{unique_id}")), "groupRule");
     }
-    if let Some(record) = rt.db.match_file_ids(&[unique_id]) {
+    if let Some(record) = rt.db.match_file_ids(&[unique_id]).await {
         return SpamHit::hit("Video", Some(doc_id(&record)), "hasSpamFileid");
     }
     SpamHit::none()
 }
 
 /// 联系人：姓名 + vCard 查关键词 / 用户名。
-fn check_contact(rt: &Runtime, content: &Value) -> SpamHit {
+async fn check_contact(rt: &Runtime, content: &Value) -> SpamHit {
     let name = text::contact_name(content);
     let vcard = text::contact_vcard(content);
     let search = [name.as_str(), vcard.as_str()]
@@ -155,7 +158,7 @@ fn check_contact(rt: &Runtime, content: &Value) -> SpamHit {
     if search.trim().is_empty() {
         return SpamHit::none();
     }
-    let hit = check_text(rt, &search);
+    let hit = check_text(rt, &search).await;
     if hit.matched {
         return SpamHit::hit(
             if hit.kind == "Username" {
@@ -175,14 +178,14 @@ fn check_contact(rt: &Runtime, content: &Value) -> SpamHit {
 }
 
 /// 贴纸：群贴纸集规则 → 全局贴纸集 → 全局贴纸。
-fn check_sticker(rt: &Runtime, message: &Value) -> SpamHit {
+async fn check_sticker(rt: &Runtime, message: &Value) -> SpamHit {
     let content = message.get("content").unwrap_or(&Value::Null);
     let sticker = content.get("sticker").unwrap_or(&Value::Null);
     let set_id = sticker.get("set_id").and_then(Value::as_i64);
     let unique_id = sticker.get("sticker").and_then(text::remote_unique_id);
 
     let chat_id = message.get("chat_id").and_then(Value::as_i64).unwrap_or(0);
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     if let Some(set_id) = set_id
         && config
             .spam_sticker
@@ -200,13 +203,13 @@ fn check_sticker(rt: &Runtime, message: &Value) -> SpamHit {
     }
 
     if let Some(set_id) = set_id
-        && let Some(record) = rt.db.match_sticker_set(&set_id.to_string())
+        && let Some(record) = rt.db.match_sticker_set(&set_id.to_string()).await
     {
         return SpamHit::hit("sticker_set", Some(doc_id(&record)), "hasSpamSet");
     }
 
     if let Some(unique_id) = unique_id
-        && let Some(record) = rt.db.match_sticker(&unique_id)
+        && let Some(record) = rt.db.match_sticker(&unique_id).await
     {
         return SpamHit::hit("sticker", Some(doc_id(&record)), "hasSpamFileid");
     }

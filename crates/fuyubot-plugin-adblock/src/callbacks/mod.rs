@@ -6,6 +6,9 @@
 //!
 //! 每个入口都先查「点按钮的人是不是该群管理员」——日志频道是公开可读的，
 //! 按钮却不是给所有人按的。
+//!
+//! 按钮处理要改消息、写日志、排自删，全是 `async`；`rt` 统一收 `&Runtime`
+//! （排期任务要把它捕获进去）。
 
 pub mod basic;
 pub mod media;
@@ -35,7 +38,7 @@ impl CallbackCtx {
 }
 
 /// 处理 `updateNewCallbackQuery`。
-pub fn handle(rt: &Runtime, update: &Value) {
+pub async fn handle(rt: &Runtime, update: &Value) {
     let Some(payload) = update.get("payload") else {
         return;
     };
@@ -77,14 +80,14 @@ pub fn handle(rt: &Runtime, update: &Value) {
     );
 
     match command.as_str() {
-        "unban" => basic::unban(rt, &ctx),
-        "unmute" => basic::unmute(rt, &ctx),
-        "ban" => basic::ban(rt, &ctx),
-        "banCnt" => basic::not_implemented(rt, &ctx),
-        "newMemberReview" => review::new_member_review(rt, &ctx),
-        "SpamSet" => media::spam_set(rt, &ctx),
-        "SpamFile" => media::spam_file(rt, &ctx),
-        "SpamPhoto" => media::spam_photo(rt, &ctx),
+        "unban" => basic::unban(rt, &ctx).await,
+        "unmute" => basic::unmute(rt, &ctx).await,
+        "ban" => basic::ban(rt, &ctx).await,
+        "banCnt" => basic::not_implemented(rt, &ctx).await,
+        "newMemberReview" => review::new_member_review(rt, &ctx).await,
+        "SpamSet" => media::spam_set(rt, &ctx).await,
+        "SpamFile" => media::spam_file(rt, &ctx).await,
+        "SpamPhoto" => media::spam_photo(rt, &ctx).await,
         _ => {}
     }
 }
@@ -105,52 +108,70 @@ pub(crate) fn member_of(params: &[(String, String)]) -> Option<Sender> {
 }
 
 /// 点按钮的人是不是该群管理员；不是就回一个弹窗并返回 `false`。
-pub(crate) fn require_admin(rt: &Runtime, ctx: &CallbackCtx, group_id: i64) -> bool {
-    if rt.td.is_admin(group_id, Sender::User(ctx.sender_user_id)) {
+pub(crate) async fn require_admin(rt: &Runtime, ctx: &CallbackCtx, group_id: i64) -> bool {
+    if rt
+        .td
+        .is_admin(group_id, Sender::User(ctx.sender_user_id))
+        .await
+    {
         return true;
     }
-    answer(rt, ctx, "你没有权限使用该按钮", true, 300);
+    answer(rt, ctx, "你没有权限使用该按钮", true, 300).await;
     false
 }
 
 /// 回一条 callback query。
-pub(crate) fn answer(rt: &Runtime, ctx: &CallbackCtx, text: &str, alert: bool, cache_time: u32) {
-    rt.td.answer_callback(ctx.query_id, text, alert, cache_time);
+pub(crate) async fn answer(
+    rt: &Runtime,
+    ctx: &CallbackCtx,
+    text: &str,
+    alert: bool,
+    cache_time: u32,
+) {
+    rt.td
+        .answer_callback(ctx.query_id, text, alert, cache_time)
+        .await;
 }
 
 /// 往群绑定的日志频道发一条（没配就静默跳过）。
-pub(crate) fn send_group_log(rt: &Runtime, group_id: i64, body: &str) {
-    let config = rt.db.config_or_default(group_id);
+pub(crate) async fn send_group_log(rt: &Runtime, group_id: i64, body: &str) {
+    let config = rt.db.config_or_default(group_id).await;
     let Some(channel) = config.log_channel else {
         return;
     };
-    let _ = rt.td.send_text(
-        channel,
-        crate::text::markdown(body),
-        None,
-        Vec::new(),
-        None,
-        Some(true),
-    );
+    let _ = rt
+        .td
+        .send_text(
+            channel,
+            crate::text::markdown(body),
+            None,
+            Vec::new(),
+            None,
+            Some(true),
+        )
+        .await;
 }
 
 /// 往群绑定的日志频道发一条带按钮的。
-pub(crate) fn send_group_log_with_buttons(
+pub(crate) async fn send_group_log_with_buttons(
     rt: &Runtime,
     group_id: i64,
     body: &str,
     buttons: Vec<Vec<crate::simplify::ReplyButton>>,
 ) {
-    let config = rt.db.config_or_default(group_id);
+    let config = rt.db.config_or_default(group_id).await;
     let Some(channel) = config.log_channel else {
         return;
     };
-    let _ = rt.td.send_text(
-        channel,
-        crate::text::markdown(body),
-        None,
-        buttons,
-        None,
-        Some(true),
-    );
+    let _ = rt
+        .td
+        .send_text(
+            channel,
+            crate::text::markdown(body),
+            None,
+            buttons,
+            None,
+            Some(true),
+        )
+        .await;
 }

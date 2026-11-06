@@ -19,8 +19,8 @@
 //!
 //! 反过来，**不能因为「以 `/` 开头」就当成命令**：`command_of` 解析出的名字如果不在
 //! 注册表里，它就是普通文本，必须继续检测（否则 `/接单 代收款` 就能绕过全部规则）。
-
-use std::sync::Arc;
+//!
+//! 整条链是 `async` 的：命令、检测、AI、处置都 `.await`，不占线程干等。
 
 use serde_json::Value;
 
@@ -35,7 +35,7 @@ use crate::store::doc_id;
 use crate::text;
 
 /// 处理一条 `updateNewMessage`。
-pub fn handle(rt: &Arc<Runtime>, update: &Value) {
+pub async fn handle(rt: &Runtime, update: &Value) {
     let Some(message) = update.get("message") else {
         return;
     };
@@ -47,7 +47,7 @@ pub fn handle(rt: &Arc<Runtime>, update: &Value) {
     };
 
     // 私聊里的 AI 配置流程：命中就消费掉这条消息。
-    if flow::is_private(chat_id) && crate::commands::ai_config::consume_private(rt, message) {
+    if flow::is_private(chat_id) && crate::commands::ai_config::consume_private(rt, message).await {
         return;
     }
 
@@ -62,38 +62,38 @@ pub fn handle(rt: &Arc<Runtime>, update: &Value) {
     // 命令：只认注册表里的名字，且**不 return**——命令消息同样要进索引、同样要被检测。
     // 注意传的是**整条 update**：`command_of` 会自己取 `update.message`。
     if let Some(sender) = sender {
-        crate::commands::dispatch(rt, update, sender);
+        crate::commands::dispatch(rt, update, sender).await;
     }
 
-    flow::records::log_message(rt, message);
-    flow::gky::forward_ban_record(rt, message);
-    check(rt, message);
+    flow::records::log_message(rt, message).await;
+    flow::gky::forward_ban_record(rt, message).await;
+    check(rt, message).await;
 }
 
 /// 广告判定 + 处置。
-fn check(rt: &Runtime, message: &Value) {
+async fn check(rt: &Runtime, message: &Value) {
     let Some(chat_id) = message.get("chat_id").and_then(Value::as_i64) else {
         return;
     };
     let Some(message_id) = message.get("id").and_then(Value::as_i64) else {
         return;
     };
-    if !flow::is_group(rt, chat_id) {
+    if !flow::is_group(rt, chat_id).await {
         return;
     }
-    if !flow::am_i_admin(rt, chat_id) {
+    if !flow::am_i_admin(rt, chat_id).await {
         return;
     }
     let Some(sender) = message_sender(message) else {
         return;
     };
-    let details = flow::sender_details(rt, chat_id, sender);
-    let is_white = rt.db.is_whitelisted(chat_id, sender.id());
+    let details = flow::sender_details(rt, chat_id, sender).await;
+    let is_white = rt.db.is_whitelisted(chat_id, sender.id()).await;
     if details.is_admin || is_white {
         return;
     }
 
-    let content_hit = detect::detect(rt, message);
+    let content_hit = detect::detect(rt, message).await;
 
     // 访客机器人：直接处置，并连带处理「谁把它拉进来的」那条消息。
     if details.is_bot && !details.is_admin && !details.is_member {
@@ -102,25 +102,26 @@ fn check(rt: &Runtime, message: &Value) {
             None,
             "机器人访客模式在本群中禁用，如果需要请将机器人加入群组并赋予管理权限",
         );
-        action::punish(rt, chat_id, sender, &hit, Some(message_id));
-        punish_trigger(rt, chat_id, message, &content_hit);
+        action::punish(rt, chat_id, sender, &hit, Some(message_id)).await;
+        punish_trigger(rt, chat_id, message, &content_hit).await;
         return;
     }
 
     // 转发 / 引用自黑名单频道
     if let Some(origin) = origin_chat_id(message)
-        && let Some(record) = rt.db.match_forward(origin)
+        && let Some(record) = rt.db.match_forward(origin).await
     {
         let hit = SpamHit::hit("forward", Some(doc_id(&record)), "from blacklisted channel");
-        action::punish(rt, chat_id, sender, &hit, Some(message_id));
+        action::punish(rt, chat_id, sender, &hit, Some(message_id)).await;
         return;
     }
 
     let mut hit = content_hit;
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     if !hit.matched
         && config.ai_review_enabled
-        && let Some(ai_hit) = review_with_ai(rt, message, sender, &details, chat_id, message_id)
+        && let Some(ai_hit) =
+            review_with_ai(rt, message, sender, &details, chat_id, message_id).await
     {
         hit = ai_hit;
     }
@@ -129,14 +130,14 @@ fn check(rt: &Runtime, message: &Value) {
         return;
     }
     // TS 版在处置前又查了一次管理员权限：中间可能刚好被摘了权限。
-    if !flow::am_i_admin(rt, chat_id) {
+    if !flow::am_i_admin(rt, chat_id).await {
         return;
     }
-    action::punish(rt, chat_id, sender, &hit, Some(message_id));
+    action::punish(rt, chat_id, sender, &hit, Some(message_id)).await;
 }
 
 /// 被访客机器人回复的那条消息的发送者：一起处置（「连带封禁」）。
-fn punish_trigger(rt: &Runtime, chat_id: i64, message: &Value, content_hit: &SpamHit) {
+async fn punish_trigger(rt: &Runtime, chat_id: i64, message: &Value, content_hit: &SpamHit) {
     let Some(reply) = message.get("reply_to").filter(|reply| {
         reply.get("@type").and_then(Value::as_str) == Some("messageReplyToMessage")
     }) else {
@@ -145,18 +146,18 @@ fn punish_trigger(rt: &Runtime, chat_id: i64, message: &Value, content_hit: &Spa
     let Some(reply_id) = reply.get("message_id").and_then(Value::as_i64) else {
         return;
     };
-    let trigger = rt
-        .cache
-        .recent_message(chat_id, reply_id)
-        .or_else(|| rt.td.message(chat_id, reply_id));
+    let trigger = match rt.cache.recent_message(chat_id, reply_id) {
+        Some(cached) => Some(cached),
+        None => rt.td.message(chat_id, reply_id).await,
+    };
     let Some(trigger) = trigger else {
         return;
     };
     let Some(trigger_sender) = message_sender(&trigger) else {
         return;
     };
-    let trigger_details = flow::sender_details(rt, chat_id, trigger_sender);
-    let trigger_white = rt.db.is_whitelisted(chat_id, trigger_sender.id());
+    let trigger_details = flow::sender_details(rt, chat_id, trigger_sender).await;
+    let trigger_white = rt.db.is_whitelisted(chat_id, trigger_sender.id()).await;
     if trigger_details.is_admin || trigger_white {
         log::debug(
             &rt.host,
@@ -184,7 +185,7 @@ fn punish_trigger(rt: &Runtime, chat_id: i64, message: &Value, content_hit: &Spa
             "连带封禁：原始消息触发垃圾bot"
         },
     );
-    action::punish(rt, chat_id, trigger_sender, &hit, Some(reply_id));
+    action::punish(rt, chat_id, trigger_sender, &hit, Some(reply_id)).await;
 }
 
 /// 转发的来源频道 / 被引用消息的聊天。
@@ -225,7 +226,7 @@ fn quote_of(message: &Value) -> Option<(i64, String)> {
 }
 
 /// AI 深度审核。返回 `Some(命中)` 才处置；未命中 / 未触发返回 `None`。
-fn review_with_ai(
+async fn review_with_ai(
     rt: &Runtime,
     message: &Value,
     sender: Sender,
@@ -302,7 +303,7 @@ fn review_with_ai(
     });
 
     // ── 要不要触发 AI ─────────────────────────────────────────
-    let keywords = rt.db.global_ai_keywords();
+    let keywords = rt.db.global_ai_keywords().await;
     let lower = message_text.to_lowercase();
     let keyword_hit = !message_text.is_empty()
         && keywords
@@ -318,7 +319,7 @@ fn review_with_ai(
         )
         && let Sender::User(user_id) = sender
     {
-        watch_hit = rt.db.is_profile_changed_watch_user(chat_id, user_id);
+        watch_hit = rt.db.is_profile_changed_watch_user(chat_id, user_id).await;
         if watch_hit {
             log::info(
                 &rt.host,
@@ -337,7 +338,7 @@ fn review_with_ai(
 
     // 主页挂载频道 + 最近历史（只对用户发送者）
     if let Sender::User(user_id) = sender {
-        if let Some((name, description)) = flow::personal_channel(rt, user_id) {
+        if let Some((name, description)) = flow::personal_channel(rt, user_id).await {
             input = input.with_personal_channel(name, description);
         }
         let history = rt.cache.recent_texts(chat_id, user_id, Some(message_id), 5);
@@ -345,7 +346,7 @@ fn review_with_ai(
     }
 
     // 给被审的消息加 👀（Bot 账号必须用 setMessageReactions）
-    if let Err(error) = rt.td.react(chat_id, message_id, "👀") {
+    if let Err(error) = rt.td.react(chat_id, message_id, "👀").await {
         log::debug(&rt.host, format!("加 👀 回应失败：{error}"));
     }
 
@@ -358,7 +359,7 @@ fn review_with_ai(
         message_type: Some(content_type.to_owned()),
         force_default: false,
     };
-    let result = ai::review(rt, &input, None, Some(chat_id), &meta);
+    let result = ai::review(rt, &input, None, Some(chat_id), &meta).await;
 
     // ── 结果落库 + 判定 ───────────────────────────────────────
     let confidence_high = result.confidence > 0.9;
@@ -381,18 +382,19 @@ fn review_with_ai(
                 &result.message.keywords,
                 &message_text,
                 "保存正文关键词/全文失败",
-            );
+            )
+            .await;
         }
         if let Some((quoted_chat, quote_text)) = &quote
             && *quoted_chat != chat_id
         {
-            if rt.db.match_forward(*quoted_chat).is_none() {
-                if rt.db.add_forward(*quoted_chat).is_ok() {
-                    log::info(
-                        &rt.host,
-                        format!("AI自动添加引用来源 {quoted_chat} 到转发黑名单（引用消息含广告）"),
-                    );
-                }
+            if rt.db.match_forward(*quoted_chat).await.is_none()
+                && rt.db.add_forward(*quoted_chat).await.is_ok()
+            {
+                log::info(
+                    &rt.host,
+                    format!("AI自动添加引用来源 {quoted_chat} 到转发黑名单（引用消息含广告）"),
+                );
             }
             if result.quoted_message.has_ad && confidence_high {
                 persist_keywords(
@@ -400,19 +402,20 @@ fn review_with_ai(
                     &result.quoted_message.keywords,
                     quote_text,
                     "保存引用关键词/全文失败",
-                );
+                )
+                .await;
             }
         }
         if content_type == "messageContact" && result.contact.contact_ad {
             let contact_name = text::contact_name(content);
             if !contact_name.is_empty()
-                && let Err(error) = rt.db.add_name(&contact_name)
+                && let Err(error) = rt.db.add_name(&contact_name).await
             {
                 log::warn(&rt.host, format!("保存联系人名称失败：{error}"));
             }
             let vcard = text::contact_vcard(content);
             if !vcard.is_empty()
-                && let Err(error) = rt.db.add_bio(&[vcard])
+                && let Err(error) = rt.db.add_bio(&[vcard]).await
             {
                 log::warn(&rt.host, format!("保存联系人 bio 失败：{error}"));
             }
@@ -422,7 +425,7 @@ fn review_with_ai(
 
     // ── 全文精确比对（与已封禁广告完全一致） ────────────────────
     if !message_text.is_empty()
-        && let Some(record) = rt.db.match_ai_fulltext(&message_text)
+        && let Some(record) = rt.db.match_ai_fulltext(&message_text).await
     {
         hit = Some(SpamHit::hit(
             "AI_FullText",
@@ -430,7 +433,7 @@ fn review_with_ai(
             "与已封禁广告全文完全一致",
         ));
     } else if let Some((_, quote_text)) = &quote
-        && let Some(record) = rt.db.match_ai_fulltext(quote_text)
+        && let Some(record) = rt.db.match_ai_fulltext(quote_text).await
     {
         hit = Some(SpamHit::hit(
             "AI_FullText",
@@ -445,13 +448,13 @@ fn review_with_ai(
 /// 关键词 > 3 存关键词组；1–2 个存全文；正好 3 个**什么都不存**
 /// （与 TS `Ads/index.ts`:326-330 的三段分支一致——否则一次 3 关键词的判定会把整段
 /// 正文写进 `ai_fulltext_blacklist`，之后同样的话会被无 AI 直接封）。
-fn persist_keywords(rt: &Runtime, keywords: &[String], body: &str, context: &str) {
+async fn persist_keywords(rt: &Runtime, keywords: &[String], body: &str, context: &str) {
     if keywords.len() > 3 {
-        if let Err(error) = rt.db.add_ad_keywords(keywords, false) {
+        if let Err(error) = rt.db.add_ad_keywords(keywords, false).await {
             log::warn(&rt.host, format!("{context}：{error}"));
         }
     } else if !keywords.is_empty() && keywords.len() < 3 && !body.trim().is_empty() {
-        if let Err(error) = rt.db.add_ai_fulltext(body) {
+        if let Err(error) = rt.db.add_ai_fulltext(body).await {
             log::warn(&rt.host, format!("{context}：{error}"));
         }
     }

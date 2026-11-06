@@ -22,7 +22,8 @@
 //! `/help` 由宿主内置 help 插件统一渲染，本插件在 `start()` 里把 [`COMMANDS`]
 //! 登记进 `fuyubot.help.commands`（软依赖，见 [`super::HELP_SERVICE`]）。
 
-use std::sync::Arc;
+use std::future::Future;
+use std::pin::Pin;
 
 use crate::simplify::Command;
 use serde_json::Value;
@@ -30,8 +31,12 @@ use serde_json::Value;
 use crate::api::Sender;
 use crate::runtime::Runtime;
 
-/// 命令处理函数。同步：真正的等待都在 worker 线程里。
-pub type Handler = fn(&Arc<Runtime>, &Command, Sender, &Value);
+/// 命令处理函数返回的 future。表里要存**同一形状**的函数指针，不能存 `async fn`
+/// 的 opaque 返回类型，所以统一装箱。
+pub type HandlerFuture<'a> = Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+/// 命令处理函数：`async fn` 实现在适配层里 `Box::pin` 成这个形状。
+pub type Handler = for<'a> fn(&'a Runtime, &'a Command, Sender, &'a Value) -> HandlerFuture<'a>;
 
 /// 命令允许出现的聊天类型（对应 TS `cmdHandlers[*].scope`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,11 +72,11 @@ pub struct CommandSpec {
 
 impl CommandSpec {
     /// 聊天类型是否允许。频道既不是 private 也不是 group，`Group` 命令在频道里同样不应答。
-    pub fn allows_scope(&self, rt: &Runtime, chat_id: i64) -> bool {
+    pub async fn allows_scope(&self, rt: &Runtime, chat_id: i64) -> bool {
         match self.scope {
             Scope::All => true,
             Scope::Private => crate::flow::is_private(chat_id),
-            Scope::Group => crate::flow::is_group(rt, chat_id),
+            Scope::Group => crate::flow::is_group(rt, chat_id).await,
         }
     }
 
@@ -217,72 +222,92 @@ pub const COMMANDS: &[CommandSpec] = &[
 
 // ── 统一签名的适配层：具体 handler 的参数各不相同，注册表只认一种形状 ──────────
 
-fn cmd_adconfig(rt: &Arc<Runtime>, c: &Command, s: Sender, m: &Value) {
-    super::config::handle(rt, c, s, m)
+fn cmd_adconfig<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::config::handle(rt, c, s, m))
 }
 
-fn cmd_spam(rt: &Arc<Runtime>, c: &Command, s: Sender, m: &Value) {
-    super::spam::handle(rt, c, s, m)
+fn cmd_spam<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::spam::handle(rt, c, s, m))
 }
 
-fn cmd_setlogchannel(rt: &Arc<Runtime>, c: &Command, s: Sender, m: &Value) {
-    super::log_channel::handle(rt, c, s, m)
+fn cmd_setlogchannel<'a>(
+    rt: &'a Runtime,
+    c: &'a Command,
+    s: Sender,
+    m: &'a Value,
+) -> HandlerFuture<'a> {
+    Box::pin(super::log_channel::handle(rt, c, s, m))
 }
 
-fn cmd_whitelist(rt: &Arc<Runtime>, c: &Command, s: Sender, m: &Value) {
-    super::whitelist::handle(rt, c, s, m, "add")
+fn cmd_whitelist<'a>(
+    rt: &'a Runtime,
+    c: &'a Command,
+    s: Sender,
+    m: &'a Value,
+) -> HandlerFuture<'a> {
+    Box::pin(super::whitelist::handle(rt, c, s, m, "add"))
 }
 
-fn cmd_rmwhitelist(rt: &Arc<Runtime>, c: &Command, s: Sender, m: &Value) {
-    super::whitelist::handle(rt, c, s, m, "rm")
+fn cmd_rmwhitelist<'a>(
+    rt: &'a Runtime,
+    c: &'a Command,
+    s: Sender,
+    m: &'a Value,
+) -> HandlerFuture<'a> {
+    Box::pin(super::whitelist::handle(rt, c, s, m, "rm"))
 }
 
-fn cmd_qadid(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::lookup::query_ad_id(rt, c, s)
+fn cmd_qadid<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::lookup::query_ad_id(rt, c, s))
 }
 
-fn cmd_delad(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::lookup::delete_ad(rt, c, s)
+fn cmd_delad<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::lookup::delete_ad(rt, c, s))
 }
 
-fn cmd_qban(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::lookup::query_ban(rt, c, s)
+fn cmd_qban<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::lookup::query_ban(rt, c, s))
 }
 
-fn cmd_addfwdbl(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::forward::add(rt, c, s)
+fn cmd_addfwdbl<'a>(
+    rt: &'a Runtime,
+    c: &'a Command,
+    s: Sender,
+    _m: &'a Value,
+) -> HandlerFuture<'a> {
+    Box::pin(super::forward::add(rt, c, s))
 }
 
-fn cmd_rmfwdbl(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::forward::remove(rt, c, s)
+fn cmd_rmfwdbl<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::forward::remove(rt, c, s))
 }
 
-fn cmd_addkw(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::keywords::add(rt, c, s)
+fn cmd_addkw<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::keywords::add(rt, c, s))
 }
 
-fn cmd_editkw(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::keywords::edit(rt, c, s)
+fn cmd_editkw<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::keywords::edit(rt, c, s))
 }
 
-fn cmd_adkew(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::ai_keywords::handle(rt, c, s)
+fn cmd_adkew<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::ai_keywords::handle(rt, c, s))
 }
 
-fn cmd_admatch(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::owner::ad_match(rt, c, s)
+fn cmd_admatch<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::owner::ad_match(rt, c, s))
 }
 
-fn cmd_adaiadd(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::owner::ad_ai_add(rt, c, s)
+fn cmd_adaiadd<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::owner::ad_ai_add(rt, c, s))
 }
 
-fn cmd_adaiset(rt: &Arc<Runtime>, c: &Command, s: Sender, _m: &Value) {
-    super::ai_manager::handle(rt, c, s)
+fn cmd_adaiset<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, _m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::ai_manager::handle(rt, c, s))
 }
 
-fn cmd_start(rt: &Arc<Runtime>, c: &Command, s: Sender, m: &Value) {
-    super::ai_config::handle_start(rt, c, s, m)
+fn cmd_start<'a>(rt: &'a Runtime, c: &'a Command, s: Sender, m: &'a Value) -> HandlerFuture<'a> {
+    Box::pin(super::ai_config::handle_start(rt, c, s, m))
 }
 
 #[cfg(test)]

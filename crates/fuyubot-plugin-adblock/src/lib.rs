@@ -23,9 +23,11 @@
 //!
 //! ## 线程模型（先读这一段）
 //!
-//! 宿主的 `on` 回调跑在**接收循环线程**上。我们只在那里做一件事：把更新塞进工作队列。
-//! 所有 TDLib 请求、Mongo 查询、AI 调用都在 4 个工作线程里同步执行；延时任务（提示自删、
-//! 周期扫描）交给调度器。`stop()` 的顺序是「退订 → 停调度 → join 工作线程」。
+//! 宿主的 `on` 回调跑在**接收循环线程**上，那里只做一件事：把更新 `submit` 成
+//! tokio 任务。所有 TDLib 请求（经 `ResponseRouter` 真 await）、Mongo 查询
+//! （`spawn_blocking`）、AI 调用（`spawn_blocking`）都在 tokio 工作任务里跑；
+//! 延时任务（提示自删）与周期扫描（每 5 分钟）走 `tokio::time`。
+//! `stop()` 的顺序是「退订 → 关闸 → 等在飞任务归零 → 关 runtime」。
 //!
 //! ## 与 TS 版的有意差异
 //!
@@ -34,6 +36,8 @@
 //! 3. **「Bot 主人」= `owner_ids`**：FuyuBot 没有框架级的 owner 概念；
 //! 4. **数据库换成 `storage.mongo`**：不再自带连接池，也不再依赖宿主私有的 db API；
 //! 5. **链接预览自己抓**：不拖 `link-preview-js`，只取 `<title>` 与 description。
+
+use std::sync::Arc;
 
 mod action;
 mod ai;
@@ -45,9 +49,7 @@ mod config;
 mod detect;
 mod flow;
 mod log;
-mod pool;
 mod runtime;
-mod scheduler;
 /// 本地化的 simplify 层（上游 `fuyubot-simplify` 的裁剪版，不依赖该 crate）。
 pub mod simplify;
 mod store;
@@ -55,7 +57,7 @@ mod subscribe;
 mod text;
 mod util;
 
-use std::sync::Arc;
+use std::future::Future;
 use std::time::Duration;
 
 use fuyubot_abi::{HostApi, Plugin, define_plugin};
@@ -124,11 +126,11 @@ impl Plugin for AdblockPlugin {
             );
         }
 
-        // 建索引 + 连通性探测都是幂等的慢操作，丢给工作线程。
+        // 建索引 + 连通性探测都是幂等的慢操作，丢给 tokio 任务。
         {
             let runtime = Arc::clone(&runtime);
-            runtime.submit(|rt| {
-                match rt.db.ping() {
+            runtime.submit(|rt| async move {
+                match rt.db.ping().await {
                     Ok(info) => log::infof(
                         &rt.host,
                         format_args!(
@@ -145,12 +147,12 @@ impl Plugin for AdblockPlugin {
                         format!("storage.mongo 暂时连不上（{error}）；库起来后会自动重连"),
                     ),
                 }
-                let (created, failed) = rt.db.ensure_indexes();
+                let (created, failed) = rt.db.ensure_indexes().await;
                 log::infof(
                     &rt.host,
                     format_args!("索引就绪：成功 {created} 条，跳过/冲突 {failed} 条"),
                 );
-                let counts = rt.db.counts();
+                let counts = rt.db.counts().await;
                 let summary = counts
                     .iter()
                     .map(|(name, count)| format!("{name}={count}"))
@@ -160,27 +162,31 @@ impl Plugin for AdblockPlugin {
             });
         }
 
-        // 事件订阅：回调只排队，真正的活在 worker 里。
-        self.listen(&runtime, "updateNewMessage", |rt, update| {
-            flow::message::handle(rt, update)
+        // 事件订阅：回调只排队，真正的活在 tokio 任务里。
+        self.listen(&runtime, "updateNewMessage", |rt, update| async move {
+            flow::message::handle(&rt, &update).await
         })?;
-        self.listen(&runtime, "updateDeleteMessages", |rt, update| {
-            flow::records::handle_delete(rt, update)
+        self.listen(&runtime, "updateDeleteMessages", |rt, update| async move {
+            flow::records::handle_delete(&rt, &update).await
         })?;
-        self.listen(&runtime, "updateNewCallbackQuery", |rt, update| {
-            callbacks::handle(rt, update)
+        self.listen(
+            &runtime,
+            "updateNewCallbackQuery",
+            |rt, update| async move { callbacks::handle(&rt, &update).await },
+        )?;
+        self.listen(&runtime, "updateChatMember", |rt, update| async move {
+            flow::new_member::handle_chat_member(&rt, &update).await
         })?;
-        self.listen(&runtime, "updateChatMember", |rt, update| {
-            flow::new_member::handle_chat_member(rt, update)
-        })?;
-        self.listen(&runtime, "updateUser", |rt, update| {
-            flow::profile::handle_update_user(rt, update)
+        self.listen(&runtime, "updateUser", |rt, update| async move {
+            flow::profile::handle_update_user(&rt, &update).await
         })?;
 
         // 周期扫描 + 启动时立即来一轮（原版 `immediate: true`）。
         let sweeper = Arc::clone(&runtime);
-        runtime.every(SWEEP_INTERVAL, |rt| flow::sweeper::sweep_safely(rt));
-        sweeper.submit(|rt| flow::sweeper::sweep_safely(&rt));
+        runtime.every(SWEEP_INTERVAL, |rt| async move {
+            flow::sweeper::sweep_safely(&rt).await
+        });
+        sweeper.submit(|rt| async move { flow::sweeper::sweep_safely(&rt).await });
 
         self.runtime = Some(runtime);
         Ok(())
@@ -213,22 +219,30 @@ impl Plugin for AdblockPlugin {
 }
 
 impl AdblockPlugin {
-    /// 订阅一个事件；回调里只做「克隆更新 + 入队」。
-    fn listen(
+    /// 订阅一个事件；回调里只做「克隆更新 + submit」。
+    ///
+    /// `handler` 返回 future 而不是当场干完：宿主回调线程一秒都不能停，
+    /// 真正的活（TDLib 往返 / Mongo / AI）在 tokio 任务里 await。
+    fn listen<F, Fut>(
         &mut self,
         runtime: &Arc<runtime::Runtime>,
         event: &str,
-        handler: impl Fn(&Arc<runtime::Runtime>, &Value) + Send + Sync + 'static,
-    ) -> Result<(), String> {
+        handler: F,
+    ) -> Result<(), String>
+    where
+        F: Fn(Arc<runtime::Runtime>, Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
         let owner = Arc::clone(runtime);
         // 闭包会被反复调用（每条更新一次），所以 handler 要共享而不是移动：
         // `Arc<dyn Fn>` 让每次调用各拿一份引用，内层任务拿到的是独立的克隆。
-        let handler: Arc<dyn Fn(&Arc<runtime::Runtime>, &Value) + Send + Sync> = Arc::new(handler);
+        let handler: Arc<dyn Fn(Arc<runtime::Runtime>, Value) -> Fut + Send + Sync> =
+            Arc::new(handler);
         let subscription = subscribe::subscribe(self.host, event, None, move |update| {
             let update = update.clone();
             let owner = Arc::clone(&owner);
             let handler = Arc::clone(&handler);
-            owner.submit(move |rt| handler(&rt, &update));
+            owner.submit(move |rt| handler(rt, update));
         })
         .ok_or_else(|| format!("订阅 {event} 失败"))?;
         self.subscriptions.push(subscription);

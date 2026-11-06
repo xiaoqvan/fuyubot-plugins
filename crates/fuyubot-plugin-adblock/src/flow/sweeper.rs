@@ -5,6 +5,9 @@
 //! 两条竞态规则（原样保留）：
 //! - 记录已经不是 `pending`（用户刚点了复审通过）→ **不封**；
 //! - 用户已经不在「受限」状态（自己退群 / 已被解禁 / 已被封）→ 标记通过，不再处理。
+//!
+//! `sweep_safely` 把整轮扫描放进一个子任务里跑：子任务 panic 只会让 `JoinHandle`
+//! 返回 `Err`，不会把插件的 tokio worker 带走（原来的 `catch_unwind` 语义）。
 
 use crate::simplify::ReplyButton;
 
@@ -16,8 +19,8 @@ use crate::text;
 use crate::util::now_ms;
 
 /// 扫一遍到期的复审记录。
-pub fn sweep(rt: &Runtime) {
-    let records = rt.db.expired_mute_reviews(now_ms());
+pub async fn sweep(rt: &Runtime) {
+    let records = rt.db.expired_mute_reviews(now_ms()).await;
     if records.is_empty() {
         return;
     }
@@ -25,7 +28,7 @@ pub fn sweep(rt: &Runtime) {
 
     for record in records {
         let sender = Sender::User(record.user_id);
-        let status = rt.td.member_status(record.chat_id, sender);
+        let status = rt.td.member_status(record.chat_id, sender).await;
         let status = status.as_deref();
 
         // 不在群里 / 已经解禁 / 已经封禁 / 查不到 → 无从封禁，标记通过收尾。
@@ -38,7 +41,8 @@ pub fn sweep(rt: &Runtime) {
             )
         {
             rt.db
-                .mark_mute_review_approved(record.chat_id, record.user_id);
+                .mark_mute_review_approved(record.chat_id, record.user_id)
+                .await;
             continue;
         }
 
@@ -46,6 +50,7 @@ pub fn sweep(rt: &Runtime) {
         if !rt
             .db
             .mark_mute_review_banned(record.chat_id, record.user_id)
+            .await
         {
             log::info(
                 &rt.host,
@@ -57,7 +62,7 @@ pub fn sweep(rt: &Runtime) {
             continue;
         }
 
-        if let Err(error) = rt.td.ban(record.chat_id, sender) {
+        if let Err(error) = rt.td.ban(record.chat_id, sender).await {
             // 与 TS 的 try/catch 一致：封禁失败就跳过这条的审计与通知，别谎报。
             log::warn(
                 &rt.host,
@@ -65,15 +70,17 @@ pub fn sweep(rt: &Runtime) {
             );
             continue;
         }
-        rt.db.add_ban_record(
-            record.chat_id,
-            record.user_id,
-            sender.type_name(),
-            "ban",
-            "mute_review_timeout",
-            &format!("禁言1小时内未通过复审: {}", record.reason),
-            None,
-        );
+        rt.db
+            .add_ban_record(
+                record.chat_id,
+                record.user_id,
+                sender.type_name(),
+                "ban",
+                "mute_review_timeout",
+                &format!("禁言1小时内未通过复审: {}", record.reason),
+                None,
+            )
+            .await;
         log::info(
             &rt.host,
             format!(
@@ -84,23 +91,29 @@ pub fn sweep(rt: &Runtime) {
 
         // 改原提示：让群里看到「最终结果」
         if let Some(message_id) = record.message_id {
-            let _ = rt.td.edit_text(
-                record.chat_id,
-                message_id,
-                text::markdown(&format!(
-                    "🚫 {} 因 1 小时内未修改个人信息并通过复审，已被封禁。",
-                    record.user_id
-                )),
-                Vec::new(),
-                Some(false),
-            );
+            let _ = rt
+                .td
+                .edit_text(
+                    record.chat_id,
+                    message_id,
+                    text::markdown(&format!(
+                        "🚫 {} 因 1 小时内未修改个人信息并通过复审，已被封禁。",
+                        record.user_id
+                    )),
+                    Vec::new(),
+                    Some(false),
+                )
+                .await;
         }
 
         // 日志频道
-        let config = rt.db.config_or_default(record.chat_id);
+        let config = rt.db.config_or_default(record.chat_id).await;
         if let Some(channel) = config.log_channel {
-            let chat_mention = rt.td.sender_mention(Sender::Chat(record.chat_id), true);
-            let user_mention = rt.td.sender_mention(sender, true);
+            let chat_mention = rt
+                .td
+                .sender_mention(Sender::Chat(record.chat_id), true)
+                .await;
+            let user_mention = rt.td.sender_mention(sender, true).await;
             let body = format!(
                 "#Ban #welcome #timeout\n**ID**: {user_mention}({})\n**Chat**: {chat_mention}({})\n**Reason**: 禁言1小时内未通过复审\n**Detail**:\n - Type: profile_ad\n - Reason: {} ({})",
                 record.user_id,
@@ -112,14 +125,17 @@ pub fn sweep(rt: &Runtime) {
                 "unban+白名单",
                 unban_callback(record.chat_id, sender),
             )];
-            let _ = rt.td.send_text(
-                channel,
-                text::markdown(&body),
-                None,
-                buttons,
-                None,
-                Some(true),
-            );
+            let _ = rt
+                .td
+                .send_text(
+                    channel,
+                    text::markdown(&body),
+                    None,
+                    buttons,
+                    None,
+                    Some(true),
+                )
+                .await;
         }
 
         // 10 秒后删掉群里的提示
@@ -129,9 +145,13 @@ pub fn sweep(rt: &Runtime) {
     }
 }
 
-/// 供周期任务调用：吞掉异常，扫描失败不该打断后续扫描。
-pub fn sweep_safely(rt: &Runtime) {
-    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sweep(rt))).is_err() {
-        log::warn(&rt.host, "复审扫描 panic，已跳过本轮");
+/// 供周期任务调用：捕获异常，扫描失败不该打断后续扫描。
+pub async fn sweep_safely(rt: &Runtime) {
+    let Some(owner) = rt.arc() else {
+        return;
+    };
+    let handle = tokio::spawn(async move { sweep(&owner).await });
+    if let Err(error) = handle.await {
+        log::warn(&rt.host, format!("复审扫描 panic，已跳过本轮：{error}"));
     }
 }

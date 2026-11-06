@@ -35,24 +35,24 @@ const TOGGLES: [(&str, &str, &str, &str); 3] = [
     ),
 ];
 
-pub fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value) {
+pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
-    if !flow::ensure_group(rt, chat_id, reply_to) {
+    if !flow::ensure_group(rt, chat_id, reply_to).await {
         return;
     }
-    if !flow::ensure_admin(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_admin(rt, chat_id, sender, reply_to).await {
         return;
     }
 
     let words = super::words(command);
     let key = words.first().map(String::as_str).unwrap_or("");
     if key.is_empty() || key == "status" {
-        show_status(rt, chat_id);
+        show_status(rt, chat_id).await;
         return;
     }
 
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
 
     // 处置模式
     if key == "limit_mode" || key == "limit" {
@@ -70,12 +70,14 @@ pub fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value)
                     ),
                     reply_to,
                     10,
-                );
+                )
+                .await;
                 return;
             }
         };
         rt.db
-            .update_config(chat_id, |config| config.limit_mode = mode);
+            .update_config(chat_id, |config| config.limit_mode = mode)
+            .await;
         flow::send_tip(
             rt,
             chat_id,
@@ -85,7 +87,8 @@ pub fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value)
             },
             reply_to,
             10,
-        );
+        )
+        .await;
         log::info(
             &rt.host,
             format!("群 {chat_id} limit_mode 已切换为 {}", mode.as_str()),
@@ -106,18 +109,21 @@ pub fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value)
                 ),
                 reply_to,
                 10,
-            );
+            )
+            .await;
             return;
         };
         rt.db
-            .update_config(chat_id, |config| config.spam_tips_meg_delay = delay);
+            .update_config(chat_id, |config| config.spam_tips_meg_delay = delay)
+            .await;
         flow::send_tip(
             rt,
             chat_id,
             &format!("✅ 垃圾信息提示删除延时已设置为 {delay} 秒"),
             reply_to,
             10,
-        );
+        )
+        .await;
         log::info(
             &rt.host,
             format!("群 {chat_id} spam_tips_meg_delay 已设置为 {delay}"),
@@ -141,7 +147,8 @@ pub fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value)
             ),
             reply_to,
             10,
-        );
+        )
+        .await;
         return;
     };
     let current = match *name {
@@ -150,18 +157,20 @@ pub fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value)
         _ => config.spam_tips,
     };
     let next = !current;
-    rt.db.update_config(chat_id, |config| match *name {
-        "ai_review_enabled" => config.ai_review_enabled = next,
-        "check_new_member" => config.check_new_member = next,
-        _ => config.spam_tips = next,
-    });
-    flow::send_tip(rt, chat_id, if next { on } else { off }, reply_to, 10);
+    rt.db
+        .update_config(chat_id, |config| match *name {
+            "ai_review_enabled" => config.ai_review_enabled = next,
+            "check_new_member" => config.check_new_member = next,
+            _ => config.spam_tips = next,
+        })
+        .await;
+    flow::send_tip(rt, chat_id, if next { on } else { off }, reply_to, 10).await;
     log::info(&rt.host, format!("群 {chat_id} {name} 已切换为 {next}"));
 }
 
 /// 状态页。
-fn show_status(rt: &Runtime, chat_id: i64) {
-    let config = rt.db.config_or_default(chat_id);
+async fn show_status(rt: &Runtime, chat_id: i64) {
+    let config = rt.db.config_or_default(chat_id).await;
     let mut body = String::from("📋 **当前广告屏蔽配置：**\n\n");
     for (name, description, _, _) in TOGGLES {
         let value = match name {
@@ -176,7 +185,7 @@ fn show_status(rt: &Runtime, chat_id: i64) {
         ));
     }
     body.push_str("🤖 **AI 接口配置：**\n");
-    body.push_str(&ai::ai_status_line(rt, chat_id, Some(&config)));
+    body.push_str(&ai::ai_status_line(rt, chat_id, Some(&config)).await);
     body.push_str("\n\n🛡️ **广告处置模式：**\n");
     body.push_str(&format!(
         "  → 模式: `{}`（/adconfig limit ban|mute）\n  → 提示删除延时: `{}` 秒（/adconfig delay <秒数>）\n\n",
@@ -198,5 +207,5 @@ fn show_status(rt: &Runtime, chat_id: i64) {
             format!("https://t.me/{username}?start=aiConfig_{chat_id}"),
         )]
     };
-    flow::send_with(rt, chat_id, &body, None, buttons, 0);
+    flow::send_with(rt, chat_id, &body, None, buttons, 0).await;
 }

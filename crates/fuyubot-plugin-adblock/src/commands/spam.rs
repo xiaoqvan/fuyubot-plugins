@@ -36,44 +36,45 @@ struct TargetInfo {
 }
 
 /// `/spam`
-pub fn handle(rt: &std::sync::Arc<Runtime>, command: &Command, _sender: Sender, message: &Value) {
+pub async fn handle(rt: &Runtime, command: &Command, _sender: Sender, message: &Value) {
     let chat_id = command.chat_id;
-    if !flow::is_group(rt, chat_id) {
+    if !flow::is_group(rt, chat_id).await {
         flow::send_tip(
             rt,
             chat_id,
             "此功能仅在群组中有效，个人聊天无法使用。请在群组中使用此功能。",
             Some(command.message_id),
             10,
-        );
+        )
+        .await;
         return;
     }
-    if !flow::am_i_admin(rt, chat_id) {
+    if !flow::am_i_admin(rt, chat_id).await {
         return;
     }
     // 命令本身不需要留在群里
-    let _ = rt.td.delete_messages(chat_id, &[command.message_id]);
+    let _ = rt.td.delete_messages(chat_id, &[command.message_id]).await;
 
     let words = super::words(command);
     let param = words.first().cloned();
 
     if let Some(param) = param {
         let target = if param.chars().all(|c| c.is_ascii_digit()) {
-            param
-                .parse::<i64>()
-                .ok()
-                .and_then(|user_id| target_from_user(rt, user_id))
+            match param.parse::<i64>() {
+                Ok(user_id) => target_from_user(rt, user_id).await,
+                Err(_) => None,
+            }
         } else if let Some(username) = param.strip_prefix('@') {
             if username.is_empty() {
                 None
             } else {
-                target_from_username(rt, username)
+                target_from_username(rt, username).await
             }
         } else {
             None
         };
         match target {
-            Some(info) => return report_user(rt, message, chat_id, info),
+            Some(info) => return report_user(rt, message, chat_id, info).await,
             None => {
                 flow::send_tip(
                     rt,
@@ -81,7 +82,8 @@ pub fn handle(rt: &std::sync::Arc<Runtime>, command: &Command, _sender: Sender, 
                     "参数格式不正确或找不到目标\n示例 /spam <user_id> 或 /spam @username",
                     None,
                     6,
-                );
+                )
+                .await;
                 return;
             }
         }
@@ -100,26 +102,28 @@ pub fn handle(rt: &std::sync::Arc<Runtime>, command: &Command, _sender: Sender, 
             "回复的消息格式不正确，无法进行广告屏蔽。",
             None,
             10,
-        );
+        )
+        .await;
         return;
     };
     let Some(spam_message) = rt
         .td
         .message(chat_id, reply_id)
+        .await
         .or_else(|| rt.cache.recent_message(chat_id, reply_id))
     else {
-        flow::send_tip(rt, chat_id, "获取回复的消息失败，可以稍后再试。", None, 10);
+        flow::send_tip(rt, chat_id, "获取回复的消息失败，可以稍后再试。", None, 10).await;
         return;
     };
     let Some(target) = message_sender(&spam_message) else {
         return;
     };
-    if rt.td.is_admin(chat_id, target) {
-        flow::send_tip(rt, chat_id, "你不能举报管理员的消息！", None, 10);
+    if rt.td.is_admin(chat_id, target).await {
+        flow::send_tip(rt, chat_id, "你不能举报管理员的消息！", None, 10).await;
         return;
     }
-    if rt.db.is_whitelisted(chat_id, target.id()) {
-        let mention = rt.td.sender_mention(target, true);
+    if rt.db.is_whitelisted(chat_id, target.id()).await {
+        let mention = rt.td.sender_mention(target, true).await;
         flow::send_tip(
             rt,
             chat_id,
@@ -129,17 +133,18 @@ pub fn handle(rt: &std::sync::Arc<Runtime>, command: &Command, _sender: Sender, 
             ),
             None,
             15,
-        );
+        )
+        .await;
         return;
     }
-    report_message(rt, message, chat_id, &spam_message, target);
+    report_message(rt, message, chat_id, &spam_message, target).await;
 }
 
 // ── 目标解析 ────────────────────────────────────────────────────
 
-fn target_from_user(rt: &Runtime, user_id: i64) -> Option<TargetInfo> {
-    let user = rt.td.user(user_id).ok()?;
-    let full = rt.td.user_full(user_id).ok();
+async fn target_from_user(rt: &Runtime, user_id: i64) -> Option<TargetInfo> {
+    let user = rt.td.user(user_id).await.ok()?;
+    let full = rt.td.user_full(user_id).await.ok();
     let name = format!(
         "{}{}",
         user.get("first_name").and_then(Value::as_str).unwrap_or(""),
@@ -165,13 +170,13 @@ fn target_from_user(rt: &Runtime, user_id: i64) -> Option<TargetInfo> {
     })
 }
 
-fn target_from_username(rt: &Runtime, username: &str) -> Option<TargetInfo> {
-    let chat = rt.td.search_public_chat(username).ok()?;
+async fn target_from_username(rt: &Runtime, username: &str) -> Option<TargetInfo> {
+    let chat = rt.td.search_public_chat(username).await.ok()?;
     let kind = chat.get("type")?;
     match kind.get("@type").and_then(Value::as_str) {
         Some("chatTypePrivate") => {
             let user_id = kind.get("user_id").and_then(Value::as_i64)?;
-            let mut info = target_from_user(rt, user_id)?;
+            let mut info = target_from_user(rt, user_id).await?;
             info.username = Some(username.to_lowercase());
             Some(info)
         }
@@ -180,6 +185,7 @@ fn target_from_username(rt: &Runtime, username: &str) -> Option<TargetInfo> {
             let description = rt
                 .td
                 .supergroup_full(supergroup_id)
+                .await
                 .ok()
                 .and_then(|full| {
                     full.get("description")
@@ -205,10 +211,10 @@ fn target_from_username(rt: &Runtime, username: &str) -> Option<TargetInfo> {
 
 // ── 用户举报（按 ID / @username） ──────────────────────────────
 
-fn report_user(rt: &std::sync::Arc<Runtime>, _message: &Value, chat_id: i64, info: TargetInfo) {
-    let is_white = rt.db.is_whitelisted(chat_id, info.sender.id());
+async fn report_user(rt: &Runtime, _message: &Value, chat_id: i64, info: TargetInfo) {
+    let is_white = rt.db.is_whitelisted(chat_id, info.sender.id()).await;
     if is_white {
-        let mention = rt.td.sender_mention(info.sender, true);
+        let mention = rt.td.sender_mention(info.sender, true).await;
         flow::send_tip(
             rt,
             chat_id,
@@ -219,13 +225,15 @@ fn report_user(rt: &std::sync::Arc<Runtime>, _message: &Value, chat_id: i64, inf
             // 命令消息已经在入口删掉了，不能再拿它当 reply_to——那样发不出去。
             None,
             15,
-        );
+        )
+        .await;
         return;
     }
 
-    let channel = info
-        .personal_chat_id
-        .and_then(|id| personal_channel_by_chat(rt, id));
+    let channel = match info.personal_chat_id {
+        Some(id) => personal_channel_by_chat(rt, id).await,
+        None => None,
+    };
     let mut input = ModerationInput::profile(info.name.clone(), info.bio.clone());
     if let Some((name, description)) = &channel {
         input = input.with_personal_channel(name.clone(), description.clone());
@@ -240,9 +248,10 @@ fn report_user(rt: &std::sync::Arc<Runtime>, _message: &Value, chat_id: i64, inf
             message_type: None,
             force_default: true,
         },
-    );
+    )
+    .await;
 
-    let user_target = rt.td.sender_mention(info.sender, true);
+    let user_target = rt.td.sender_mention(info.sender, true).await;
     if result.ad_detected {
         let hit = SpamHit::hit(
             "user",
@@ -253,12 +262,12 @@ fn report_user(rt: &std::sync::Arc<Runtime>, _message: &Value, chat_id: i64, inf
                 result.reason.clone()
             },
         );
-        crate::action::punish(rt, chat_id, info.sender, &hit, None);
+        crate::action::punish(rt, chat_id, info.sender, &hit, None).await;
         // 高置信度 → 用户名进黑名单（之后任何消息提到它都会触发）
         if let Some(username) = &info.username
             && result.confidence > 0.8
         {
-            match rt.db.add_username(username) {
+            match rt.db.add_username(username).await {
                 Ok((_, existed)) => log::info(
                     &rt.host,
                     format!(
@@ -284,13 +293,13 @@ fn report_user(rt: &std::sync::Arc<Runtime>, _message: &Value, chat_id: i64, inf
                 text::confidence_percent(result.confidence)
             )
         };
-        flow::send_tip(rt, chat_id, &body, None, 60);
+        flow::send_tip(rt, chat_id, &body, None, 60).await;
     }
 }
 
 /// 按 chat_id 取「主页挂载频道」（只认频道形态的超级群）。
-fn personal_channel_by_chat(rt: &Runtime, chat_id: i64) -> Option<(String, String)> {
-    let chat = rt.td.chat(chat_id).ok()?;
+async fn personal_channel_by_chat(rt: &Runtime, chat_id: i64) -> Option<(String, String)> {
+    let chat = rt.td.chat(chat_id).await.ok()?;
     let kind = chat.get("type")?;
     if kind.get("@type").and_then(Value::as_str) != Some("chatTypeSupergroup")
         || !kind
@@ -304,6 +313,7 @@ fn personal_channel_by_chat(rt: &Runtime, chat_id: i64) -> Option<(String, Strin
     let description = rt
         .td
         .supergroup_full(supergroup_id)
+        .await
         .ok()
         .and_then(|full| {
             full.get("description")
@@ -322,8 +332,8 @@ fn personal_channel_by_chat(rt: &Runtime, chat_id: i64) -> Option<(String, Strin
 
 // ── 消息举报（回复模式） ────────────────────────────────────────
 
-fn report_message(
-    rt: &std::sync::Arc<Runtime>,
+async fn report_message(
+    rt: &Runtime,
     command_message: &Value,
     chat_id: i64,
     spam_message: &Value,
@@ -341,33 +351,36 @@ fn report_message(
         content_type,
         "messagePhoto" | "messageSticker" | "messageContact"
     ) {
-        let _ = rt.td.delete_messages(chat_id, &[spam_message_id]);
+        let _ = rt.td.delete_messages(chat_id, &[spam_message_id]).await;
     }
 
-    let target_mention = rt.td.sender_mention(target, true);
-    let tips = rt.td.send_text(
-        chat_id,
-        text::markdown(&format!("正在处理对 {target_mention} 的广告举报...")),
-        None,
-        Vec::new(),
-        None,
-        Some(true),
-    );
+    let target_mention = rt.td.sender_mention(target, true).await;
+    let tips = rt
+        .td
+        .send_text(
+            chat_id,
+            text::markdown(&format!("正在处理对 {target_mention} 的广告举报...")),
+            None,
+            Vec::new(),
+            None,
+            Some(true),
+        )
+        .await;
     let tips_id = tips
         .as_ref()
         .and_then(|message| message.get("id"))
         .and_then(Value::as_i64);
 
-    send_report_log(rt, chat_id, command_message, target);
+    send_report_log(rt, chat_id, command_message, target).await;
 
     // 引用 / 转发来源
     let quote = quote_of(spam_message);
     let forward_chat = forward_origin(spam_message);
 
     // 发送者资料
-    let (name, bio) = sender_profile(rt, target);
+    let (name, bio) = sender_profile(rt, target).await;
     let personal_channel = match target {
-        Sender::User(user_id) => flow::personal_channel(rt, user_id),
+        Sender::User(user_id) => flow::personal_channel(rt, user_id).await,
         _ => None,
     };
 
@@ -393,7 +406,7 @@ fn report_message(
                 .and_then(|size| size.get("photo"))
                 .and_then(remote_file_id)
             {
-                image_path = rt.td.download_remote(&remote_id, "fileTypePhoto");
+                image_path = rt.td.download_remote(&remote_id, "fileTypePhoto").await;
             }
             input
         }
@@ -429,20 +442,25 @@ fn report_message(
             let content = spam_message.get("content").cloned().unwrap_or(Value::Null);
             let sticker = content.get("sticker").cloned().unwrap_or(Value::Null);
             let set_id = sticker.get("set_id").and_then(Value::as_i64);
-            let title = set_id
-                .and_then(|set_id| rt.td.sticker_set(set_id))
-                .and_then(|set| set.get("title").and_then(Value::as_str).map(str::to_owned))
-                .unwrap_or_default();
+            let title = match set_id {
+                Some(set_id) => rt
+                    .td
+                    .sticker_set(set_id)
+                    .await
+                    .and_then(|set| set.get("title").and_then(Value::as_str).map(str::to_owned))
+                    .unwrap_or_default(),
+                None => String::new(),
+            };
             let mut input = ModerationInput::of_kind("sticker");
             input.sticker = Some(Sticker { name: Some(title) });
             if let Some(remote_id) = sticker.get("sticker").and_then(remote_file_id) {
-                image_path = rt.td.download_remote(&remote_id, "fileTypeSticker");
+                image_path = rt.td.download_remote(&remote_id, "fileTypeSticker").await;
             }
             input
         }
         other => {
             if let Some(tips_id) = tips_id {
-                let target_mention = rt.td.sender_mention(target, true);
+                let target_mention = rt.td.sender_mention(target, true).await;
                 let _ = rt.td.edit_text(
                     chat_id,
                     tips_id,
@@ -451,7 +469,7 @@ fn report_message(
                     )),
                     Vec::new(),
                     Some(true),
-                );
+                ).await;
                 crate::action::schedule_delete(rt, chat_id, tips_id, 10);
             }
             return;
@@ -476,7 +494,7 @@ fn report_message(
             .and_then(|content| content.get("link_preview_options"))
             .and_then(|options| options.get("url"))
             .and_then(Value::as_str)
-        && let Some((title, description)) = fetch_link_preview(rt, url)
+        && let Some((title, description)) = fetch_link_preview(rt, url).await
     {
         input.link_preview = Some(ai::LinkPreview {
             title: Some(title),
@@ -487,8 +505,9 @@ fn report_message(
     // @username 提及检查放到独立任务里：它会发多次 AI 请求，不该拖住举报主流程。
     let mention_text = mention_source(spam_message, content_type);
     if !mention_text.is_empty() {
-        let rt = std::sync::Arc::clone(rt);
-        rt.submit(move |rt| check_mentioned_usernames(&rt, chat_id, &mention_text));
+        rt.submit(move |rt| async move {
+            check_mentioned_usernames(&rt, chat_id, &mention_text).await;
+        });
     }
 
     let meta = AiMeta {
@@ -496,7 +515,7 @@ fn report_message(
         message_type: Some(content_type.to_owned()),
         force_default: true,
     };
-    let result = ai::review(rt, &input, image_path.as_deref(), Some(chat_id), &meta);
+    let result = ai::review(rt, &input, image_path.as_deref(), Some(chat_id), &meta).await;
 
     // ── 分支 ─────────────────────────────────────────────────
     let target_id = target.id();
@@ -515,7 +534,7 @@ fn report_message(
                 )),
                 Vec::new(),
                 Some(true),
-            );
+            ).await;
         }
         persist_ai_result(
             rt,
@@ -525,7 +544,8 @@ fn report_message(
             &name,
             &bio,
             spam_message,
-        );
+        )
+        .await;
         let hit = SpamHit::hit(
             "AI_Spam",
             None,
@@ -535,9 +555,9 @@ fn report_message(
                 result.reason.clone()
             },
         );
-        crate::action::punish(rt, chat_id, target, &hit, Some(spam_message_id));
+        crate::action::punish(rt, chat_id, target, &hit, Some(spam_message_id)).await;
         // 提示与命令消息按群配置延时删除；`0` 表示不删（TS 的 `if (delay > 0)`）。
-        let delay = rt.db.config_or_default(chat_id).spam_tips_meg_delay;
+        let delay = rt.db.config_or_default(chat_id).await.spam_tips_meg_delay;
         if delay > 0
             && let Some(tips_id) = tips_id
         {
@@ -564,7 +584,7 @@ fn report_message(
                 )),
                 buttons,
                 Some(true),
-            );
+            ).await;
         }
         return;
     }
@@ -594,41 +614,48 @@ fn report_message(
         target,
         content_type,
         &reason_line,
-    );
+    )
+    .await;
 }
 
 /// 举报流水：写库 + 发群绑定的日志频道。
-fn send_report_log(rt: &Runtime, chat_id: i64, command_message: &Value, target: Sender) {
+async fn send_report_log(rt: &Runtime, chat_id: i64, command_message: &Value, target: Sender) {
     let reporter = message_sender(command_message)
         .map(|sender| sender.id())
         .unwrap_or(0);
-    rt.db.log_spam_report(chat_id, reporter, command_message);
-    let config = rt.db.config_or_default(chat_id);
+    rt.db
+        .log_spam_report(chat_id, reporter, command_message)
+        .await;
+    let config = rt.db.config_or_default(chat_id).await;
     let Some(channel) = config.log_channel else {
         return;
     };
-    let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true);
-    let title = rt.td.chat_title(chat_id);
-    let user_mention = rt.td.sender_mention(target, true);
-    let reporter_mention = message_sender(command_message)
-        .map(|sender| rt.td.sender_mention(sender, true))
-        .unwrap_or_else(|| "-".to_owned());
+    let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
+    let title = rt.td.chat_title(chat_id).await;
+    let user_mention = rt.td.sender_mention(target, true).await;
+    let reporter_mention = match message_sender(command_message) {
+        Some(sender) => rt.td.sender_mention(sender, true).await,
+        None => "-".to_owned(),
+    };
     let body = format!(
         "#SPAM\n**Group**:{chat_mention}({title}) \n**User**:{reporter_mention}(ID: {reporter})\n**Reported User**:{user_mention}(ID: {})",
         target.id()
     );
-    let _ = rt.td.send_text(
-        channel,
-        text::markdown(&body),
-        None,
-        Vec::new(),
-        None,
-        Some(true),
-    );
+    let _ = rt
+        .td
+        .send_text(
+            channel,
+            text::markdown(&body),
+            None,
+            Vec::new(),
+            None,
+            Some(true),
+        )
+        .await;
 }
 
 /// AI 命中后的落库（关键词 / 全文 / 名称 / 简介 / 转发来源 / 贴纸集）。
-fn persist_ai_result(
+async fn persist_ai_result(
     rt: &Runtime,
     result: &ModerationResult,
     forward_chat: &Option<i64>,
@@ -640,7 +667,11 @@ fn persist_ai_result(
     let mut inserted: Vec<(String, String)> = Vec::new();
 
     if !result.message.keywords.is_empty() {
-        if let Ok(id) = rt.db.add_ad_keywords(&result.message.keywords, result.r18) {
+        if let Ok(id) = rt
+            .db
+            .add_ad_keywords(&result.message.keywords, result.r18)
+            .await
+        {
             inserted.push(("ads_blacklist".to_owned(), id));
         }
     }
@@ -649,29 +680,30 @@ fn persist_ai_result(
         && let Ok(id) = rt
             .db
             .add_ad_keywords(&result.quoted_message.keywords, result.r18)
+            .await
     {
         inserted.push(("ads_blacklist".to_owned(), id));
     }
     if result.profile.bio_ad
         && !bio.trim().is_empty()
-        && let Ok(id) = rt.db.add_bio(&[bio.to_owned()])
+        && let Ok(id) = rt.db.add_bio(&[bio.to_owned()]).await
     {
         inserted.push(("bio_blacklist".to_owned(), id));
     }
     if result.profile.name_ad
         && !name.trim().is_empty()
-        && let Ok(id) = rt.db.add_name(name)
+        && let Ok(id) = rt.db.add_name(name).await
     {
         inserted.push(("name_blacklist".to_owned(), id));
     }
     if result.ad_detected {
         if let Some(chat) = forward_chat
-            && let Ok(id) = rt.db.add_forward(*chat)
+            && let Ok(id) = rt.db.add_forward(*chat).await
         {
             inserted.push(("forward_blacklist".to_owned(), id));
         }
         if let Some((chat, _)) = quote
-            && let Ok(id) = rt.db.add_forward(*chat)
+            && let Ok(id) = rt.db.add_forward(*chat).await
         {
             inserted.push(("forward_blacklist".to_owned(), id));
         }
@@ -689,10 +721,10 @@ fn persist_ai_result(
         let unique_id = sticker.get("sticker").and_then(unique_id_of);
         let set_id = sticker.get("set_id").and_then(Value::as_i64);
         if let Some(unique_id) = &unique_id {
-            if let Ok(id) = rt.db.add_sticker(unique_id) {
+            if let Ok(id) = rt.db.add_sticker(unique_id).await {
                 inserted.push(("sticker_blacklist".to_owned(), id));
             }
-            if let Ok(id) = rt.db.add_file(unique_id) {
+            if let Ok(id) = rt.db.add_file(unique_id).await {
                 inserted.push(("file_unique_id_blacklist".to_owned(), id));
             }
         }
@@ -700,9 +732,10 @@ fn persist_ai_result(
             let title = rt
                 .td
                 .sticker_set(set_id)
+                .await
                 .and_then(|set| set.get("title").and_then(Value::as_str).map(str::to_owned))
                 .unwrap_or_default();
-            if let Ok(id) = rt.db.add_sticker_set(&set_id.to_string(), &title) {
+            if let Ok(id) = rt.db.add_sticker_set(&set_id.to_string(), &title).await {
                 inserted.push(("sticker_set_blacklist".to_owned(), id));
             }
         }
@@ -720,22 +753,25 @@ fn persist_ai_result(
     });
     if let Some(channel) = rt.cfg.ai_db_channel {
         let topic = rt.cfg.ai_db_topic.map(crate::simplify::Topic::forum);
-        let _ = rt.td.send_text(
-            channel,
-            text::plain(
-                serde_json::to_string_pretty(&notify).unwrap_or_else(|_| notify.to_string()),
-            ),
-            None,
-            Vec::new(),
-            topic,
-            None,
-        );
+        let _ = rt
+            .td
+            .send_text(
+                channel,
+                text::plain(
+                    serde_json::to_string_pretty(&notify).unwrap_or_else(|_| notify.to_string()),
+                ),
+                None,
+                Vec::new(),
+                topic,
+                None,
+            )
+            .await;
     }
 }
 
 /// 未判定 / 存疑时的提示 + 按类型的补刀按钮。
 #[allow(clippy::too_many_arguments)]
-fn error_edit_tips(
+async fn error_edit_tips(
     rt: &Runtime,
     chat_id: i64,
     command_message: &Value,
@@ -809,7 +845,8 @@ fn error_edit_tips(
 
     let _ = rt
         .td
-        .edit_text(chat_id, tips_id, text::markdown(&body), buttons, Some(true));
+        .edit_text(chat_id, tips_id, text::markdown(&body), buttons, Some(true))
+        .await;
     // 25 秒后把命令、提示、被举报消息一起删掉
     let mut ids = vec![tips_id];
     if let Some(id) = command_message.get("id").and_then(Value::as_i64) {
@@ -818,13 +855,9 @@ fn error_edit_tips(
     if let Some(id) = spam_message.get("id").and_then(Value::as_i64) {
         ids.push(id);
     }
-    let host = rt.host;
-    rt.scheduler.after(
-        std::time::Duration::from_secs(25),
-        Box::new(move || {
-            let _ = crate::api::Td::new(host).delete_messages(chat_id, &ids);
-        }),
-    );
+    rt.after(std::time::Duration::from_secs(25), move |rt| async move {
+        let _ = rt.td.delete_messages(chat_id, &ids).await;
+    });
 }
 
 // ── @username 提及检查 ──────────────────────────────────────────
@@ -880,13 +913,13 @@ fn extract_mentions(text: &str) -> Vec<String> {
 }
 
 /// 逐个解析 @username 并让 AI 判定它本身是不是广告。
-fn check_mentioned_usernames(rt: &Runtime, chat_id: i64, text: &str) {
+async fn check_mentioned_usernames(rt: &Runtime, chat_id: i64, text: &str) {
     let mentions = extract_mentions(text);
     if mentions.is_empty() {
         return;
     }
     for username in mentions {
-        let Some(chat) = rt.td.search_public_chat(&username).ok() else {
+        let Some(chat) = rt.td.search_public_chat(&username).await.ok() else {
             continue;
         };
         let kind = chat
@@ -902,8 +935,8 @@ fn check_mentioned_usernames(rt: &Runtime, chat_id: i64, text: &str) {
                 else {
                     continue;
                 };
-                let user = rt.td.user(user_id).ok();
-                let full = rt.td.user_full(user_id).ok();
+                let user = rt.td.user(user_id).await.ok();
+                let full = rt.td.user_full(user_id).await.ok();
                 let name = user
                     .as_ref()
                     .map(|user| {
@@ -921,11 +954,14 @@ fn check_mentioned_usernames(rt: &Runtime, chat_id: i64, text: &str) {
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_owned();
-                let channel = full
+                let channel = match full
                     .as_ref()
                     .and_then(|full| full.get("personal_chat_id"))
                     .and_then(Value::as_i64)
-                    .and_then(|id| personal_channel_by_chat(rt, id));
+                {
+                    Some(id) => personal_channel_by_chat(rt, id).await,
+                    None => None,
+                };
                 (name, bio, channel, "user")
             }
             Some("chatTypeSupergroup") => {
@@ -939,6 +975,7 @@ fn check_mentioned_usernames(rt: &Runtime, chat_id: i64, text: &str) {
                 let bio = rt
                     .td
                     .supergroup_full(supergroup_id)
+                    .await
                     .ok()
                     .and_then(|full| {
                         full.get("description")
@@ -979,9 +1016,10 @@ fn check_mentioned_usernames(rt: &Runtime, chat_id: i64, text: &str) {
                 message_type: None,
                 force_default: true,
             },
-        );
+        )
+        .await;
         if result.mentioned_username.username_ad && result.confidence > 0.8 {
-            match rt.db.add_username(&username) {
+            match rt.db.add_username(&username).await {
                 Ok((_, existed)) => log::info(
                     &rt.host,
                     format!(
@@ -1017,11 +1055,11 @@ fn caption_of(content: &Value) -> String {
         .to_owned()
 }
 
-fn sender_profile(rt: &Runtime, sender: Sender) -> (String, String) {
+async fn sender_profile(rt: &Runtime, sender: Sender) -> (String, String) {
     match sender {
         Sender::User(user_id) => {
-            let user = rt.td.user(user_id).ok();
-            let full = rt.td.user_full(user_id).ok();
+            let user = rt.td.user(user_id).await.ok();
+            let full = rt.td.user_full(user_id).await.ok();
             let name = user
                 .as_ref()
                 .map(|user| {
@@ -1043,20 +1081,28 @@ fn sender_profile(rt: &Runtime, sender: Sender) -> (String, String) {
             (name, bio)
         }
         Sender::Chat(chat_id) => {
-            let title = rt.td.chat_title(chat_id);
-            let bio = rt
+            let title = rt.td.chat_title(chat_id).await;
+            let bio = match rt
                 .td
                 .chat(chat_id)
+                .await
                 .ok()
                 .and_then(|chat| chat.get("type").cloned())
                 .and_then(|kind| kind.get("supergroup_id").and_then(Value::as_i64))
-                .and_then(|supergroup_id| rt.td.supergroup_full(supergroup_id).ok())
-                .and_then(|full| {
-                    full.get("description")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_default();
+            {
+                Some(supergroup_id) => rt
+                    .td
+                    .supergroup_full(supergroup_id)
+                    .await
+                    .ok()
+                    .and_then(|full| {
+                        full.get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+                    .unwrap_or_default(),
+                None => String::new(),
+            };
             (title, bio)
         }
     }
@@ -1109,9 +1155,17 @@ fn unique_id_of(file: &Value) -> Option<String> {
 }
 
 /// 拉一次链接元数据（标题 + 描述）。失败返回 `None`，不影响主流程。
-fn fetch_link_preview(rt: &Runtime, url: &str) -> Option<(String, String)> {
-    let response = rt
-        .http
+async fn fetch_link_preview(rt: &Runtime, url: &str) -> Option<(String, String)> {
+    let agent = rt.http.clone();
+    let url = url.to_owned();
+    tokio::task::spawn_blocking(move || fetch_link_preview_blocking(agent, &url))
+        .await
+        .ok()
+        .flatten()
+}
+
+fn fetch_link_preview_blocking(agent: ureq::Agent, url: &str) -> Option<(String, String)> {
+    let response = agent
         .get(url)
         .header(
             "User-Agent",

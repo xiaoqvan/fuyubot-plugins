@@ -14,10 +14,10 @@ fn is_channel_or_supergroup(id: i64) -> bool {
 }
 
 /// `/addfwdbl <chat_id|@username>`
-pub fn add(rt: &Runtime, command: &Command, sender: Sender) {
+pub async fn add(rt: &Runtime, command: &Command, sender: Sender) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
-    if !flow::ensure_bot_admin(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_bot_admin(rt, chat_id, sender, reply_to).await {
         return;
     }
     let words = super::words(command);
@@ -28,7 +28,7 @@ pub fn add(rt: &Runtime, command: &Command, sender: Sender) {
             "用法: /addfwdbl <chat_id|@username>\n要求: chat_id 必须 -100 开头\n例: /addfwdbl -1001234567890\n例: /addfwdbl @durov",
             reply_to,
             20,
-        );
+        ).await;
         return;
     };
 
@@ -41,10 +41,11 @@ pub fn add(rt: &Runtime, command: &Command, sender: Sender) {
                 "无效的用户名，请使用 /addfwdbl @username",
                 reply_to,
                 10,
-            );
+            )
+            .await;
             return;
         }
-        match rt.td.search_public_chat(username) {
+        match rt.td.search_public_chat(username).await {
             Ok(chat) => match chat.get("id").and_then(Value::as_i64) {
                 Some(id) => id,
                 None => {
@@ -54,7 +55,8 @@ pub fn add(rt: &Runtime, command: &Command, sender: Sender) {
                         &format!("未找到用户名对应的对话: @{username}"),
                         reply_to,
                         10,
-                    );
+                    )
+                    .await;
                     return;
                 }
             },
@@ -65,7 +67,8 @@ pub fn add(rt: &Runtime, command: &Command, sender: Sender) {
                     &format!("解析用户名失败: @{username}，{error}"),
                     reply_to,
                     10,
-                );
+                )
+                .await;
                 return;
             }
         }
@@ -79,7 +82,8 @@ pub fn add(rt: &Runtime, command: &Command, sender: Sender) {
                     &format!("无效参数: {raw}\n请使用数字 chat_id 或 @username。"),
                     reply_to,
                     10,
-                );
+                )
+                .await;
                 return;
             }
         }
@@ -92,26 +96,32 @@ pub fn add(rt: &Runtime, command: &Command, sender: Sender) {
             &format!("chat_id 必须是 -100 开头的频道/超级群 ID，当前: {target}"),
             reply_to,
             10,
-        );
+        )
+        .await;
         return;
     }
-    match rt.db.add_forward(target) {
-        Ok(id) => flow::send_tip(
-            rt,
-            chat_id,
-            &format!("✅ 已将 {target} 添加到转发黑名单，记录 ID: {id}"),
-            reply_to,
-            20,
-        ),
-        Err(error) => flow::send_tip(rt, chat_id, &format!("❌ 添加失败: {error}"), reply_to, 20),
+    match rt.db.add_forward(target).await {
+        Ok(id) => {
+            flow::send_tip(
+                rt,
+                chat_id,
+                &format!("✅ 已将 {target} 添加到转发黑名单，记录 ID: {id}"),
+                reply_to,
+                20,
+            )
+            .await
+        }
+        Err(error) => {
+            flow::send_tip(rt, chat_id, &format!("❌ 添加失败: {error}"), reply_to, 20).await
+        }
     };
 }
 
 /// `/rmfwdbl <chat_id>`
-pub fn remove(rt: &Runtime, command: &Command, sender: Sender) {
+pub async fn remove(rt: &Runtime, command: &Command, sender: Sender) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
-    if !flow::ensure_bot_admin(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_bot_admin(rt, chat_id, sender, reply_to).await {
         return;
     }
     let words = super::words(command);
@@ -122,7 +132,8 @@ pub fn remove(rt: &Runtime, command: &Command, sender: Sender) {
             "用法: /rmfwdbl <chat_id>\n要求: chat_id 必须 -100 开头\n例: /rmfwdbl -1001234567890",
             reply_to,
             20,
-        );
+        )
+        .await;
         return;
     };
     let Ok(target) = raw.parse::<i64>() else {
@@ -132,7 +143,8 @@ pub fn remove(rt: &Runtime, command: &Command, sender: Sender) {
             &format!("无效的 chat_id: {raw}，请提供数字 ID。"),
             reply_to,
             10,
-        );
+        )
+        .await;
         return;
     };
     if !is_channel_or_supergroup(target) {
@@ -142,17 +154,19 @@ pub fn remove(rt: &Runtime, command: &Command, sender: Sender) {
             &format!("chat_id 必须是 -100 开头的频道/超级群 ID，当前: {target}"),
             reply_to,
             10,
-        );
+        )
+        .await;
         return;
     }
-    if rt.db.remove_forward(target) {
+    if rt.db.remove_forward(target).await {
         flow::send_tip(
             rt,
             chat_id,
             &format!("✅ 已将 {target} 从转发黑名单移除。"),
             reply_to,
             20,
-        );
+        )
+        .await;
     } else {
         flow::send_tip(
             rt,
@@ -160,6 +174,7 @@ pub fn remove(rt: &Runtime, command: &Command, sender: Sender) {
             &format!("⚠️ 未找到 chat_id 为 {target} 的转发黑名单记录。"),
             reply_to,
             20,
-        );
+        )
+        .await;
     }
 }

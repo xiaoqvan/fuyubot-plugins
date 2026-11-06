@@ -18,7 +18,7 @@ use crate::util::param_i64;
 
 const BAN_EMOJI_ID: i64 = 6_122_821_483_581_416_154;
 
-pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
+pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
     let Some(group) = param_i64(&ctx.params, "cid") else {
         return;
     };
@@ -27,9 +27,12 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
     };
 
     let is_target = ctx.sender_user_id == user_id;
-    let is_admin = rt.td.is_admin(group, Sender::User(ctx.sender_user_id));
+    let is_admin = rt
+        .td
+        .is_admin(group, Sender::User(ctx.sender_user_id))
+        .await;
     if !is_target && !is_admin {
-        answer(rt, ctx, "你没有权限使用该按钮", true, 3600);
+        answer(rt, ctx, "你没有权限使用该按钮", true, 3600).await;
         return;
     }
     let operator_label = if is_admin && !is_target {
@@ -38,11 +41,11 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
         "本人点击"
     };
 
-    let Some(user) = rt.td.user(user_id).ok() else {
-        answer(rt, ctx, "无法获取用户信息", true, 60);
+    let Some(user) = rt.td.user(user_id).await.ok() else {
+        answer(rt, ctx, "无法获取用户信息", true, 60).await;
         return;
     };
-    let full = rt.td.user_full(user_id).ok();
+    let full = rt.td.user_full(user_id).await.ok();
     let name = format!(
         "{}{}",
         user.get("first_name").and_then(Value::as_str).unwrap_or(""),
@@ -64,7 +67,7 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
         }
     );
 
-    let channel = flow::personal_channel(rt, user_id);
+    let channel = flow::personal_channel(rt, user_id).await;
     let mut input = ModerationInput::profile(name.clone(), bio.clone());
     if let Some((channel_name, description)) = &channel {
         input = input.with_personal_channel(channel_name.clone(), description.clone());
@@ -79,7 +82,8 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
             message_type: None,
             force_default: false,
         },
-    );
+    )
+    .await;
 
     let still_ad = result.profile_hit() && result.confidence >= 0.8;
     let confidence_pct = text::confidence_percent(result.confidence);
@@ -89,8 +93,8 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
         result.reason.clone()
     };
 
-    let chat_mention = rt.td.sender_mention(Sender::Chat(group), true);
-    let chat_name = rt.td.chat_title(group);
+    let chat_mention = rt.td.sender_mention(Sender::Chat(group), true).await;
+    let chat_name = rt.td.chat_title(group).await;
 
     if still_ad {
         let fail_text = format!(
@@ -108,27 +112,33 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
                     .emoji(BAN_EMOJI_ID),
             ],
         ];
-        let edited = rt.td.edit_text(
-            ctx.chat_id,
-            ctx.message_id,
-            text::markdown(
-                &format!(
-                    "{user_mention}，你的个人信息中有疑似广告内容，请更改你的个人信息。\n\n**最近一次复审**: ❌ 未通过 ({confidence_pct})\n**原因**: {reason}\n\n📝 修改后请点击下方按钮重新审查，**1小时内**未修改并通过复审将被封禁。"
+        let edited = rt
+            .td
+            .edit_text(
+                ctx.chat_id,
+                ctx.message_id,
+                text::markdown(
+                    &format!(
+                        "{user_mention}，你的个人信息中有疑似广告内容，请更改你的个人信息。\n\n**最近一次复审**: ❌ 未通过 ({confidence_pct})\n**原因**: {reason}\n\n📝 修改后请点击下方按钮重新审查，**1小时内**未修改并通过复审将被封禁。"
+                    ),
                 ),
-            ),
-            buttons,
-            Some(true),
-        );
+                buttons,
+                Some(true),
+            )
+            .await;
         if edited.is_none() {
             // 原消息可能已经被删：退回群里新发一条
-            let _ = rt.td.send_text(
-                group,
-                text::markdown(&fail_text),
-                None,
-                Vec::new(),
-                None,
-                Some(true),
-            );
+            let _ = rt
+                .td
+                .send_text(
+                    group,
+                    text::markdown(&fail_text),
+                    None,
+                    Vec::new(),
+                    None,
+                    Some(true),
+                )
+                .await;
         }
         send_review_log(
             rt,
@@ -142,7 +152,8 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
                 format!("**Confidence**: {confidence_pct}"),
                 format!("**Reason**: {reason}"),
             ],
-        );
+        )
+        .await;
         answer(
             rt,
             ctx,
@@ -151,7 +162,8 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
             ),
             true,
             300,
-        );
+        )
+        .await;
         log::info(
             &rt.host,
             format!(
@@ -164,23 +176,26 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
 
     // ── 通过：解除禁言 ────────────────────────────────────────
     let member = Sender::User(user_id);
-    if let Err(error) = rt.td.unban(group, member) {
+    if let Err(error) = rt.td.unban(group, member).await {
         log::warn(&rt.host, format!("复审通过但解除禁言失败：{error}"));
     }
-    rt.db.mark_mute_review_approved(group, user_id);
-    rt.db.mark_watch_review_approved(group, user_id);
+    rt.db.mark_mute_review_approved(group, user_id).await;
+    rt.db.mark_watch_review_approved(group, user_id).await;
 
-    let _ = rt.td.edit_text(
-        ctx.chat_id,
-        ctx.message_id,
-        text::markdown(&format!(
-            "✅ {user_mention} 的个人信息复审已通过，已解除禁言。\n**操作**: {operator_label}({})",
-            ctx.sender_user_id
-        )),
-        Vec::new(),
-        Some(true),
-    );
-    answer(rt, ctx, "✅ 复审通过，已解除禁言", false, 10);
+    let _ = rt
+        .td
+        .edit_text(
+            ctx.chat_id,
+            ctx.message_id,
+            text::markdown(&format!(
+                "✅ {user_mention} 的个人信息复审已通过，已解除禁言。\n**操作**: {operator_label}({})",
+                ctx.sender_user_id
+            )),
+            Vec::new(),
+            Some(true),
+        )
+        .await;
+    answer(rt, ctx, "✅ 复审通过，已解除禁言", false, 10).await;
     crate::action::schedule_delete(rt, ctx.chat_id, ctx.message_id, 10);
 
     send_review_log(
@@ -195,7 +210,8 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
             format!("**Confidence**: {confidence_pct}"),
             "**Reason**: 资料已修改，AI复审未检出广告".to_owned(),
         ],
-    );
+    )
+    .await;
     log::info(
         &rt.host,
         format!(
@@ -207,17 +223,20 @@ pub fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
 }
 
 /// 往群绑定的日志频道写复审记录。
-fn send_review_log(rt: &Runtime, group: i64, lines: Vec<String>) {
-    let config = rt.db.config_or_default(group);
+async fn send_review_log(rt: &Runtime, group: i64, lines: Vec<String>) {
+    let config = rt.db.config_or_default(group).await;
     let Some(channel) = config.log_channel else {
         return;
     };
-    let _ = rt.td.send_text(
-        channel,
-        text::markdown(&lines.join("\n")),
-        None,
-        Vec::new(),
-        None,
-        Some(true),
-    );
+    let _ = rt
+        .td
+        .send_text(
+            channel,
+            text::markdown(&lines.join("\n")),
+            None,
+            Vec::new(),
+            None,
+            Some(true),
+        )
+        .await;
 }

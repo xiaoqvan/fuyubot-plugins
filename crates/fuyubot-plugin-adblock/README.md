@@ -200,7 +200,11 @@ storage.mongo 连通（服务默认库 xqanime，集合 8 个；本插件用 adb
 5. **数据库走 `storage.mongo`**：不自带连接池，也不依赖宿主私有的 db API；
 6. **`/setlogchannel` 更严格**：只有测试消息真的发出去了才写配置（原版失败也报成功）；
 7. **链接预览自己抓**：不拖 `link-preview-js`，只取 `<title>` 与 description；
-8. **HTTP 用 `ureq`（同步）**：插件不拖 async runtime，所有网络调用都在工作线程。
+8. **全程 tokio 异步**：事件回调只把更新 `submit` 成任务，TDLib 往返走宿主的
+   `ResponseRouter` 真 `await`，Mongo 服务调用与 `ureq` 请求（同步客户端）丢给
+   `spawn_blocking`——没有线程池、没有调度线程，延时/周期任务用 `tokio::time`。
+9. **HTTP 仍用 `ureq`（同步客户端）**：不为了异步再拖一个 HTTP 客户端进来，
+   请求整段进 `spawn_blocking`，行为与原来一致。
 
 判定阈值、文案、按钮、超时时间、复审规则都按原逻辑保留，各模块头部有对应说明。
 
@@ -218,9 +222,9 @@ storage.mongo 连通（服务默认库 xqanime，集合 8 个；本插件用 adb
 crates/fuyubot-plugin-adblock/
   src/
     lib.rs         插件入口：inject / 订阅 / 周期任务
-    runtime.rs     共享状态、线程池、调度器
+    runtime.rs     共享状态、tokio 运行时（闸门 + 在飞计数 + 停机顺序）
     store.rs       storage.mongo 客户端 + 集合与查询（兼容旧库）
-    api.rs         TDLib 调用（阻塞，只在 worker 里用）
+    api.rs         TDLib 调用（async，经 ResponseRouter 等响应）
     detect.rs      内容检测
     action.rs      处置与通知
     flow/          消息、入群、资料复检、超时扫描、消息索引、GKY 转发

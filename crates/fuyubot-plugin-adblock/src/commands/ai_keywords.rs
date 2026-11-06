@@ -15,35 +15,35 @@ use crate::util::escape_inline_code;
 
 const USAGE: &str = "用法:\n  /adkew add <关键词>\n  /adkew rm <关键词>\n  /adkew list\n\n示例:\n  /adkew add 兼职\n  /adkew rm 兼职\n  /adkew list";
 
-pub fn handle(rt: &Runtime, command: &Command, sender: Sender) {
+pub async fn handle(rt: &Runtime, command: &Command, sender: Sender) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
-    if !flow::ensure_owner(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_owner(rt, chat_id, sender, reply_to).await {
         return;
     }
     let words = super::words(command);
     let Some(sub) = words.first().map(String::as_str) else {
-        flow::send_tip(rt, chat_id, USAGE, reply_to, 30);
+        flow::send_tip(rt, chat_id, USAGE, reply_to, 30).await;
         return;
     };
     match sub {
         "add" if words.len() >= 2 => {
             let keyword = words[1..].join(" ").trim().to_owned();
             if keyword.is_empty() {
-                flow::send_tip(rt, chat_id, "❌ 关键词不能为空。", reply_to, 10);
+                flow::send_tip(rt, chat_id, "❌ 关键词不能为空。", reply_to, 10).await;
                 return;
             }
-            add(rt, chat_id, reply_to, &keyword);
+            add(rt, chat_id, reply_to, &keyword).await;
         }
         "rm" if words.len() >= 2 => {
             let keyword = words[1..].join(" ").trim().to_owned();
             if keyword.is_empty() {
-                flow::send_tip(rt, chat_id, "❌ 关键词不能为空。", reply_to, 10);
+                flow::send_tip(rt, chat_id, "❌ 关键词不能为空。", reply_to, 10).await;
                 return;
             }
-            remove(rt, chat_id, reply_to, &keyword);
+            remove(rt, chat_id, reply_to, &keyword).await;
         }
-        "list" => list(rt, chat_id, reply_to),
+        "list" => list(rt, chat_id, reply_to).await,
         _ => {
             flow::send_tip(
                 rt,
@@ -51,7 +51,8 @@ pub fn handle(rt: &Runtime, command: &Command, sender: Sender) {
                 "❌ 未知子命令。可用: add, rm, list",
                 reply_to,
                 10,
-            );
+            )
+            .await;
         }
     }
 }
@@ -102,13 +103,13 @@ fn find_conflict(keyword: &str, current: &[String]) -> Option<Conflict> {
     None
 }
 
-fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
-    let current = rt.db.global_ai_keywords();
+async fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
+    let current = rt.db.global_ai_keywords().await;
     let mut notice = String::new();
     if let Some(conflict) = find_conflict(keyword, &current) {
         match conflict {
             Conflict::Block(message) => {
-                flow::send_tip(rt, chat_id, &message, reply_to, 15);
+                flow::send_tip(rt, chat_id, &message, reply_to, 15).await;
                 return;
             }
             Conflict::Allow(message) => notice = format!("\n{message}"),
@@ -116,7 +117,7 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
     }
     let mut keywords = current;
     keywords.push(keyword.to_owned());
-    rt.db.set_global_ai_keywords(keywords);
+    rt.db.set_global_ai_keywords(keywords).await;
     flow::send_tip(
         rt,
         chat_id,
@@ -126,12 +127,13 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
         ),
         reply_to,
         20,
-    );
+    )
+    .await;
     log::info(&rt.host, format!("[AIKeywords] 添加触发关键词: {keyword}"));
 }
 
-fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
-    let current = rt.db.global_ai_keywords();
+async fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
+    let current = rt.db.global_ai_keywords().await;
     let target = normalize(keyword);
     let mut keywords = current.clone();
     keywords.retain(|existing| normalize(existing) != target);
@@ -142,10 +144,11 @@ fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
             &format!("❌ 未找到关键词 `{}`。", escape_inline_code(keyword)),
             reply_to,
             10,
-        );
+        )
+        .await;
         return;
     }
-    rt.db.set_global_ai_keywords(keywords);
+    rt.db.set_global_ai_keywords(keywords).await;
     flow::send_tip(
         rt,
         chat_id,
@@ -155,14 +158,15 @@ fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, keyword: &str) {
         ),
         reply_to,
         20,
-    );
+    )
+    .await;
     log::info(&rt.host, format!("[AIKeywords] 移除触发关键词: {keyword}"));
 }
 
-fn list(rt: &Runtime, chat_id: i64, reply_to: Option<i64>) {
-    let keywords = rt.db.global_ai_keywords();
+async fn list(rt: &Runtime, chat_id: i64, reply_to: Option<i64>) {
+    let keywords = rt.db.global_ai_keywords().await;
     if keywords.is_empty() {
-        flow::send_tip(rt, chat_id, "📭 暂无全局 AI 审查触发关键词。", reply_to, 15);
+        flow::send_tip(rt, chat_id, "📭 暂无全局 AI 审查触发关键词。", reply_to, 15).await;
         return;
     }
     let body = keywords
@@ -180,5 +184,5 @@ fn list(rt: &Runtime, chat_id: i64, reply_to: Option<i64>) {
         ),
         reply_to,
         60,
-    );
+    ).await;
 }

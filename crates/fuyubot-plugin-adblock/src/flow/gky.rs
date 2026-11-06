@@ -47,7 +47,7 @@ pub fn parse_ban_record(body: &str) -> Option<(i64, String)> {
 }
 
 /// 处理一条消息：是 GKY 的封禁播报就转到群日志频道。
-pub fn forward_ban_record(rt: &Runtime, message: &Value) {
+pub async fn forward_ban_record(rt: &Runtime, message: &Value) {
     let Some(chat_id) = message.get("chat_id").and_then(Value::as_i64) else {
         return;
     };
@@ -76,28 +76,34 @@ pub fn forward_ban_record(rt: &Runtime, message: &Value) {
         return;
     };
 
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     let Some(channel) = config.log_channel else {
         return;
     };
-    let title = rt.td.chat_title(chat_id);
+    let title = rt.td.chat_title(chat_id).await;
     let time = message
         .get("date")
         .and_then(Value::as_i64)
         .map(|seconds| fmt_utc_plain(seconds * 1000))
         .unwrap_or_default();
-    let user_mention = rt.td.sender_mention(crate::api::Sender::User(tgid), true);
+    let user_mention = rt
+        .td
+        .sender_mention(crate::api::Sender::User(tgid), true)
+        .await;
     let body = format!(
         "#GKYBAN\nTGID: {user_mention}\nChat ID: {chat_id}({title})\nReason: [{reason}](https://gkybot.gmeow.cc/banlist?tgid={tgid})\ntime: {time}\n\n该用户为 @GodKnowYouBot 封禁，与本bot无关,本BOT只是转发封禁记录到日志频道,请勿在群内讨论封禁事宜,如有疑问请联系群主或管理员"
     );
-    let _ = rt.td.send_text(
-        channel,
-        text::markdown(&body),
-        None,
-        Vec::new(),
-        None,
-        Some(false),
-    );
+    let _ = rt
+        .td
+        .send_text(
+            channel,
+            text::markdown(&body),
+            None,
+            Vec::new(),
+            None,
+            Some(false),
+        )
+        .await;
     crate::log::info(
         &rt.host,
         format!(

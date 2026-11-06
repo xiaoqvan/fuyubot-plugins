@@ -1019,7 +1019,7 @@ pub fn my_usernames(host: &HostApi) -> Vec<String> {
 
 // ── 发送门面（ABI v5：op 下发 + response 通道接回结果） ────────────
 
-use fuyubot_abi::{FILTER_EVENT_TYPE_KEY, HostApi, LogLevel, RESPONSE_EVENT, RequestId, WaitHandle};
+use fuyubot_abi::{FILTER_EVENT_TYPE_KEY, HostApi, LogLevel, RESPONSE_EVENT, WaitHandle};
 
 /// simplify 调用的统一错误。插件侧一般只需要 `format!("{error}")` 记日志。
 #[derive(Debug)]
@@ -1098,31 +1098,34 @@ impl Simplify {
     }
 
     /// 发消息并等到发送结局：成功返回最终 `Message`，失败 / 超时返回错误。
-    pub fn send_message(
+    pub async fn send_message(
         &self,
         chat_id: i64,
         params: &SendMessageParams,
     ) -> Result<Value, SimplifyError> {
         let payload = send_params(chat_id, params, &|text: &Text| self.formatted(text));
         self.invoke_async("send_message", payload, params.timeout_ms)
+            .await
     }
 
     /// 改一条消息的文本（可同时换键盘），等到改完的 `Message`。
-    pub fn edit_message_text(
+    pub async fn edit_message_text(
         &self,
         chat_id: i64,
         message_id: i64,
         params: &EditTextParams,
     ) -> Result<Value, SimplifyError> {
-        let payload =
-            edit_text_params(chat_id, message_id, params, &|text: &Text| self.formatted(text));
+        let payload = edit_text_params(chat_id, message_id, params, &|text: &Text| {
+            self.formatted(text)
+        });
         self.invoke_async("edit_message_text", payload, params.timeout_ms)
+            .await
     }
 
     /// 删消息（`deleteMessages`），`revoke = true` 表示对所有人撤回。
     ///
     /// 成功是 `Ok`（TDLib 的 `ok`，没有内容），失败（权限不够、消息太老）进错误。
-    pub fn delete_message(
+    pub async fn delete_message(
         &self,
         chat_id: i64,
         message_ids: impl IntoIterator<Item = i64>,
@@ -1135,21 +1138,8 @@ impl Simplify {
             "revoke": revoke,
         });
         self.invoke_async("delete_messages", args, timeout_ms)
+            .await
             .map(|_| ())
-    }
-
-    /// 等某个**裸请求**（`HostApi::td_invoke_simplified` 发出的）的响应：
-    /// `"response"` 通道按 `request_id` 过滤。
-    ///
-    /// 编辑类方法靠它拿改完的 `Message`；TDLib 报错时拿到的同样是响应
-    /// （`@type == "error"`）。超时返回 `None`。⚠️ **阻塞**当前线程。
-    pub fn wait_response(&self, request: RequestId, timeout_ms: u64) -> Option<Value> {
-        let filter = json!({
-            FILTER_EVENT_TYPE_KEY: RESPONSE_EVENT,
-            "request_id": request.id,
-        })
-        .to_string();
-        wait_payload(self.host.wait_for_update(&filter, timeout_ms))
     }
 
     // ── 内部：下发一条异步 op 并等回 `response` 通道的 `simplifyResult` ──────────
@@ -1157,7 +1147,10 @@ impl Simplify {
     /// `payload` 已经是该 TDLib 方法的请求体（构造器输出）；这里包成 op JSON 下发，
     /// 再按 `request_id` 在 `response` 通道等回
     /// `{"@type":"simplifyResult","ok","result"|"error"}`。
-    fn invoke_async(
+    ///
+    /// 「发 + 等」这一段是宿主的**同步阻塞** API（`wait_for_update` 干等回调），
+    /// 整体丢进 `spawn_blocking`：async 任务里不能占着 tokio worker 干等。
+    async fn invoke_async(
         &self,
         op: &str,
         payload: Value,
@@ -1168,44 +1161,58 @@ impl Simplify {
             _ => {
                 return Err(SimplifyError::BadJson(format!(
                     "op `{op}` 的请求体不是对象：{payload}"
-                )))
+                )));
             }
         };
         args.insert("timeout_ms".to_owned(), json!(timeout_ms));
         let op_json = json!({ "op": op, "args": Value::Object(args) }).to_string();
 
-        let request = self
-            .host
-            .simplify_invoke(&op_json)
-            .map_err(|error| SimplifyError::Host(error.to_string()))?;
-        if !request.is_valid() {
-            return Err(SimplifyError::Host(format!(
-                "simplify_invoke(`{op}`) 返回无效请求号"
-            )));
-        }
+        let host = self.host;
+        let op = op.to_owned();
+        tokio::task::spawn_blocking(move || invoke_blocking(host, &op, &op_json, timeout_ms))
+            .await
+            .map_err(|join| SimplifyError::Host(format!("阻塞任务被打断：{join}")))?
+    }
+}
 
-        // 比宿主侧 op 自己的超时再多等一点，确保能接住超时 / 错误结果。
-        let wait_ms = timeout_ms.saturating_add(2_000);
-        let filter = json!({ FILTER_EVENT_TYPE_KEY: RESPONSE_EVENT, "request_id": request.id })
-            .to_string();
-        let raw = wait_raw(self.host.wait_for_update(&filter, wait_ms)).ok_or(SimplifyError::NoMatch)?;
-        let payload: Value =
-            serde_json::from_str(&raw).map_err(|error| SimplifyError::BadJson(error.to_string()))?;
-        match payload.get("ok").and_then(Value::as_bool) {
-            Some(true) => Ok(payload.get("result").cloned().unwrap_or(Value::Null)),
-            _ => {
-                let code = payload
-                    .pointer("/error/code")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_owned();
-                let message = payload
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
-                Err(SimplifyError::Op { code, message })
-            }
+/// [`Simplify::invoke_async`] 的阻塞半截：下发 op + 等 `simplifyResult`。
+/// 只在 `spawn_blocking` 线程里跑（会占住调用线程干等宿主回调）。
+fn invoke_blocking(
+    host: HostApi,
+    op: &str,
+    op_json: &str,
+    timeout_ms: u64,
+) -> Result<Value, SimplifyError> {
+    let request = host
+        .simplify_invoke(op_json)
+        .map_err(|error| SimplifyError::Host(error.to_string()))?;
+    if !request.is_valid() {
+        return Err(SimplifyError::Host(format!(
+            "simplify_invoke(`{op}`) 返回无效请求号"
+        )));
+    }
+
+    // 比宿主侧 op 自己的超时再多等一点，确保能接住超时 / 错误结果。
+    let wait_ms = timeout_ms.saturating_add(2_000);
+    let filter =
+        json!({ FILTER_EVENT_TYPE_KEY: RESPONSE_EVENT, "request_id": request.id }).to_string();
+    let raw = wait_raw(host.wait_for_update(&filter, wait_ms)).ok_or(SimplifyError::NoMatch)?;
+    let payload: Value =
+        serde_json::from_str(&raw).map_err(|error| SimplifyError::BadJson(error.to_string()))?;
+    match payload.get("ok").and_then(Value::as_bool) {
+        Some(true) => Ok(payload.get("result").cloned().unwrap_or(Value::Null)),
+        _ => {
+            let code = payload
+                .pointer("/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_owned();
+            let message = payload
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_owned();
+            Err(SimplifyError::Op { code, message })
         }
     }
 }
@@ -1219,12 +1226,6 @@ fn wait_raw(handle: WaitHandle) -> Option<String> {
     // 这里在读任何其它宿主调用之前就拷走，不会越界。
     let payload = unsafe { std::ffi::CStr::from_ptr(handle.payload_json) };
     Some(payload.to_string_lossy().into_owned())
-}
-
-/// [`Simplify::wait_response`] 的收尾：响应 JSON → `Value`。
-fn wait_payload(handle: WaitHandle) -> Option<Value> {
-    let raw = wait_raw(handle)?;
-    serde_json::from_str(&raw).ok()
 }
 
 #[cfg(test)]

@@ -39,8 +39,6 @@ pub mod spam;
 pub mod spec;
 pub mod whitelist;
 
-use std::sync::Arc;
-
 use fuyubot_abi::HostApi;
 use serde_json::Value;
 
@@ -57,7 +55,7 @@ pub const HELP_SERVICE: &str = "fuyubot.help.commands";
 ///
 /// 返回值表示「这条消息是不是本插件的命令」（`true` 也包括被权限拒绝的情况）。
 /// **调用方不要据此跳过检测**：TS 里命令分发与消息检测是两条独立路径。
-pub fn dispatch(rt: &Arc<Runtime>, update: &Value, sender: Sender) -> bool {
+pub async fn dispatch(rt: &Runtime, update: &Value, sender: Sender) -> bool {
     let Some(command) = crate::simplify::command_of(update) else {
         return false;
     };
@@ -74,7 +72,7 @@ pub fn dispatch(rt: &Arc<Runtime>, update: &Value, sender: Sender) -> bool {
         return false;
     }
     // scope 先于 permission：私聊命令在群里连「仅限主人」都不该说。
-    if !spec.allows_scope(rt, command.chat_id) {
+    if !spec.allows_scope(rt, command.chat_id).await {
         log::debug(
             &rt.host,
             format!(
@@ -96,7 +94,7 @@ pub fn dispatch(rt: &Arc<Runtime>, update: &Value, sender: Sender) -> bool {
         );
         return true;
     }
-    (spec.handler)(rt, &command, sender, message);
+    (spec.handler)(rt, &command, sender, message).await;
     true
 }
 

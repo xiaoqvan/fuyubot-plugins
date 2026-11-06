@@ -13,7 +13,7 @@ use crate::runtime::Runtime;
 
 const USAGE: &str = "用法：\n/whitelist add <ID|@username|reply>\n/whitelist rm <ID|@username|reply>\n或使用 /rmwhitelist <ID|@username|reply> 来直接移除";
 
-pub fn handle(
+pub async fn handle(
     rt: &Runtime,
     command: &Command,
     sender: Sender,
@@ -24,13 +24,13 @@ pub fn handle(
     let reply_to = Some(command.message_id);
 
     // Bot 没有删消息的权限时原版是静默返回：连提示都发不出去的局面。
-    if !flow::am_i_admin(rt, chat_id) {
+    if !flow::am_i_admin(rt, chat_id).await {
         return;
     }
-    if !flow::ensure_group(rt, chat_id, reply_to) {
+    if !flow::ensure_group(rt, chat_id, reply_to).await {
         return;
     }
-    if !flow::ensure_admin(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_admin(rt, chat_id, sender, reply_to).await {
         return;
     }
 
@@ -47,49 +47,51 @@ pub fn handle(
     }
 
     let Some(action) = action.filter(|action| matches!(action.as_str(), "add" | "rm")) else {
-        flow::send_tip(rt, chat_id, &format!("无效的操作。\n{USAGE}"), reply_to, 10);
+        flow::send_tip(rt, chat_id, &format!("无效的操作。\n{USAGE}"), reply_to, 10).await;
         return;
     };
 
-    let Some(id) = resolve_id(rt, command, message, target.as_deref()) else {
+    let Some(id) = resolve_id(rt, command, message, target.as_deref()).await else {
         flow::send_tip(
             rt,
             chat_id,
             "请提供有效的参数。例如：\n/whitelist add <ID|@username>\n或回复用户的消息并使用 /whitelist add reply",
             reply_to,
             10,
-        );
+        ).await;
         return;
     };
 
     match action.as_str() {
         "add" => {
-            rt.db.set_whitelisted(chat_id, id, true);
+            rt.db.set_whitelisted(chat_id, id, true).await;
             flow::send_tip(
                 rt,
                 chat_id,
                 &format!("✅ 已将 {id} 添加到群组白名单。"),
                 reply_to,
                 10,
-            );
+            )
+            .await;
             log::info(&rt.host, format!("群 {chat_id} 白名单 +{id}"));
         }
         _ => {
-            rt.db.set_whitelisted(chat_id, id, false);
+            rt.db.set_whitelisted(chat_id, id, false).await;
             flow::send_tip(
                 rt,
                 chat_id,
                 &format!("✅ 已将 {id} 从群组白名单中移除。"),
                 reply_to,
                 10,
-            );
+            )
+            .await;
             log::info(&rt.host, format!("群 {chat_id} 白名单 -{id}"));
         }
     }
 }
 
 /// `reply` / 数字 ID / `@username` → 一个 TGID。
-fn resolve_id(
+async fn resolve_id(
     rt: &Runtime,
     command: &Command,
     message: &Value,
@@ -102,7 +104,7 @@ fn resolve_id(
                 reply.get("@type").and_then(Value::as_str) == Some("messageReplyToMessage")
             })?;
             let reply_id = reply.get("message_id").and_then(Value::as_i64)?;
-            let replied = rt.td.message(command.chat_id, reply_id)?;
+            let replied = rt.td.message(command.chat_id, reply_id).await?;
             let sender = crate::flow::sender_of(&replied)?;
             Some(sender.id())
         }
@@ -111,7 +113,7 @@ fn resolve_id(
             if username.is_empty() {
                 return None;
             }
-            match rt.td.search_public_chat(username) {
+            match rt.td.search_public_chat(username).await {
                 Ok(chat) => chat.get("id").and_then(Value::as_i64),
                 Err(error) => {
                     let message = if error.message.contains("USERNAME_NOT_OCCUPIED") {
@@ -121,7 +123,8 @@ fn resolve_id(
                     } else {
                         "无法找到该用户名的用户。请检查用户名是否正确。"
                     };
-                    flow::send_tip(rt, command.chat_id, message, Some(command.message_id), 10);
+                    flow::send_tip(rt, command.chat_id, message, Some(command.message_id), 10)
+                        .await;
                     None
                 }
             }

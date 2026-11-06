@@ -15,21 +15,21 @@ use crate::runtime::Runtime;
 
 const USAGE: &str = "🤖 **内置 AI 授权群管理**\n\n用法:\n  /adaiset add <chat_id 或 @群用户名>  — 添加授权群\n  /adaiset rm <chat_id>  — 移除授权群\n  /adaiset list  — 查看所有授权群\n\n示例:\n  /adaiset add -1001234567890\n  /adaiset add @mygroup\n  /adaiset rm -1001234567890\n  /adaiset list";
 
-pub fn handle(rt: &Runtime, command: &Command, sender: Sender) {
+pub async fn handle(rt: &Runtime, command: &Command, sender: Sender) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
-    if !flow::ensure_owner(rt, chat_id, sender, reply_to) {
+    if !flow::ensure_owner(rt, chat_id, sender, reply_to).await {
         return;
     }
     let words = super::words(command);
     let Some(sub) = words.first().map(|word| word.to_lowercase()) else {
-        flow::send_tip(rt, chat_id, USAGE, reply_to, 60);
+        flow::send_tip(rt, chat_id, USAGE, reply_to, 60).await;
         return;
     };
     match sub.as_str() {
-        "add" => add(rt, chat_id, reply_to, words.get(1)),
-        "rm" => remove(rt, chat_id, reply_to, words.get(1)),
-        "list" => list(rt, chat_id, reply_to),
+        "add" => add(rt, chat_id, reply_to, words.get(1)).await,
+        "rm" => remove(rt, chat_id, reply_to, words.get(1)).await,
+        "list" => list(rt, chat_id, reply_to).await,
         other => {
             flow::send_tip(
                 rt,
@@ -37,12 +37,13 @@ pub fn handle(rt: &Runtime, command: &Command, sender: Sender) {
                 &format!("❌ 未知子命令: {other}\n可用子命令：add、rm、list"),
                 reply_to,
                 10,
-            );
+            )
+            .await;
         }
     }
 }
 
-fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String>) {
+async fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String>) {
     let Some(target) = target else {
         flow::send_tip(
             rt,
@@ -50,11 +51,11 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String
             "❌ 请提供 chat_id 或 @群用户名，例如：/adaiset add -1001234567890 或 /adaiset add @mygroup",
             reply_to,
             15,
-        );
+        ).await;
         return;
     };
     let (resolved, title) = if let Some(username) = target.strip_prefix('@') {
-        match rt.td.search_public_chat(username) {
+        match rt.td.search_public_chat(username).await {
             Ok(chat) => match chat.get("id").and_then(Value::as_i64) {
                 Some(id) => (
                     id,
@@ -72,7 +73,7 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String
                         ),
                         reply_to,
                         15,
-                    );
+                    ).await;
                     return;
                 }
             },
@@ -83,7 +84,8 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String
                     &format!("❌ 解析 @{username} 失败: {error}"),
                     reply_to,
                     15,
-                );
+                )
+                .await;
                 return;
             }
         }
@@ -97,13 +99,14 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String
                     &format!("❌ 无效的 chat_id: {target}，群组 chat_id 必须为负数。"),
                     reply_to,
                     15,
-                );
+                )
+                .await;
                 return;
             }
         }
     };
 
-    if rt.db.add_ai_default_chat(resolved, &title) {
+    if rt.db.add_ai_default_chat(resolved, &title).await {
         flow::send_tip(
             rt,
             chat_id,
@@ -117,7 +120,8 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String
             ),
             reply_to,
             30,
-        );
+        )
+        .await;
         log::info(
             &rt.host,
             format!("Bot 主人将群 {resolved}（{title}）添加到内置 AI 授权群"),
@@ -136,11 +140,12 @@ fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String
             ),
             reply_to,
             15,
-        );
+        )
+        .await;
     }
 }
 
-fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String>) {
+async fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&String>) {
     let Some(target) = target else {
         flow::send_tip(
             rt,
@@ -148,19 +153,21 @@ fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&Str
             "❌ 请提供要移除的 chat_id，例如：/adaiset rm -1001234567890",
             reply_to,
             15,
-        );
+        )
+        .await;
         return;
     };
     match target.parse::<i64>() {
         Ok(id) if id < 0 => {
-            if rt.db.remove_ai_default_chat(id) {
+            if rt.db.remove_ai_default_chat(id).await {
                 flow::send_tip(
                     rt,
                     chat_id,
                     &format!("✅ 已将群 `{id}` 从内置 AI 授权群列表中移除。"),
                     reply_to,
                     20,
-                );
+                )
+                .await;
                 log::info(
                     &rt.host,
                     format!("Bot 主人将群 {id} 从内置 AI 授权群列表中移除"),
@@ -172,7 +179,8 @@ fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&Str
                     "❌ 移除失败，该群可能不在授权列表中。",
                     reply_to,
                     15,
-                );
+                )
+                .await;
             }
         }
         _ => {
@@ -182,15 +190,16 @@ fn remove(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&Str
                 &format!("❌ 无效的 chat_id: {target}，群组 chat_id 必须为负数。"),
                 reply_to,
                 15,
-            );
+            )
+            .await;
         }
     }
 }
 
-fn list(rt: &Runtime, chat_id: i64, reply_to: Option<i64>) {
-    let chats = rt.db.list_ai_default_chats();
+async fn list(rt: &Runtime, chat_id: i64, reply_to: Option<i64>) {
+    let chats = rt.db.list_ai_default_chats().await;
     if chats.is_empty() {
-        flow::send_tip(rt, chat_id, "📋 内置 AI 授权群列表为空。", reply_to, 15);
+        flow::send_tip(rt, chat_id, "📋 内置 AI 授权群列表为空。", reply_to, 15).await;
         return;
     }
     let mut lines = vec!["📋 **内置 AI 授权群列表：**\n".to_owned()];
@@ -211,5 +220,5 @@ fn list(rt: &Runtime, chat_id: i64, reply_to: Option<i64>) {
     }
     lines.push(format!("\n共 {} 个群", chats.len()));
     lines.push("\n💡 群主可在群内使用 /adconfig 配置自定义 AI 接口覆盖内置默认配置".to_owned());
-    flow::send_tip(rt, chat_id, &lines.join("\n"), reply_to, 60);
+    flow::send_tip(rt, chat_id, &lines.join("\n"), reply_to, 60).await;
 }

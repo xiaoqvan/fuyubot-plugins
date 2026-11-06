@@ -392,7 +392,7 @@ impl ResolvedAi {
 ///
 /// 顺序与 TS 版一致：**群自定义 > 内置默认**；区别在于「何时允许用默认接口」——
 /// TS 版还有一张写死的群名单，这里只认 `/adaiset` 维护的授权列表（以及强制默认的场景）。
-pub fn resolve_ai(rt: &Runtime, chat_id: Option<i64>, force_default: bool) -> ResolvedAi {
+pub async fn resolve_ai(rt: &Runtime, chat_id: Option<i64>, force_default: bool) -> ResolvedAi {
     // `force_default` **先判**：`/spam`、`/adaiadd` 这类场景故意绕开群自定义接口，
     // 用内置模型做判定（TS `aiAdReview.ts` 的 `meta.forceDefault` 同款）。
     // 反过来写（先查群配置）会让这些命令花群自己的 key，结论也和 TS 不一致。
@@ -404,7 +404,7 @@ pub fn resolve_ai(rt: &Runtime, chat_id: Option<i64>, force_default: bool) -> Re
     }
 
     if let Some(chat_id) = chat_id
-        && let Some(config) = rt.db.config(chat_id)
+        && let Some(config) = rt.db.config(chat_id).await
         && config.has_custom_ai()
     {
         return ResolvedAi {
@@ -423,7 +423,10 @@ pub fn resolve_ai(rt: &Runtime, chat_id: Option<i64>, force_default: bool) -> Re
     };
 
     // 内置接口只供给授权群：没有授权记录的群必须自己配。
-    let authorized = chat_id.is_some_and(|chat_id| rt.db.is_ai_default_chat(chat_id));
+    let authorized = match chat_id {
+        Some(chat_id) => rt.db.is_ai_default_chat(chat_id).await,
+        None => false,
+    };
     if !authorized && chat_id.is_some() {
         return ResolvedAi::unusable();
     }
@@ -452,7 +455,7 @@ pub struct AiMeta {
 /// AI 审核：**永远返回结果**，失败信息在 `Reason` 里。
 ///
 /// `photo` 是本地图片路径（多模态）；`chat_id` 用于选接口与写日志。
-pub fn review(
+pub async fn review(
     rt: &Runtime,
     input: &ModerationInput,
     photo: Option<&str>,
@@ -461,7 +464,7 @@ pub fn review(
 ) -> ModerationResult {
     let has_image = photo.is_some();
     let system_prompt = prompt::build(input, has_image);
-    let ai = resolve_ai(rt, chat_id, meta.force_default);
+    let ai = resolve_ai(rt, chat_id, meta.force_default).await;
 
     if !ai.usable() {
         let reason = if chat_id.is_some() {
@@ -484,7 +487,8 @@ pub fn review(
             Some(reason),
             None,
             has_image,
-        );
+        )
+        .await;
         return result;
     }
 
@@ -507,7 +511,7 @@ pub fn review(
     let mut last_error = String::new();
     for attempt in 0..MAX_ATTEMPTS {
         let messages = build_messages(&system_prompt, &user_prompt, image_base64.as_deref());
-        match call_api(rt, &ai, &messages) {
+        match call_api(rt, &ai, &messages).await {
             Ok(content) => {
                 let string = match content {
                     Some(content) => content,
@@ -557,7 +561,8 @@ pub fn review(
                     None,
                     Some(&ai.model),
                     has_image,
-                );
+                )
+                .await;
                 return result;
             }
             Err(error) => {
@@ -587,7 +592,8 @@ pub fn review(
         Some(&reason),
         Some(&ai.model),
         has_image,
-    );
+    )
+    .await;
     result
 }
 
@@ -626,7 +632,11 @@ fn forbids_custom_temperature(model: &str) -> bool {
 }
 
 /// 发一次 `/chat/completions`，返回 `choices[0].message.content`。
-fn call_api(rt: &Runtime, ai: &ResolvedAi, messages: &Value) -> Result<Option<String>, String> {
+async fn call_api(
+    rt: &Runtime,
+    ai: &ResolvedAi,
+    messages: &Value,
+) -> Result<Option<String>, String> {
     let url = format!("{}/chat/completions", ai.base_url);
     let mut body = json!({
         "model": ai.model,
@@ -640,7 +650,7 @@ fn call_api(rt: &Runtime, ai: &ResolvedAi, messages: &Value) -> Result<Option<St
         has_temperature = true;
     }
 
-    let (status, text) = send_json(rt, &url, &ai.api_key, &body)?;
+    let (status, text) = send_json(rt, &url, &ai.api_key, &body).await?;
     let (status, text) = if status != 200 && has_temperature && text.contains("temperature") {
         // 模型不认自定义 temperature：去掉重试一次（TS 版同款补救）。
         log::warn(
@@ -651,7 +661,7 @@ fn call_api(rt: &Runtime, ai: &ResolvedAi, messages: &Value) -> Result<Option<St
         if let Some(object) = retry.as_object_mut() {
             object.remove("temperature");
         }
-        send_json(rt, &url, &ai.api_key, &retry)?
+        send_json(rt, &url, &ai.api_key, &retry).await?
     } else {
         (status, text)
     };
@@ -672,19 +682,36 @@ fn call_api(rt: &Runtime, ai: &ResolvedAi, messages: &Value) -> Result<Option<St
 }
 
 /// 发 JSON 并读回正文（非 2xx 也读，错误信息在正文里才有用）。
-fn send_json(
+///
+/// `ureq` 是同步客户端，请求整段丢进 `spawn_blocking`：async 任务里不能占着
+/// tokio worker 等网络（AI 一次要几秒）。
+async fn send_json(
     rt: &Runtime,
     url: &str,
     api_key: &str,
     body: &Value,
 ) -> Result<(u16, String), String> {
-    let response = rt
-        .http
+    let agent = rt.http.clone();
+    let url = url.to_owned();
+    let api_key = api_key.to_owned();
+    let body = body.to_string();
+    tokio::task::spawn_blocking(move || send_blocking(agent, &url, &api_key, &body))
+        .await
+        .map_err(|join| format!("请求任务被打断：{join}"))?
+}
+
+fn send_blocking(
+    agent: ureq::Agent,
+    url: &str,
+    api_key: &str,
+    body: &str,
+) -> Result<(u16, String), String> {
+    let response = agent
         .post(url)
         .header("Authorization", &format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json")
-        .send(body.to_string())
+        .send(body)
         .map_err(|error| format!("请求失败：{error}"))?;
     let status = response.status().as_u16();
     let mut response = response;
@@ -698,7 +725,7 @@ fn send_json(
 // ── 总日志 ────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-fn write_log(
+async fn write_log(
     rt: &Runtime,
     meta: &AiMeta,
     chat_id: Option<i64>,
@@ -714,9 +741,10 @@ fn write_log(
     };
     let topic = rt.cfg.ai_log_topic.map(crate::simplify::Topic::forum);
 
-    let chat_label = chat_id
-        .map(|chat_id| rt.td.sender_mention(Sender::Chat(chat_id), false))
-        .unwrap_or_else(|| "-".to_owned());
+    let chat_label = match chat_id {
+        Some(chat_id) => rt.td.sender_mention(Sender::Chat(chat_id), false).await,
+        None => "-".to_owned(),
+    };
     let status = if ok {
         match result {
             Some(result) if result.ad_detected => "✅ 成功 · 判定为广告",
@@ -759,14 +787,17 @@ fn write_log(
         lines.push("```".to_owned());
     }
 
-    let _ = rt.td.send_text(
-        channel,
-        text::markdown(&lines.join("\n")),
-        None,
-        Vec::new(),
-        topic,
-        None,
-    );
+    let _ = rt
+        .td
+        .send_text(
+            channel,
+            text::markdown(&lines.join("\n")),
+            None,
+            Vec::new(),
+            topic,
+            None,
+        )
+        .await;
 }
 
 fn scene_name(scene: Option<&str>) -> &str {
@@ -795,12 +826,12 @@ fn clip_json(value: &Value) -> String {
 }
 
 /// 给 `/adconfig` 展示用的「这个群会不会用内置接口」。
-pub fn uses_default_ai(rt: &Runtime, chat_id: i64) -> bool {
+pub async fn uses_default_ai(rt: &Runtime, chat_id: i64) -> bool {
     rt.cfg
         .ai
         .as_ref()
         .is_some_and(|endpoint| endpoint.is_usable())
-        && rt.db.is_ai_default_chat(chat_id)
+        && rt.db.is_ai_default_chat(chat_id).await
 }
 
 /// 群自定义接口的掩码展示（`sk-a***wxyz`）。
@@ -820,7 +851,7 @@ pub fn mask_secret(secret: &str) -> String {
 }
 
 /// 群的「AI 接口状态」一行（`/adconfig` 用）。
-pub fn ai_status_line(rt: &Runtime, chat_id: i64, config: Option<&GroupConfig>) -> String {
+pub async fn ai_status_line(rt: &Runtime, chat_id: i64, config: Option<&GroupConfig>) -> String {
     if let Some(config) = config
         && config.has_custom_ai()
     {
@@ -831,7 +862,7 @@ pub fn ai_status_line(rt: &Runtime, chat_id: i64, config: Option<&GroupConfig>) 
             mask_secret(config.ai_api_key.as_deref().unwrap_or(""))
         );
     }
-    if uses_default_ai(rt, chat_id) {
+    if uses_default_ai(rt, chat_id).await {
         let model = rt
             .cfg
             .ai
@@ -848,7 +879,7 @@ pub fn ai_status_line(rt: &Runtime, chat_id: i64, config: Option<&GroupConfig>) 
 /// 用一次极小请求验证接口配置（`/start` 配置流程的最后一步）。
 ///
 /// 与 TS 版 `testAiConnection` 等价：`max_tokens = 1`，只关心 HTTP 是否成功。
-pub fn test_connection(
+pub async fn test_connection(
     rt: &Runtime,
     api_key: &str,
     base_url: &str,
@@ -860,7 +891,7 @@ pub fn test_connection(
         "messages": [{ "role": "user", "content": "hi" }],
         "max_tokens": 1,
     });
-    let (status, text) = send_json(rt, &url, api_key, &body)?;
+    let (status, text) = send_json(rt, &url, api_key, &body).await?;
     if (200..300).contains(&status) {
         Ok(())
     } else {

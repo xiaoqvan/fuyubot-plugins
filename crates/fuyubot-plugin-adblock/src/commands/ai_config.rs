@@ -37,7 +37,7 @@ pub fn parse_payload(payload: &str) -> Option<i64> {
 }
 
 /// `/start aiConfig_<chat_id>`
-pub fn handle_start(rt: &Runtime, command: &Command, sender: Sender, _message: &Value) {
+pub async fn handle_start(rt: &Runtime, command: &Command, sender: Sender, _message: &Value) {
     let payload = command.args.trim();
     let Some(target) = parse_payload(payload) else {
         return;
@@ -48,29 +48,31 @@ pub fn handle_start(rt: &Runtime, command: &Command, sender: Sender, _message: &
         return;
     };
 
-    if !flow::is_group(rt, target) {
+    if !flow::is_group(rt, target).await {
         flow::send_tip(
             rt,
             chat_id,
             "❌ 无法识别该群（Bot 可能已不在群内），请在群中使用 /adconfig 重新发起配置。",
             reply_to,
             30,
-        );
+        )
+        .await;
         return;
     }
-    if !rt.td.is_admin(target, sender) {
+    if !rt.td.is_admin(target, sender).await {
         flow::send_tip(
             rt,
             chat_id,
             "❌ 只有该群的管理员才能配置 AI 接口。",
             reply_to,
             30,
-        );
+        )
+        .await;
         return;
     }
 
     rt.cache.begin_pending(user_id, target);
-    let chain = if ai::uses_default_ai(rt, target) {
+    let chain = if ai::uses_default_ai(rt, target).await {
         "\n\n💡 该群当前使用内置默认接口，配置后将优先使用你的自定义接口。"
     } else {
         "\n\n⚠️ 该群未配置 AI 接口将无法使用 AI 审查，请完成以下配置。"
@@ -84,13 +86,13 @@ pub fn handle_start(rt: &Runtime, command: &Command, sender: Sender, _message: &
         reply_to,
         Vec::new(),
         0,
-    );
+    ).await;
 }
 
 /// 私聊消息是否被配置流程消费。
 ///
 /// 只有「私聊 + 文本 + 该用户有进行中的配置」才会返回 `true`，其余情况原样放行。
-pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
+pub async fn consume_private(rt: &Runtime, message: &Value) -> bool {
     let Some(chat_id) = message.get("chat_id").and_then(Value::as_i64) else {
         return false;
     };
@@ -127,7 +129,7 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
 
     if text == "/cancel" || text == "取消" {
         rt.cache.clear_pending(user_id);
-        flow::send_tip(rt, chat_id, "❌ 已取消 AI 接口配置。", reply_to, 0);
+        flow::send_tip(rt, chat_id, "❌ 已取消 AI 接口配置。", reply_to, 0).await;
         return true;
     }
     // 配置期间不处理别的命令。
@@ -144,7 +146,8 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
                     "❌ API Key 格式过短，请重新发送有效的 API Key。",
                     reply_to,
                     0,
-                );
+                )
+                .await;
                 return true;
             }
             let mut pending = pending;
@@ -161,7 +164,7 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
                 ),
                 reply_to,
                 0,
-            );
+            ).await;
             true
         }
         Step::BaseUrl => {
@@ -177,7 +180,7 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
                             "❌ 后端地址格式不正确，请发送完整 URL（如 https://api.openai.com/v1）。",
                             reply_to,
                             0,
-                        );
+                        ).await;
                         return true;
                     }
                 }
@@ -195,7 +198,7 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
                 ),
                 reply_to,
                 0,
-            );
+            ).await;
             true
         }
         Step::Model => {
@@ -207,11 +210,13 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
             let target = pending.chat_id;
             let api_key = pending.api_key.clone();
             let base_url = pending.base_url.clone();
-            rt.db.update_config(target, |config| {
-                config.ai_api_key = Some(api_key.clone());
-                config.ai_base_url = Some(base_url.clone());
-                config.ai_model = Some(model.clone());
-            });
+            rt.db
+                .update_config(target, |config| {
+                    config.ai_api_key = Some(api_key.clone());
+                    config.ai_base_url = Some(base_url.clone());
+                    config.ai_model = Some(model.clone());
+                })
+                .await;
             flow::send_tip(
                 rt,
                 chat_id,
@@ -220,10 +225,10 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
                 ),
                 reply_to,
                 0,
-            );
+            ).await;
 
             // 当场测一次（这是工作线程，不需要再开线程）
-            let test = ai::test_connection(rt, &api_key, &base_url, &model);
+            let test = ai::test_connection(rt, &api_key, &base_url, &model).await;
             rt.cache.clear_pending(user_id);
             match test {
                 Ok(()) => {
@@ -242,7 +247,7 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
                         ),
                         reply_to,
                         0,
-                    );
+                    ).await;
                 }
                 Err(error) => {
                     log::warn(
@@ -261,7 +266,7 @@ pub fn consume_private(rt: &Runtime, message: &Value) -> bool {
                         ),
                         reply_to,
                         0,
-                    );
+                    ).await;
                 }
             }
             true

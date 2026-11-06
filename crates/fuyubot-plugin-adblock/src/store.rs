@@ -438,17 +438,24 @@ impl Mongo {
         Self { host, db }
     }
 
-    fn call(&self, method: &str, mut input: Value) -> Result<Value, String> {
+    /// 打服务的**唯一收口点**。`host.call_service` 是同步阻塞（跑在调用线程上），
+    /// 这里把整段丢进 `spawn_blocking`：async 任务里不能占着 tokio worker 等 mongo。
+    async fn call(&self, method: &str, mut input: Value) -> Result<Value, String> {
         if let Some(db) = &self.db
             && let Some(object) = input.as_object_mut()
             && !object.contains_key("db")
         {
             object.insert("db".to_owned(), Value::String(db.clone()));
         }
-        let reply = self
-            .host
-            .call_service(SERVICE, method, &input.to_string())
-            .map_err(|error| format!("{SERVICE}.{method} 调用失败：{error}"))?;
+        let host = self.host;
+        let method_owned = method.to_owned();
+        let payload = input.to_string();
+        let reply = tokio::task::spawn_blocking(move || {
+            host.call_service(SERVICE, &method_owned, &payload)
+        })
+        .await
+        .map_err(|join| format!("{SERVICE}.{method} 调用被中断：{join}"))?
+        .map_err(|error| format!("{SERVICE}.{method} 调用失败：{error}"))?;
         let value: Value = serde_json::from_str(&reply)
             .map_err(|error| format!("{SERVICE}.{method} 的响应不是 JSON：{error}"))?;
         if value.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -461,11 +468,11 @@ impl Mongo {
         Ok(value)
     }
 
-    pub fn ping(&self) -> Result<Value, String> {
-        self.call("ping", json!({}))
+    pub async fn ping(&self) -> Result<Value, String> {
+        self.call("ping", json!({})).await
     }
 
-    pub fn find(
+    pub async fn find(
         &self,
         collection: &str,
         filter: Value,
@@ -479,7 +486,7 @@ impl Mongo {
         if let Some(limit) = limit {
             input["limit"] = json!(limit);
         }
-        let reply = self.call("find", input)?;
+        let reply = self.call("find", input).await?;
         Ok(reply
             .get("docs")
             .and_then(Value::as_array)
@@ -487,16 +494,20 @@ impl Mongo {
             .unwrap_or_default())
     }
 
-    pub fn find_one(&self, collection: &str, filter: Value) -> Result<Option<Value>, String> {
-        let reply = self.call(
-            "find_one",
-            json!({ "collection": collection, "filter": filter }),
-        )?;
+    pub async fn find_one(&self, collection: &str, filter: Value) -> Result<Option<Value>, String> {
+        let reply = self
+            .call(
+                "find_one",
+                json!({ "collection": collection, "filter": filter }),
+            )
+            .await?;
         Ok(reply.get("doc").filter(|doc| !doc.is_null()).cloned())
     }
 
-    pub fn insert(&self, collection: &str, doc: Value) -> Result<Value, String> {
-        let reply = self.call("insert", json!({ "collection": collection, "docs": doc }))?;
+    pub async fn insert(&self, collection: &str, doc: Value) -> Result<Value, String> {
+        let reply = self
+            .call("insert", json!({ "collection": collection, "docs": doc }))
+            .await?;
         Ok(reply
             .get("ids")
             .and_then(Value::as_array)
@@ -505,7 +516,7 @@ impl Mongo {
             .unwrap_or(Value::Null))
     }
 
-    pub fn update(
+    pub async fn update(
         &self,
         collection: &str,
         filter: Value,
@@ -523,29 +534,36 @@ impl Mongo {
                 "many": many,
             }),
         )
+        .await
     }
 
-    pub fn delete(&self, collection: &str, filter: Value, many: bool) -> Result<u64, String> {
-        let reply = self.call(
-            "delete",
-            json!({ "collection": collection, "filter": filter, "many": many }),
-        )?;
+    pub async fn delete(&self, collection: &str, filter: Value, many: bool) -> Result<u64, String> {
+        let reply = self
+            .call(
+                "delete",
+                json!({ "collection": collection, "filter": filter, "many": many }),
+            )
+            .await?;
         Ok(reply.get("deleted").and_then(Value::as_u64).unwrap_or(0))
     }
 
-    pub fn count(&self, collection: &str, filter: Value) -> Result<u64, String> {
-        let reply = self.call(
-            "count",
-            json!({ "collection": collection, "filter": filter }),
-        )?;
+    pub async fn count(&self, collection: &str, filter: Value) -> Result<u64, String> {
+        let reply = self
+            .call(
+                "count",
+                json!({ "collection": collection, "filter": filter }),
+            )
+            .await?;
         Ok(reply.get("count").and_then(Value::as_u64).unwrap_or(0))
     }
 
-    pub fn aggregate(&self, collection: &str, pipeline: Value) -> Result<Vec<Value>, String> {
-        let reply = self.call(
-            "aggregate",
-            json!({ "collection": collection, "pipeline": pipeline }),
-        )?;
+    pub async fn aggregate(&self, collection: &str, pipeline: Value) -> Result<Vec<Value>, String> {
+        let reply = self
+            .call(
+                "aggregate",
+                json!({ "collection": collection, "pipeline": pipeline }),
+            )
+            .await?;
         Ok(reply
             .get("docs")
             .and_then(Value::as_array)
@@ -553,7 +571,7 @@ impl Mongo {
             .unwrap_or_default())
     }
 
-    pub fn ensure_index(
+    pub async fn ensure_index(
         &self,
         collection: &str,
         keys: Value,
@@ -568,7 +586,7 @@ impl Mongo {
         if let Some(ttl) = ttl_seconds {
             input["ttl_seconds"] = json!(ttl);
         }
-        self.call("ensure_index", input).map(|_| ())
+        self.call("ensure_index", input).await.map(|_| ())
     }
 }
 
@@ -589,15 +607,15 @@ impl Db {
         }
     }
 
-    pub fn ping(&self) -> Result<Value, String> {
-        self.mongo.ping()
+    pub async fn ping(&self) -> Result<Value, String> {
+        self.mongo.ping().await
     }
 
     /// 建索引（幂等：已存在 / 冲突都只记 debug）。
     ///
     /// 与 TS 版 `Database/index.ts` 一一对应：消息记录 48h TTL、封禁按 TGID、
     /// 复审按状态与截止时间、入群监视按 `expires_at` 自动过期。
-    pub fn ensure_indexes(&self) -> (usize, usize) {
+    pub async fn ensure_indexes(&self) -> (usize, usize) {
         use collections as c;
         let specs: &[(&str, Value, bool, Option<u64>)] = &[
             (
@@ -650,6 +668,7 @@ impl Db {
             match self
                 .mongo
                 .ensure_index(collection, keys.clone(), *unique, *ttl)
+                .await
             {
                 Ok(()) => created += 1,
                 Err(error) => {
@@ -667,27 +686,32 @@ impl Db {
 
     // ── 群配置 ────────────────────────────────────────────────────
 
-    pub fn config(&self, chat_id: i64) -> Option<GroupConfig> {
+    pub async fn config(&self, chat_id: i64) -> Option<GroupConfig> {
         self.mongo
             .find_one(collections::CONFIG, json!({ "chat_id": chat_id }))
+            .await
             .ok()
             .flatten()
             .map(|doc| GroupConfig::from_doc(&doc))
     }
 
-    pub fn config_or_default(&self, chat_id: i64) -> GroupConfig {
-        self.config(chat_id).unwrap_or_default()
+    pub async fn config_or_default(&self, chat_id: i64) -> GroupConfig {
+        self.config(chat_id).await.unwrap_or_default()
     }
 
     /// 读 → 改 → 整段写回（`$set` + upsert）。
     ///
     /// 用「整段写回」而不是逐个 `$set`，是为了让新增配置项自动带上默认值：
     /// 少写一个字段，读侧也会用默认值兜住。
-    pub fn update_config(&self, chat_id: i64, f: impl FnOnce(&mut GroupConfig)) -> GroupConfig {
-        let mut config = self.config_or_default(chat_id);
+    pub async fn update_config(
+        &self,
+        chat_id: i64,
+        f: impl FnOnce(&mut GroupConfig),
+    ) -> GroupConfig {
+        let mut config = self.config_or_default(chat_id).await;
         config.kind = "group".to_owned();
         f(&mut config);
-        if let Err(error) = self.save_config(chat_id, &config) {
+        if let Err(error) = self.save_config(chat_id, &config).await {
             log::warn(
                 &self.host,
                 format!("写 adb_config（{chat_id}）失败：{error}"),
@@ -696,78 +720,91 @@ impl Db {
         config
     }
 
-    fn save_config(&self, chat_id: i64, config: &GroupConfig) -> Result<(), String> {
+    async fn save_config(&self, chat_id: i64, config: &GroupConfig) -> Result<(), String> {
         let mut set = serde_json::to_value(config).map_err(|error| error.to_string())?;
         // `chat_id` 只放过滤条件里；写进 `$set` 反而会和 `$setOnInsert` 冲突。
         if let Some(object) = set.as_object_mut() {
             object.remove("chat_id");
             object.remove("_id");
         }
-        self.mongo.update(
-            collections::CONFIG,
-            json!({ "chat_id": chat_id }),
-            json!({ "$set": set, "$setOnInsert": { "chat_id": chat_id } }),
-            true,
-            false,
-        )?;
+        self.mongo
+            .update(
+                collections::CONFIG,
+                json!({ "chat_id": chat_id }),
+                json!({ "$set": set, "$setOnInsert": { "chat_id": chat_id } }),
+                true,
+                false,
+            )
+            .await?;
         Ok(())
     }
 
-    pub fn set_whitelisted(&self, chat_id: i64, id: i64, add: bool) {
+    pub async fn set_whitelisted(&self, chat_id: i64, id: i64, add: bool) {
         let update = if add {
             json!({ "$addToSet": { "Whitelist": id }, "$set": { "type": "group" } })
         } else {
             json!({ "$pull": { "Whitelist": id } })
         };
-        if let Err(error) = self.mongo.update(
-            collections::CONFIG,
-            json!({ "chat_id": chat_id }),
-            update,
-            add,
-            false,
-        ) {
+        if let Err(error) = self
+            .mongo
+            .update(
+                collections::CONFIG,
+                json!({ "chat_id": chat_id }),
+                update,
+                add,
+                false,
+            )
+            .await
+        {
             log::warn(&self.host, format!("更新白名单失败：{error}"));
         }
     }
 
-    pub fn is_whitelisted(&self, chat_id: i64, id: i64) -> bool {
+    pub async fn is_whitelisted(&self, chat_id: i64, id: i64) -> bool {
         self.config(chat_id)
+            .await
             .is_some_and(|config| config.whitelist.contains(&id))
     }
 
-    pub fn set_spam_sticker(&self, chat_id: i64, set_id: &str, add: bool) {
+    pub async fn set_spam_sticker(&self, chat_id: i64, set_id: &str, add: bool) {
         let update = if add {
             json!({ "$addToSet": { "spam_sticker": set_id }, "$set": { "type": "group" } })
         } else {
             json!({ "$pull": { "spam_sticker": set_id } })
         };
-        let _ = self.mongo.update(
-            collections::CONFIG,
-            json!({ "chat_id": chat_id }),
-            update,
-            add,
-            false,
-        );
+        let _ = self
+            .mongo
+            .update(
+                collections::CONFIG,
+                json!({ "chat_id": chat_id }),
+                update,
+                add,
+                false,
+            )
+            .await;
     }
 
-    pub fn set_spam_file(&self, chat_id: i64, file_id: &str, add: bool) {
+    pub async fn set_spam_file(&self, chat_id: i64, file_id: &str, add: bool) {
         let update = if add {
             json!({ "$addToSet": { "spam_fileId": file_id }, "$set": { "type": "group" } })
         } else {
             json!({ "$pull": { "spam_fileId": file_id } })
         };
-        let _ = self.mongo.update(
-            collections::CONFIG,
-            json!({ "chat_id": chat_id }),
-            update,
-            add,
-            false,
-        );
+        let _ = self
+            .mongo
+            .update(
+                collections::CONFIG,
+                json!({ "chat_id": chat_id }),
+                update,
+                add,
+                false,
+            )
+            .await;
     }
 
     // ── 封禁记录 ──────────────────────────────────────────────────
 
-    pub fn add_ban_record(
+    pub async fn add_ban_record(
         &self,
         chat_id: i64,
         target_tgid: i64,
@@ -787,12 +824,12 @@ impl Db {
             "trigger_db_id": trigger_db_id,
             "createdAt": date(now_ms()),
         });
-        if let Err(error) = self.mongo.insert(collections::BAN_RECORDS, doc) {
+        if let Err(error) = self.mongo.insert(collections::BAN_RECORDS, doc).await {
             log::warn(&self.host, format!("写 ban_records 失败：{error}"));
         }
     }
 
-    pub fn ban_records_by_tgid(&self, tgid: i64, limit: usize) -> Vec<BanRecord> {
+    pub async fn ban_records_by_tgid(&self, tgid: i64, limit: usize) -> Vec<BanRecord> {
         let limit = limit.clamp(1, 50) as i64;
         let docs = self
             .mongo
@@ -802,6 +839,7 @@ impl Db {
                 Some(json!({ "createdAt": -1 })),
                 Some(limit),
             )
+            .await
             .unwrap_or_default();
         docs.iter()
             .map(|doc| BanRecord {
@@ -823,19 +861,19 @@ impl Db {
 
     // ── 消息记录 ──────────────────────────────────────────────────
 
-    pub fn add_message(&self, chat_id: i64, user_id: i64, message_id: i64) {
+    pub async fn add_message(&self, chat_id: i64, user_id: i64, message_id: i64) {
         let doc = json!({
             "messageId": message_id,
             "userId": user_id,
             "chatId": chat_id,
             "createdAt": date(now_ms()),
         });
-        if let Err(error) = self.mongo.insert(collections::MESSAGE_RECORDS, doc) {
+        if let Err(error) = self.mongo.insert(collections::MESSAGE_RECORDS, doc).await {
             log::debug(&self.host, format!("写 message_records 失败：{error}"));
         }
     }
 
-    pub fn user_message_ids(&self, chat_id: i64, user_id: i64) -> Vec<i64> {
+    pub async fn user_message_ids(&self, chat_id: i64, user_id: i64) -> Vec<i64> {
         let docs = self
             .mongo
             .find(
@@ -844,13 +882,14 @@ impl Db {
                 None,
                 None,
             )
+            .await
             .unwrap_or_default();
         docs.iter()
             .filter_map(|doc| i64_of(doc, "messageId"))
             .collect()
     }
 
-    pub fn remove_message_ids(&self, chat_id: i64, message_ids: &[i64]) -> u64 {
+    pub async fn remove_message_ids(&self, chat_id: i64, message_ids: &[i64]) -> u64 {
         if message_ids.is_empty() {
             return 0;
         }
@@ -860,13 +899,18 @@ impl Db {
                 json!({ "chatId": chat_id, "messageId": { "$in": message_ids } }),
                 true,
             )
+            .await
             .unwrap_or(0)
     }
 
     // ── 黑名单：写 ────────────────────────────────────────────────
 
     /// 写一组广告关键词；返回新记录的 `_id`。
-    pub fn add_ad_keywords(&self, keywords: &[String], is_r18: bool) -> Result<String, String> {
+    pub async fn add_ad_keywords(
+        &self,
+        keywords: &[String],
+        is_r18: bool,
+    ) -> Result<String, String> {
         let valid: Vec<String> = keywords
             .iter()
             .map(|keyword| keyword.trim().to_owned())
@@ -884,11 +928,11 @@ impl Db {
             "isR18": is_r18,
             "createdAt": date(now_ms()),
         });
-        let id = self.mongo.insert(collections::ADS, doc)?;
+        let id = self.mongo.insert(collections::ADS, doc).await?;
         Ok(id_string(&id))
     }
 
-    pub fn add_bio(&self, keywords: &[String]) -> Result<String, String> {
+    pub async fn add_bio(&self, keywords: &[String]) -> Result<String, String> {
         let valid: Vec<String> = keywords
             .iter()
             .map(|keyword| keyword.trim().to_owned())
@@ -905,22 +949,22 @@ impl Db {
         if valid.len() == 1 {
             doc["text"] = Value::String(valid[0].clone());
         }
-        let id = self.mongo.insert(collections::BIO, doc)?;
+        let id = self.mongo.insert(collections::BIO, doc).await?;
         Ok(id_string(&id))
     }
 
-    pub fn add_name(&self, name: &str) -> Result<String, String> {
+    pub async fn add_name(&self, name: &str) -> Result<String, String> {
         let clean = name.trim();
         if clean.is_empty() {
             return Err("名称不能为空".to_owned());
         }
         let doc = json!({ "name": clean, "createdAt": date(now_ms()) });
-        let id = self.mongo.insert(collections::NAME, doc)?;
+        let id = self.mongo.insert(collections::NAME, doc).await?;
         Ok(id_string(&id))
     }
 
     /// 写用户名黑名单；已存在返回 `(旧 id, true)`。
-    pub fn add_username(&self, username: &str) -> Result<(String, bool), String> {
+    pub async fn add_username(&self, username: &str) -> Result<(String, bool), String> {
         let clean = username.trim().trim_start_matches('@').to_lowercase();
         if clean.is_empty() {
             return Err("用户名不能为空".to_owned());
@@ -928,69 +972,74 @@ impl Db {
         if let Ok(Some(existing)) = self
             .mongo
             .find_one(collections::USERNAME, json!({ "username": clean }))
+            .await
         {
             return Ok((doc_id(&existing), true));
         }
         let doc = json!({ "username": clean, "createdAt": date(now_ms()) });
-        let id = self.mongo.insert(collections::USERNAME, doc)?;
+        let id = self.mongo.insert(collections::USERNAME, doc).await?;
         Ok((id_string(&id), false))
     }
 
-    pub fn add_forward(&self, chat_id: i64) -> Result<String, String> {
+    pub async fn add_forward(&self, chat_id: i64) -> Result<String, String> {
         if let Ok(Some(existing)) = self
             .mongo
             .find_one(collections::FORWARD, json!({ "chat_id": chat_id }))
+            .await
         {
             return Ok(doc_id(&existing));
         }
         let doc = json!({ "chat_id": chat_id, "createdAt": date(now_ms()) });
-        let id = self.mongo.insert(collections::FORWARD, doc)?;
+        let id = self.mongo.insert(collections::FORWARD, doc).await?;
         Ok(id_string(&id))
     }
 
-    pub fn remove_forward(&self, chat_id: i64) -> bool {
+    pub async fn remove_forward(&self, chat_id: i64) -> bool {
         self.mongo
             .delete(collections::FORWARD, json!({ "chat_id": chat_id }), false)
+            .await
             .map(|deleted| deleted > 0)
             .unwrap_or(false)
     }
 
-    pub fn add_file(&self, unique_id: &str) -> Result<String, String> {
+    pub async fn add_file(&self, unique_id: &str) -> Result<String, String> {
         let clean = unique_id.trim();
         if clean.is_empty() {
             return Err("文件 unique_id 不能为空".to_owned());
         }
-        self.mongo.update(
-            collections::FILE_IDS,
-            json!({ "unique_id": clean }),
-            json!({ "$setOnInsert": { "unique_id": clean, "createdAt": date(now_ms()) } }),
-            true,
-            false,
-        )?;
+        self.mongo
+            .update(
+                collections::FILE_IDS,
+                json!({ "unique_id": clean }),
+                json!({ "$setOnInsert": { "unique_id": clean, "createdAt": date(now_ms()) } }),
+                true,
+                false,
+            )
+            .await?;
         Ok(clean.to_owned())
     }
 
-    pub fn add_sticker(&self, unique_id: &str) -> Result<String, String> {
+    pub async fn add_sticker(&self, unique_id: &str) -> Result<String, String> {
         let clean = unique_id.trim();
         if clean.is_empty() {
             return Err("贴纸 unique_id 不能为空".to_owned());
         }
         let doc = json!({ "unique_id": clean, "createdAt": date(now_ms()) });
-        let id = self.mongo.insert(collections::STICKERS, doc)?;
+        let id = self.mongo.insert(collections::STICKERS, doc).await?;
         Ok(id_string(&id))
     }
 
-    pub fn add_sticker_set(&self, set_id: &str, title: &str) -> Result<String, String> {
+    pub async fn add_sticker_set(&self, set_id: &str, title: &str) -> Result<String, String> {
         let clean = set_id.trim();
         if clean.is_empty() {
             return Err("贴纸集 set_id 不能为空".to_owned());
         }
         let doc = json!({ "set_id": clean, "title": title, "createdAt": date(now_ms()) });
-        let id = self.mongo.insert(collections::STICKER_SETS, doc)?;
+        let id = self.mongo.insert(collections::STICKER_SETS, doc).await?;
         Ok(id_string(&id))
     }
 
-    pub fn add_ai_fulltext(&self, text: &str) -> Result<(String, bool), String> {
+    pub async fn add_ai_fulltext(&self, text: &str) -> Result<(String, bool), String> {
         let clean = text.trim();
         if clean.is_empty() {
             return Err("文本不能为空".to_owned());
@@ -998,18 +1047,19 @@ impl Db {
         if let Ok(Some(existing)) = self
             .mongo
             .find_one(collections::AI_FULLTEXT, json!({ "text": clean }))
+            .await
         {
             return Ok((doc_id(&existing), true));
         }
         let doc = json!({ "text": clean, "createdAt": date(now_ms()) });
-        let id = self.mongo.insert(collections::AI_FULLTEXT, doc)?;
+        let id = self.mongo.insert(collections::AI_FULLTEXT, doc).await?;
         Ok((id_string(&id), false))
     }
 
     // ── 黑名单：查 ────────────────────────────────────────────────
 
     /// `ads_blacklist` 的关键词组 AND 匹配（服务端聚合，照搬 TS 的管道）。
-    pub fn match_ad_keywords(&self, text: &str) -> Option<Value> {
+    pub async fn match_ad_keywords(&self, text: &str) -> Option<Value> {
         if text.trim().is_empty() {
             return None;
         }
@@ -1042,7 +1092,7 @@ impl Db {
             { "$match": { "allMatched": true } },
             { "$limit": 1 }
         ]);
-        match self.mongo.aggregate(collections::ADS, pipeline) {
+        match self.mongo.aggregate(collections::ADS, pipeline).await {
             Ok(docs) => docs.into_iter().next(),
             Err(error) => {
                 log::debug(&self.host, format!("查询 ads_blacklist 失败：{error}"));
@@ -1052,7 +1102,7 @@ impl Db {
     }
 
     /// `username_blacklist`：文本里出现用户名（或 `@用户名`）。
-    pub fn match_username(&self, text: &str) -> Option<Value> {
+    pub async fn match_username(&self, text: &str) -> Option<Value> {
         if text.trim().is_empty() {
             return None;
         }
@@ -1070,7 +1120,7 @@ impl Db {
             { "$match": { "isMatched": true } },
             { "$limit": 1 }
         ]);
-        match self.mongo.aggregate(collections::USERNAME, pipeline) {
+        match self.mongo.aggregate(collections::USERNAME, pipeline).await {
             Ok(docs) => docs.into_iter().next(),
             Err(error) => {
                 log::debug(&self.host, format!("查询 username_blacklist 失败：{error}"));
@@ -1079,18 +1129,19 @@ impl Db {
         }
     }
 
-    pub fn match_name(&self, name: &str) -> Option<Value> {
+    pub async fn match_name(&self, name: &str) -> Option<Value> {
         let clean = name.trim();
         if clean.is_empty() {
             return None;
         }
         self.mongo
             .find_one(collections::NAME, json!({ "name": clean }))
+            .await
             .ok()
             .flatten()
     }
 
-    pub fn match_bio(&self, text: &str) -> Option<Value> {
+    pub async fn match_bio(&self, text: &str) -> Option<Value> {
         let clean = text.trim();
         if clean.is_empty() {
             return None;
@@ -1100,29 +1151,32 @@ impl Db {
                 collections::BIO,
                 json!({ "$or": [{ "text": clean }, { "keywords": { "$in": [clean] } }] }),
             )
+            .await
             .ok()
             .flatten()
     }
 
-    pub fn match_ai_fulltext(&self, text: &str) -> Option<Value> {
+    pub async fn match_ai_fulltext(&self, text: &str) -> Option<Value> {
         let clean = text.trim();
         if clean.is_empty() {
             return None;
         }
         self.mongo
             .find_one(collections::AI_FULLTEXT, json!({ "text": clean }))
+            .await
             .ok()
             .flatten()
     }
 
-    pub fn match_forward(&self, chat_id: i64) -> Option<Value> {
+    pub async fn match_forward(&self, chat_id: i64) -> Option<Value> {
         self.mongo
             .find_one(collections::FORWARD, json!({ "chat_id": chat_id }))
+            .await
             .ok()
             .flatten()
     }
 
-    pub fn match_file_ids(&self, unique_ids: &[String]) -> Option<Value> {
+    pub async fn match_file_ids(&self, unique_ids: &[String]) -> Option<Value> {
         if unique_ids.is_empty() {
             return None;
         }
@@ -1131,20 +1185,23 @@ impl Db {
                 collections::FILE_IDS,
                 json!({ "unique_id": { "$in": unique_ids } }),
             )
+            .await
             .ok()
             .flatten()
     }
 
-    pub fn match_sticker_set(&self, set_id: &str) -> Option<Value> {
+    pub async fn match_sticker_set(&self, set_id: &str) -> Option<Value> {
         self.mongo
             .find_one(collections::STICKER_SETS, json!({ "set_id": set_id }))
+            .await
             .ok()
             .flatten()
     }
 
-    pub fn match_sticker(&self, unique_id: &str) -> Option<Value> {
+    pub async fn match_sticker(&self, unique_id: &str) -> Option<Value> {
         self.mongo
             .find_one(collections::STICKERS, json!({ "unique_id": unique_id }))
+            .await
             .ok()
             .flatten()
     }
@@ -1152,7 +1209,7 @@ impl Db {
     // ── 黑名单：改 / 删 / 查 ─────────────────────────────────────
 
     /// 按 `_id` 更新关键词（先 `ads_blacklist`、再 `bio_blacklist`）。
-    pub fn update_keywords(
+    pub async fn update_keywords(
         &self,
         id: &str,
         keywords: &[String],
@@ -1178,13 +1235,16 @@ impl Db {
                     Value::Null
                 };
             }
-            let reply = self.mongo.update(
-                collection,
-                json!({ "_id": object_id }),
-                json!({ "$set": set }),
-                false,
-                false,
-            )?;
+            let reply = self
+                .mongo
+                .update(
+                    collection,
+                    json!({ "_id": object_id }),
+                    json!({ "$set": set }),
+                    false,
+                    false,
+                )
+                .await?;
             if reply.get("matched").and_then(Value::as_u64).unwrap_or(0) > 0 {
                 return Ok(Some(if collection == collections::ADS {
                     Collection::Ads
@@ -1197,7 +1257,7 @@ impl Db {
     }
 
     /// 按 `_id`（或旧数据里的 chat_id / name）查一条黑名单记录。
-    pub fn find_blacklist(&self, id: &str) -> Option<BlacklistEntry> {
+    pub async fn find_blacklist(&self, id: &str) -> Option<BlacklistEntry> {
         if id.is_empty() {
             return None;
         }
@@ -1220,7 +1280,7 @@ impl Db {
             (Collection::StickerSet, collections::STICKER_SETS),
         ];
         for (collection, name) in collections {
-            if let Ok(Some(doc)) = self.mongo.find_one(name, by_id.clone()) {
+            if let Ok(Some(doc)) = self.mongo.find_one(name, by_id.clone()).await {
                 return Some(BlacklistEntry {
                     collection,
                     record: doc,
@@ -1232,6 +1292,7 @@ impl Db {
             && let Ok(Some(doc)) = self
                 .mongo
                 .find_one(collections::FORWARD, json!({ "chat_id": chat_id }))
+                .await
         {
             return Some(BlacklistEntry {
                 collection: Collection::Forward,
@@ -1241,6 +1302,7 @@ impl Db {
         if let Ok(Some(doc)) = self
             .mongo
             .find_one(collections::NAME, json!({ "name": id }))
+            .await
         {
             return Some(BlacklistEntry {
                 collection: Collection::Name,
@@ -1250,8 +1312,8 @@ impl Db {
         None
     }
 
-    pub fn delete_blacklist(&self, id: &str) -> Option<Collection> {
-        let entry = self.find_blacklist(id)?;
+    pub async fn delete_blacklist(&self, id: &str) -> Option<Collection> {
+        let entry = self.find_blacklist(id).await?;
         let filter = entry
             .record
             .get("_id")
@@ -1264,7 +1326,11 @@ impl Db {
                     .cloned()
                     .map(|id| json!({ "chat_id": id }))
             })?;
-        match self.mongo.delete(entry.collection.name(), filter, false) {
+        match self
+            .mongo
+            .delete(entry.collection.name(), filter, false)
+            .await
+        {
             Ok(deleted) if deleted > 0 => Some(entry.collection),
             _ => None,
         }
@@ -1272,39 +1338,43 @@ impl Db {
 
     // ── AI 授权群 / 全局触发词 ───────────────────────────────────
 
-    pub fn add_ai_default_chat(&self, chat_id: i64, title: &str) -> bool {
+    pub async fn add_ai_default_chat(&self, chat_id: i64, title: &str) -> bool {
         if let Ok(Some(_)) = self
             .mongo
             .find_one(collections::AI_DEFAULT_CHATS, json!({ "chat_id": chat_id }))
+            .await
         {
             return false;
         }
         let doc = json!({ "chat_id": chat_id, "title": title, "createdAt": date(now_ms()) });
         self.mongo
             .insert(collections::AI_DEFAULT_CHATS, doc)
+            .await
             .is_ok()
     }
 
-    pub fn remove_ai_default_chat(&self, chat_id: i64) -> bool {
+    pub async fn remove_ai_default_chat(&self, chat_id: i64) -> bool {
         self.mongo
             .delete(
                 collections::AI_DEFAULT_CHATS,
                 json!({ "chat_id": chat_id }),
                 false,
             )
+            .await
             .map(|deleted| deleted > 0)
             .unwrap_or(false)
     }
 
-    pub fn is_ai_default_chat(&self, chat_id: i64) -> bool {
+    pub async fn is_ai_default_chat(&self, chat_id: i64) -> bool {
         self.mongo
             .find_one(collections::AI_DEFAULT_CHATS, json!({ "chat_id": chat_id }))
+            .await
             .ok()
             .flatten()
             .is_some()
     }
 
-    pub fn list_ai_default_chats(&self) -> Vec<(i64, String)> {
+    pub async fn list_ai_default_chats(&self) -> Vec<(i64, String)> {
         self.mongo
             .find(
                 collections::AI_DEFAULT_CHATS,
@@ -1312,45 +1382,51 @@ impl Db {
                 Some(json!({ "createdAt": 1 })),
                 None,
             )
+            .await
             .unwrap_or_default()
             .iter()
             .map(|doc| (i64_of(doc, "chat_id").unwrap_or(0), string_of(doc, "title")))
             .collect()
     }
 
-    pub fn global_ai_keywords(&self) -> Vec<String> {
+    pub async fn global_ai_keywords(&self) -> Vec<String> {
         self.mongo
             .find_one(
                 collections::SETTINGS,
                 json!({ "_id": "global_ai_keywords" }),
             )
+            .await
             .ok()
             .flatten()
             .map(|doc| strings_of(&doc, "values"))
             .unwrap_or_default()
     }
 
-    pub fn set_global_ai_keywords(&self, keywords: Vec<String>) {
+    pub async fn set_global_ai_keywords(&self, keywords: Vec<String>) {
         let cleaned: Vec<String> = keywords
             .into_iter()
             .map(|keyword| keyword.trim().to_owned())
             .filter(|keyword| !keyword.is_empty())
             .collect();
         let update = json!({ "$set": { "values": cleaned, "updatedAt": date(now_ms()) } });
-        if let Err(error) = self.mongo.update(
-            collections::SETTINGS,
-            json!({ "_id": "global_ai_keywords" }),
-            update,
-            true,
-            false,
-        ) {
+        if let Err(error) = self
+            .mongo
+            .update(
+                collections::SETTINGS,
+                json!({ "_id": "global_ai_keywords" }),
+                update,
+                true,
+                false,
+            )
+            .await
+        {
             log::warn(&self.host, format!("写全局 AI 关键词失败：{error}"));
         }
     }
 
     // ── 禁言复审 ──────────────────────────────────────────────────
 
-    pub fn upsert_mute_review(
+    pub async fn upsert_mute_review(
         &self,
         chat_id: i64,
         user_id: i64,
@@ -1372,29 +1448,36 @@ impl Db {
             },
             "$setOnInsert": { "chat_id": chat_id, "user_id": user_id },
         });
-        if let Err(error) = self.mongo.update(
-            collections::MUTE_REVIEWS,
-            json!({ "chat_id": chat_id, "user_id": user_id }),
-            update,
-            true,
-            false,
-        ) {
+        if let Err(error) = self
+            .mongo
+            .update(
+                collections::MUTE_REVIEWS,
+                json!({ "chat_id": chat_id, "user_id": user_id }),
+                update,
+                true,
+                false,
+            )
+            .await
+        {
             log::warn(&self.host, format!("写禁言复审记录失败：{error}"));
         }
     }
 
-    pub fn mark_mute_review_approved(&self, chat_id: i64, user_id: i64) {
-        let _ = self.mongo.update(
-            collections::MUTE_REVIEWS,
-            json!({ "chat_id": chat_id, "user_id": user_id, "status": "pending" }),
-            json!({ "$set": { "status": "approved", "updated_at": date(now_ms()) } }),
-            false,
-            false,
-        );
+    pub async fn mark_mute_review_approved(&self, chat_id: i64, user_id: i64) {
+        let _ = self
+            .mongo
+            .update(
+                collections::MUTE_REVIEWS,
+                json!({ "chat_id": chat_id, "user_id": user_id, "status": "pending" }),
+                json!({ "$set": { "status": "approved", "updated_at": date(now_ms()) } }),
+                false,
+                false,
+            )
+            .await;
     }
 
     /// `pending → banned` 的原子转移；只有真的转移了才返回 `true`。
-    pub fn mark_mute_review_banned(&self, chat_id: i64, user_id: i64) -> bool {
+    pub async fn mark_mute_review_banned(&self, chat_id: i64, user_id: i64) -> bool {
         self.mongo
             .update(
                 collections::MUTE_REVIEWS,
@@ -1403,17 +1486,19 @@ impl Db {
                 false,
                 false,
             )
+            .await
             .map(|reply| reply.get("modified").and_then(Value::as_u64).unwrap_or(0) > 0)
             .unwrap_or(false)
     }
 
-    pub fn mute_review(&self, chat_id: i64, user_id: i64) -> Option<MuteReview> {
+    pub async fn mute_review(&self, chat_id: i64, user_id: i64) -> Option<MuteReview> {
         let doc = self
             .mongo
             .find_one(
                 collections::MUTE_REVIEWS,
                 json!({ "chat_id": chat_id, "user_id": user_id }),
             )
+            .await
             .ok()
             .flatten()?;
         Some(MuteReview {
@@ -1429,7 +1514,7 @@ impl Db {
         })
     }
 
-    pub fn expired_mute_reviews(&self, now: i64) -> Vec<MuteReview> {
+    pub async fn expired_mute_reviews(&self, now: i64) -> Vec<MuteReview> {
         let docs = self
             .mongo
             .find(
@@ -1438,6 +1523,7 @@ impl Db {
                 None,
                 None,
             )
+            .await
             .unwrap_or_default();
         docs.iter()
             .map(|doc| MuteReview {
@@ -1456,7 +1542,7 @@ impl Db {
 
     // ── 入群监视 ──────────────────────────────────────────────────
 
-    pub fn upsert_watch(&self, chat_id: i64, user_id: i64, name: &str, bio: &str) {
+    pub async fn upsert_watch(&self, chat_id: i64, user_id: i64, name: &str, bio: &str) {
         let now = now_ms();
         let update = json!({
             "$set": {
@@ -1474,16 +1560,19 @@ impl Db {
             },
             "$setOnInsert": { "chat_id": chat_id, "user_id": user_id, "created_at": date(now) },
         });
-        let _ = self.mongo.update(
-            collections::WATCHES,
-            json!({ "chat_id": chat_id, "user_id": user_id }),
-            update,
-            true,
-            false,
-        );
+        let _ = self
+            .mongo
+            .update(
+                collections::WATCHES,
+                json!({ "chat_id": chat_id, "user_id": user_id }),
+                update,
+                true,
+                false,
+            )
+            .await;
     }
 
-    pub fn active_watch(&self, chat_id: i64, user_id: i64) -> Option<NewMemberWatch> {
+    pub async fn active_watch(&self, chat_id: i64, user_id: i64) -> Option<NewMemberWatch> {
         self.mongo
             .find_one(
                 collections::WATCHES,
@@ -1493,23 +1582,25 @@ impl Db {
                     "expires_at": { "$gt": date(now_ms()) },
                 }),
             )
+            .await
             .ok()
             .flatten()
             .map(|doc| NewMemberWatch::from_doc(&doc))
     }
 
-    pub fn has_any_active_watch(&self, user_id: i64) -> bool {
+    pub async fn has_any_active_watch(&self, user_id: i64) -> bool {
         self.mongo
             .find_one(
                 collections::WATCHES,
                 json!({ "user_id": user_id, "expires_at": { "$gt": date(now_ms()) } }),
             )
+            .await
             .ok()
             .flatten()
             .is_some()
     }
 
-    pub fn watches_by_user(&self, user_id: i64) -> Vec<NewMemberWatch> {
+    pub async fn watches_by_user(&self, user_id: i64) -> Vec<NewMemberWatch> {
         self.mongo
             .find(
                 collections::WATCHES,
@@ -1517,87 +1608,98 @@ impl Db {
                 None,
                 None,
             )
+            .await
             .unwrap_or_default()
             .iter()
             .map(NewMemberWatch::from_doc)
             .collect()
     }
 
-    pub fn mark_profile_changed(&self, chat_id: i64, user_id: i64, name: &str, bio: &str) {
-        let _ = self.mongo.update(
-            collections::WATCHES,
-            json!({
-                "chat_id": chat_id,
-                "user_id": user_id,
-                "expires_at": { "$gt": date(now_ms()) },
-            }),
-            json!({ "$set": {
-                "profile_changed": true,
-                "join_name": name,
-                "join_bio": bio,
-                "updated_at": date(now_ms()),
-            }}),
-            false,
-            false,
-        );
+    pub async fn mark_profile_changed(&self, chat_id: i64, user_id: i64, name: &str, bio: &str) {
+        let _ = self
+            .mongo
+            .update(
+                collections::WATCHES,
+                json!({
+                    "chat_id": chat_id,
+                    "user_id": user_id,
+                    "expires_at": { "$gt": date(now_ms()) },
+                }),
+                json!({ "$set": {
+                    "profile_changed": true,
+                    "join_name": name,
+                    "join_bio": bio,
+                    "updated_at": date(now_ms()),
+                }}),
+                false,
+                false,
+            )
+            .await;
     }
 
-    pub fn mark_profile_rechecked(&self, chat_id: i64, user_id: i64) {
+    pub async fn mark_profile_rechecked(&self, chat_id: i64, user_id: i64) {
         let now = now_ms();
-        let _ = self.mongo.update(
-            collections::WATCHES,
-            json!({ "chat_id": chat_id, "user_id": user_id }),
-            json!({
-                "$set": {
-                    "profile_rechecked": true,
-                    "last_recheck_at": date(now),
+        let _ = self
+            .mongo
+            .update(
+                collections::WATCHES,
+                json!({ "chat_id": chat_id, "user_id": user_id }),
+                json!({
+                    "$set": {
+                        "profile_rechecked": true,
+                        "last_recheck_at": date(now),
+                        "updated_at": date(now),
+                    },
+                    "$inc": { "recheck_count": 1 },
+                }),
+                false,
+                false,
+            )
+            .await;
+    }
+
+    pub async fn mark_watch_review_approved(&self, chat_id: i64, user_id: i64) {
+        let now = now_ms();
+        let _ = self
+            .mongo
+            .update(
+                collections::WATCHES,
+                json!({ "chat_id": chat_id, "user_id": user_id }),
+                json!({ "$set": {
+                    "review_approved": true,
+                    "review_approved_at": date(now),
+                    "profile_changed": false,
                     "updated_at": date(now),
-                },
-                "$inc": { "recheck_count": 1 },
-            }),
-            false,
-            false,
-        );
+                }}),
+                false,
+                false,
+            )
+            .await;
     }
 
-    pub fn mark_watch_review_approved(&self, chat_id: i64, user_id: i64) {
-        let now = now_ms();
-        let _ = self.mongo.update(
-            collections::WATCHES,
-            json!({ "chat_id": chat_id, "user_id": user_id }),
-            json!({ "$set": {
-                "review_approved": true,
-                "review_approved_at": date(now),
-                "profile_changed": false,
-                "updated_at": date(now),
-            }}),
-            false,
-            false,
-        );
-    }
-
-    pub fn is_profile_changed_watch_user(&self, chat_id: i64, user_id: i64) -> bool {
+    pub async fn is_profile_changed_watch_user(&self, chat_id: i64, user_id: i64) -> bool {
         self.active_watch(chat_id, user_id)
+            .await
             .is_some_and(|watch| watch.profile_changed)
     }
 
     // ── /spam 举报流水 ───────────────────────────────────────────
 
-    pub fn log_spam_report(&self, chat_id: i64, reporter: i64, message: &Value) {
+    pub async fn log_spam_report(&self, chat_id: i64, reporter: i64, message: &Value) {
         let doc = json!({
             "chat_id": chat_id,
             "reporter_id": reporter,
             "message": message,
             "createdAt": date(now_ms()),
         });
-        if let Err(error) = self.mongo.insert(collections::SPAM_LOG, doc) {
+        if let Err(error) = self.mongo.insert(collections::SPAM_LOG, doc).await {
             log::debug(&self.host, format!("写 SPAM_Log 失败：{error}"));
         }
     }
 
     // ── 统计（启动日志） ─────────────────────────────────────────
 
-    pub fn counts(&self) -> Vec<(&'static str, u64)> {
+    pub async fn counts(&self) -> Vec<(&'static str, u64)> {
         let specs: &[(&str, &str)] = &[
             (collections::CONFIG, "adb_config"),
             (collections::BAN_RECORDS, "ban_records"),
@@ -1607,15 +1709,13 @@ impl Db {
             (collections::WATCHES, "new_member_watch_records"),
             (collections::MUTE_REVIEWS, "mute_review_records"),
         ];
-        specs
-            .iter()
-            .filter_map(|(collection, label)| {
-                self.mongo
-                    .count(collection, json!({}))
-                    .ok()
-                    .map(|count| (*label, count))
-            })
-            .collect()
+        let mut out = Vec::with_capacity(specs.len());
+        for (collection, label) in specs {
+            if let Ok(count) = self.mongo.count(collection, json!({})).await {
+                out.push((*label, count));
+            }
+        }
+        out
     }
 }
 

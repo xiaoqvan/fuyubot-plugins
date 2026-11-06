@@ -19,7 +19,7 @@ use crate::util::now_ms;
 const RECHECK_THROTTLE_MS: i64 = 30_000;
 
 /// 处理 `updateUser`。
-pub fn handle_update_user(rt: &Runtime, update: &Value) {
+pub async fn handle_update_user(rt: &Runtime, update: &Value) {
     let Some(user) = update.get("user") else {
         return;
     };
@@ -35,10 +35,10 @@ pub fn handle_update_user(rt: &Runtime, update: &Value) {
         return;
     }
     // 快速过滤：这个用户在任何群都没有有效监视记录。
-    if !rt.db.has_any_active_watch(user_id) {
+    if !rt.db.has_any_active_watch(user_id).await {
         return;
     }
-    let watches = rt.db.watches_by_user(user_id);
+    let watches = rt.db.watches_by_user(user_id).await;
     if watches.is_empty() {
         return;
     }
@@ -52,6 +52,7 @@ pub fn handle_update_user(rt: &Runtime, update: &Value) {
     let bio = rt
         .td
         .user_full(user_id)
+        .await
         .ok()
         .and_then(|full| {
             full.get("bio")
@@ -74,7 +75,7 @@ pub fn handle_update_user(rt: &Runtime, update: &Value) {
         if !name_changed && !bio_changed {
             continue;
         }
-        let config = rt.db.config_or_default(watch.chat_id);
+        let config = rt.db.config_or_default(watch.chat_id).await;
         if !config.check_new_member {
             continue;
         }
@@ -97,33 +98,36 @@ pub fn handle_update_user(rt: &Runtime, update: &Value) {
                 ),
             );
             rt.db
-                .mark_profile_changed(watch.chat_id, user_id, &name, &bio);
+                .mark_profile_changed(watch.chat_id, user_id, &name, &bio)
+                .await;
             continue;
         }
 
         // 先更新快照，避免同一份内容重复触发。
         rt.db
-            .mark_profile_changed(watch.chat_id, user_id, &name, &bio);
-        recheck_profile(rt, watch.chat_id, user_id, &name, &bio);
-        rt.db.mark_profile_rechecked(watch.chat_id, user_id);
+            .mark_profile_changed(watch.chat_id, user_id, &name, &bio)
+            .await;
+        recheck_profile(rt, watch.chat_id, user_id, &name, &bio).await;
+        rt.db.mark_profile_rechecked(watch.chat_id, user_id).await;
     }
 }
 
 /// 对变更后的资料做一次 AI 复检（阈值与入群检查一致）。
-fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, bio: &str) {
+async fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, bio: &str) {
     // 黑名单优先
-    if let Some(record) = rt.db.match_name(name) {
+    if let Some(record) = rt.db.match_name(name).await {
         flow::new_member::ban_new_member(
             rt,
             chat_id,
             user_id,
             &format!("入群后资料变更命中名称黑名单 (ID: {})", doc_id(&record)),
             1.0,
-        );
+        )
+        .await;
         return;
     }
     if !bio.trim().is_empty()
-        && let Some(record) = rt.db.match_bio(bio)
+        && let Some(record) = rt.db.match_bio(bio).await
     {
         flow::new_member::ban_new_member(
             rt,
@@ -134,11 +138,12 @@ fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, bio: &s
                 doc_id(&record)
             ),
             1.0,
-        );
+        )
+        .await;
         return;
     }
 
-    let channel = flow::personal_channel(rt, user_id);
+    let channel = flow::personal_channel(rt, user_id).await;
     let mut input = ModerationInput::profile(name, bio);
     if let Some((channel_name, description)) = &channel {
         input = input.with_personal_channel(channel_name.clone(), description.clone());
@@ -153,7 +158,8 @@ fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, bio: &s
             message_type: None,
             force_default: false,
         },
-    );
+    )
+    .await;
 
     if !result.profile_hit() || result.confidence <= 0.0 {
         log::info(
@@ -175,6 +181,7 @@ fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, bio: &s
     if rt
         .db
         .mute_review(chat_id, user_id)
+        .await
         .is_some_and(|review| review.status == "approved")
     {
         log::info(
@@ -188,8 +195,9 @@ fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, bio: &s
     }
 
     if result.confidence >= 0.95 {
-        flow::new_member::ban_new_member(rt, chat_id, user_id, &reason, result.confidence);
+        flow::new_member::ban_new_member(rt, chat_id, user_id, &reason, result.confidence).await;
     } else {
-        flow::new_member::mute_new_member(rt, chat_id, user_id, name, &reason, result.confidence);
+        flow::new_member::mute_new_member(rt, chat_id, user_id, name, &reason, result.confidence)
+            .await;
     }
 }

@@ -26,7 +26,7 @@ const BAN_EMOJI_ID: i64 = 6_122_821_483_581_416_154;
 const REVIEW_DEADLINE_MS: i64 = 60 * 60 * 1000;
 
 /// 处理 `updateChatMember`。
-pub fn handle_chat_member(rt: &Runtime, update: &Value) {
+pub async fn handle_chat_member(rt: &Runtime, update: &Value) {
     let Some(member) = update.get("new_chat_member") else {
         return;
     };
@@ -40,15 +40,15 @@ pub fn handle_chat_member(rt: &Runtime, update: &Value) {
     let Some(chat_id) = update.get("chat_id").and_then(Value::as_i64) else {
         return;
     };
-    if !flow::is_group(rt, chat_id) {
+    if !flow::is_group(rt, chat_id).await {
         return;
     }
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     if !config.check_new_member {
         return;
     }
     // 只管「能不能限制成员」：删消息不参与入群检查。
-    if !rt.td.am_i_admin(chat_id, &["can_restrict_members"]) {
+    if !rt.td.am_i_admin(chat_id, &["can_restrict_members"]).await {
         return;
     }
     let Some(user_id) = member
@@ -58,10 +58,10 @@ pub fn handle_chat_member(rt: &Runtime, update: &Value) {
     else {
         return;
     };
-    let Ok(user) = rt.td.user(user_id) else {
+    let Ok(user) = rt.td.user(user_id).await else {
         return;
     };
-    let full = rt.td.user_full(user_id).ok();
+    let full = rt.td.user_full(user_id).await.ok();
     let name = format!(
         "{}{}",
         user.get("first_name").and_then(Value::as_str).unwrap_or(""),
@@ -76,18 +76,19 @@ pub fn handle_chat_member(rt: &Runtime, update: &Value) {
         .to_owned();
 
     // ① 黑名单优先
-    if let Some(record) = rt.db.match_name(&name) {
+    if let Some(record) = rt.db.match_name(&name).await {
         ban_new_member(
             rt,
             chat_id,
             user_id,
             &format!("名称匹配黑名单 (ID: {})", doc_id(&record)),
             1.0,
-        );
+        )
+        .await;
         return;
     }
     if !bio.is_empty()
-        && let Some(record) = rt.db.match_bio(&bio)
+        && let Some(record) = rt.db.match_bio(&bio).await
     {
         ban_new_member(
             rt,
@@ -95,15 +96,16 @@ pub fn handle_chat_member(rt: &Runtime, update: &Value) {
             user_id,
             &format!("简介匹配黑名单关键词 (ID: {})", doc_id(&record)),
             1.0,
-        );
+        )
+        .await;
         return;
     }
 
     // ② 登记 24h 监视：窗口内改资料 → AI 复检；改过资料后再发消息强制文本审
-    rt.db.upsert_watch(chat_id, user_id, &name, &bio);
+    rt.db.upsert_watch(chat_id, user_id, &name, &bio).await;
 
     // ③ AI 检查资料
-    let channel = flow::personal_channel(rt, user_id);
+    let channel = flow::personal_channel(rt, user_id).await;
     if bio.trim().is_empty() && channel.is_none() {
         log::info(
             &rt.host,
@@ -127,7 +129,8 @@ pub fn handle_chat_member(rt: &Runtime, update: &Value) {
             message_type: None,
             force_default: false,
         },
-    );
+    )
+    .await;
 
     if result.profile_hit() && result.confidence > 0.0 {
         let reason = if result.reason.is_empty() {
@@ -136,15 +139,15 @@ pub fn handle_chat_member(rt: &Runtime, update: &Value) {
             result.reason.clone()
         };
         if result.confidence >= 0.95 {
-            ban_new_member(rt, chat_id, user_id, &reason, result.confidence);
+            ban_new_member(rt, chat_id, user_id, &reason, result.confidence).await;
         } else {
-            mute_new_member(rt, chat_id, user_id, &name, &reason, result.confidence);
+            mute_new_member(rt, chat_id, user_id, &name, &reason, result.confidence).await;
         }
     }
 }
 
 /// 永久禁言 + 群内提示 + 复审记录。
-pub fn mute_new_member(
+pub async fn mute_new_member(
     rt: &Runtime,
     chat_id: i64,
     user_id: i64,
@@ -153,7 +156,7 @@ pub fn mute_new_member(
     confidence: f64,
 ) {
     let sender = Sender::User(user_id);
-    if let Err(error) = rt.td.restrict(chat_id, sender) {
+    if let Err(error) = rt.td.restrict(chat_id, sender).await {
         log::warn(&rt.host, format!("禁言新成员 {user_id} 失败：{error}"));
         return;
     }
@@ -179,45 +182,53 @@ pub fn mute_new_member(
                 .emoji(BAN_EMOJI_ID),
         ],
     ];
-    let message = rt.td.send_text(
-        chat_id,
-        text::markdown(&body),
-        None,
-        buttons,
-        None,
-        Some(false),
-    );
+    let message = rt
+        .td
+        .send_text(
+            chat_id,
+            text::markdown(&body),
+            None,
+            buttons,
+            None,
+            Some(false),
+        )
+        .await;
     let message_id = message
         .as_ref()
         .and_then(|message| message.get("id"))
         .and_then(Value::as_i64);
 
     // 复审记录：1 小时没通过就封（sweeper 兜底）
-    rt.db.upsert_mute_review(
-        chat_id,
-        user_id,
-        message_id,
-        reason,
-        confidence,
-        now_ms() + REVIEW_DEADLINE_MS,
-    );
+    rt.db
+        .upsert_mute_review(
+            chat_id,
+            user_id,
+            message_id,
+            reason,
+            confidence,
+            now_ms() + REVIEW_DEADLINE_MS,
+        )
+        .await;
 
     // 群绑定的日志频道
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     if let Some(channel) = config.log_channel {
-        let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true);
+        let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
         let body = format!(
             "#Mute #welcome\n**User**: {user_mention}({user_id})\n**Chat**: {chat_mention}({chat_id})\n**Action**: 资料疑似广告，已禁言待复审\n**Confidence**: {}\n**Reason**: {reason}\n**Deadline**: 1小时内需修改并通过复审",
             text::confidence_percent(confidence)
         );
-        let _ = rt.td.send_text(
-            channel,
-            text::markdown(&body),
-            None,
-            Vec::new(),
-            None,
-            Some(true),
-        );
+        let _ = rt
+            .td
+            .send_text(
+                channel,
+                text::markdown(&body),
+                None,
+                Vec::new(),
+                None,
+                Some(true),
+            )
+            .await;
     }
     log::info(
         &rt.host,
@@ -226,31 +237,39 @@ pub fn mute_new_member(
 }
 
 /// 封禁新成员并写审计 + 日志频道。
-pub fn ban_new_member(rt: &Runtime, chat_id: i64, user_id: i64, reason: &str, confidence: f64) {
+pub async fn ban_new_member(
+    rt: &Runtime,
+    chat_id: i64,
+    user_id: i64,
+    reason: &str,
+    confidence: f64,
+) {
     let sender = Sender::User(user_id);
-    if let Err(error) = rt.td.ban(chat_id, sender) {
+    if let Err(error) = rt.td.ban(chat_id, sender).await {
         // 封禁没成功就不写记录、也不发「已封禁」日志：`/qban` 与日志频道不能谎报。
         log::warn(&rt.host, format!("封禁新成员 {user_id} 失败：{error}"));
         return;
     }
-    rt.db.add_ban_record(
-        chat_id,
-        user_id,
-        sender.type_name(),
-        "ban",
-        "profile_ad",
-        reason,
-        None,
-    );
+    rt.db
+        .add_ban_record(
+            chat_id,
+            user_id,
+            sender.type_name(),
+            "ban",
+            "profile_ad",
+            reason,
+            None,
+        )
+        .await;
     log::info(
         &rt.host,
         format!("新成员({user_id}) 因资料含广告被自动封禁 (confidence: {confidence})"),
     );
 
-    let config = rt.db.config_or_default(chat_id);
+    let config = rt.db.config_or_default(chat_id).await;
     if let Some(channel) = config.log_channel {
-        let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true);
-        let user_mention = rt.td.sender_mention(sender, true);
+        let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
+        let user_mention = rt.td.sender_mention(sender, true).await;
         let body = format!(
             "#Ban #welcome\n**ID**: {user_mention}({user_id})\n**Chat**: {chat_mention}({chat_id})\n**Reason**: Spam detected\n**Detail**:\n - Type: profile_ad\n - Reason: {reason} ({})",
             text::confidence_percent(confidence)
@@ -259,13 +278,16 @@ pub fn ban_new_member(rt: &Runtime, chat_id: i64, user_id: i64, reason: &str, co
             "unban+白名单",
             unban_callback(chat_id, sender),
         )];
-        let _ = rt.td.send_text(
-            channel,
-            text::markdown(&body),
-            None,
-            buttons,
-            None,
-            Some(true),
-        );
+        let _ = rt
+            .td
+            .send_text(
+                channel,
+                text::markdown(&body),
+                None,
+                buttons,
+                None,
+                Some(true),
+            )
+            .await;
     }
 }
