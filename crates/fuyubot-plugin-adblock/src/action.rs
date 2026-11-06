@@ -14,7 +14,7 @@
 
 use std::time::Duration;
 
-use fuyubot_simplify::Topic;
+use crate::simplify::Topic;
 use serde_json::Value;
 
 use crate::api::{Sender, Td, callback_row, member_param, unban_callback};
@@ -167,7 +167,7 @@ fn send_log(
     chat_id: i64,
     topic: Option<Topic>,
     text_body: &str,
-    buttons: Vec<Vec<fuyubot_simplify::ReplyButton>>,
+    buttons: Vec<Vec<crate::simplify::ReplyButton>>,
 ) -> Option<Value> {
     let message = rt.td.send_text(
         chat_id,

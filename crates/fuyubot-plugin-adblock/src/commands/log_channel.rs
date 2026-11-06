@@ -3,7 +3,7 @@
 //! 校验比 TS 版严格一点：原版先发测试消息、**无论成功失败**都在 `finally` 里写配置并
 //! 回复「设置成功」——频道 ID 打错也会显示成功。这里只有测试消息真的发出去了才写配置。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 
 use crate::api::Sender;
 use crate::flow;

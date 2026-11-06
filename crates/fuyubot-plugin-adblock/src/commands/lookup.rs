@@ -2,7 +2,7 @@
 //!
 //! 这三个是**运维工具**，输出的都是原始记录，不做美化——排查时看到的就是库里存的东西。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 use serde_json::Value;
 
 use crate::api::Sender;

@@ -6,7 +6,7 @@
 //! - 记录已经不是 `pending`（用户刚点了复审通过）→ **不封**；
 //! - 用户已经不在「受限」状态（自己退群 / 已被解禁 / 已被封）→ 标记通过，不再处理。
 
-use fuyubot_simplify::ReplyButton;
+use crate::simplify::ReplyButton;
 
 use crate::action;
 use crate::api::{Sender, callback_row, unban_callback};

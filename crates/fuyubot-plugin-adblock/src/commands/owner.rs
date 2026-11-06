@@ -5,7 +5,7 @@
 //!
 //! 两个都只在私聊/任意聊天里给主人用，结果用 Markdown 排版（排查时更好读）。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 
 use crate::ai::{self, AiMeta, ModerationInput};
 use crate::api::Sender;

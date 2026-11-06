@@ -5,7 +5,7 @@
 //! - 新词被已有词包含 → 拦下（已有词覆盖更广，再添加没意义）；
 //! - 新词包含已有词 → 允许，但提示「匹配范围会变宽」。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 
 use crate::api::Sender;
 use crate::flow;

@@ -3,7 +3,7 @@
 //! 状态页与 TS 版同构，但把「用内置 AI」的判定换成新逻辑（`/adaiset` 授权的群 +
 //! 插件配置里配了默认接口），不再有写死的群名单。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 use serde_json::Value;
 
 use crate::ai;
@@ -186,7 +186,7 @@ fn show_status(rt: &Runtime, chat_id: i64) {
     body.push_str("**开关管理：**\n发送 `/adconfig <配置项>` 切换开关\n可用命令：/adconfig limit ban|mute、/adconfig delay <秒数>");
 
     // 私聊配置链接：需要 Bot 自己的用户名
-    let username = fuyubot_simplify::my_usernames(&rt.host)
+    let username = crate::simplify::my_usernames(&rt.host)
         .into_iter()
         .next()
         .unwrap_or_default();

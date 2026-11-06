@@ -28,3 +28,6 @@ Thumbs.db
 
 # 本地凭据（fuyubot.toml 里可能带 api_key / api_hash，别提交）
 fuyubot.toml
+
+# Serena 项目元数据
+/.serena/

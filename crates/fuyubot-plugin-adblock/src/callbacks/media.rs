@@ -3,7 +3,7 @@
 //! 三个按钮的共同点：**先把对象拉黑，再封人**。这样即使封禁失败（权限/网络），
 //! 下一次同类内容还是会被关键词/文件/贴纸规则拦住。
 
-use fuyubot_simplify::ReplyButton;
+use crate::simplify::ReplyButton;
 use serde_json::Value;
 
 use crate::action;

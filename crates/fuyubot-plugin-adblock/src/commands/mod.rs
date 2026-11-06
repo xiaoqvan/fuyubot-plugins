@@ -12,7 +12,7 @@
 //!
 //! ## 为什么权限在这里，而不是在封装里
 //!
-//! `fuyubot_simplify::on_command` 只解析 `/cmd@bot args` 并过滤「点名给别人的」，
+//! [`command_of`] 只解析 `/cmd@bot args`，「点名给别人的」靠 [`Command::is_for`] 过滤，
 //! `Command` 里没有 sender；宿主也没有命令权限层。TS 的框架有（`PluginValidator`），
 //! 所以这一层由本插件用 [`spec`] 补上——**一张表 + 一个入口**，而不是散在 17 个
 //! handler 里（散着必然漏：`private` 作用域与 `admin` 档此前就漏了）。
@@ -58,7 +58,7 @@ pub const HELP_SERVICE: &str = "fuyubot.help.commands";
 /// 返回值表示「这条消息是不是本插件的命令」（`true` 也包括被权限拒绝的情况）。
 /// **调用方不要据此跳过检测**：TS 里命令分发与消息检测是两条独立路径。
 pub fn dispatch(rt: &Arc<Runtime>, update: &Value, sender: Sender) -> bool {
-    let Some(command) = fuyubot_simplify::command_of(update) else {
+    let Some(command) = crate::simplify::command_of(update) else {
         return false;
     };
     // 表里没有的名字**不是命令**：交给检测流水线当普通文本扫。
@@ -69,7 +69,7 @@ pub fn dispatch(rt: &Arc<Runtime>, update: &Value, sender: Sender) -> bool {
         return false;
     };
     // `@BotName` 的命令只有被点名的那个响应；裸命令都响应。
-    let usernames = fuyubot_simplify::my_usernames(&rt.host);
+    let usernames = crate::simplify::my_usernames(&rt.host);
     if !command.is_for(&usernames) {
         return false;
     }
@@ -101,7 +101,7 @@ pub fn dispatch(rt: &Arc<Runtime>, update: &Value, sender: Sender) -> bool {
 }
 
 /// 把命令参数按空白切成词（与 TS 版 `text.split(/\s+/)` 同义，但**不含命令本身**）。
-pub fn words(command: &fuyubot_simplify::Command) -> Vec<String> {
+pub fn words(command: &crate::simplify::Command) -> Vec<String> {
     command.args.split_whitespace().map(str::to_owned).collect()
 }
 
@@ -173,12 +173,12 @@ mod tests {
                 }
             }
         });
-        let command = fuyubot_simplify::command_of(&update).expect("应该解析出命令");
+        let command = crate::simplify::command_of(&update).expect("应该解析出命令");
         assert_eq!(command.name, "addkw");
         assert_eq!(command.chat_id, 777);
         assert_eq!(command.args, "ads 甲 乙 丙");
         // 传成 `update["message"]` 就一条命令都收不到——把这条钉死。
-        assert!(fuyubot_simplify::command_of(&update["message"]).is_none());
+        assert!(crate::simplify::command_of(&update["message"]).is_none());
     }
 
     #[test]
@@ -193,7 +193,7 @@ mod tests {
                 }
             }
         });
-        let command = fuyubot_simplify::command_of(&update).expect("命令");
+        let command = crate::simplify::command_of(&update).expect("命令");
         assert_eq!(words(&command), vec!["limit", "ban"]);
     }
 

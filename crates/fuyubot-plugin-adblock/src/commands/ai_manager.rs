@@ -5,7 +5,7 @@
 //! 这里**不搬**——那是一次性部署的产物，搬进通用插件只会让别的部署莫名奇妙用上别人
 //! 的额度。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 use serde_json::Value;
 
 use crate::api::Sender;

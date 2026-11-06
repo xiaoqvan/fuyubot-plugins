@@ -4,7 +4,7 @@
 //! 通过后做三件事——解除禁言、标记复审已通过（sweeper 不会再来封）、标记入群监视
 //! 已过审（之后改资料也不再因弱信号被禁言）。
 
-use fuyubot_simplify::{ButtonStyle, ReplyButton};
+use crate::simplify::{ButtonStyle, ReplyButton};
 use serde_json::Value;
 
 use crate::ai::{self, AiMeta, ModerationInput};

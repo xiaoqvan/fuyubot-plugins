@@ -25,8 +25,7 @@ fuyubot-plugins/
 
 ## 依赖布局（重要）
 
-`fuyubot-abi` / `fuyubot-simplify` 只存在于运行时仓库，其中 `fuyubot-simplify` 是
-`publish = false`——所以本仓库用 **path 依赖**，要求与 FuyuBot checkout **并排**：
+`fuyubot-abi` 只在运行时仓库里发，本仓库用 **path 依赖**，要求与 FuyuBot checkout **并排**：
 
 ```text
 <父目录>/
@@ -34,7 +33,10 @@ fuyubot-plugins/
 └── fuyubot-plugins/    # 本仓库
 ```
 
-换布局就改根 `Cargo.toml` 的 `[workspace.dependencies]` 里那两行（或改成 git 依赖）。
+换布局就改根 `Cargo.toml` 的 `[workspace.dependencies]` 里那一行（或改成 crates.io / git 依赖）。
+**不依赖 `fuyubot-simplify`**（它是 `publish = false`）：裁剪版内联在
+adblock 的 [`src/simplify.rs`](crates/fuyubot-plugin-adblock/src/simplify.rs)，
+发送走 ABI v5 的 `simplify_invoke` op 表。
 
 ## 构建
 

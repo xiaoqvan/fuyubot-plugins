@@ -10,7 +10,7 @@ pub mod profile;
 pub mod records;
 pub mod sweeper;
 
-use fuyubot_simplify::ReplyButton;
+use crate::simplify::ReplyButton;
 use serde_json::Value;
 
 use crate::action;

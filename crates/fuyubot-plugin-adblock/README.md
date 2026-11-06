@@ -27,7 +27,9 @@ FuyuBot 的广告拦截插件：把 TS 框架里的 `plugins/adblock` 重写成 
 - **`storage.mongo`（硬依赖）**：数据全部通过宿主里的 MongoDB 插件服务读写。
   插件在 `inject()` 里声明了它——mongo 插件不在时本插件**不会激活**（停在 Pending），
   而不是静默地「不拦截」。集合名与字段沿用 TS 版，**同一个库可以直接接上**。
-- FuyuBot 运行时仓库（`fuyubot-abi` / `fuyubot-simplify` 只发/只存在于该仓库，见下）。
+- FuyuBot 运行时仓库（`fuyubot-abi` 走 path 指向 `../FuyuBot`）。**不依赖
+  `fuyubot-simplify`**（它是 `publish = false`）：裁剪版内联在
+  [`src/simplify.rs`](src/simplify.rs)，发送走 ABI v5 的 `simplify_invoke` op 表。
 
 > mongo 插件就在本仓库的 [`crates/fuyubot-plugin-mongo`](../fuyubot-plugin-mongo/)；
 > 本插件只认服务名 `storage.mongo` 与它的 JSON 方法约定，两个插件各自独立发布。

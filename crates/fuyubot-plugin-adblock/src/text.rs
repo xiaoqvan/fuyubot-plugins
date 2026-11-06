@@ -24,7 +24,7 @@
 //! ⚠️ 真库实测（见 `fuyubot-simplify` 的 `Text::markdown_v2` 注释）：MarkdownV2 的粗体是
 //! `*x*`，**不是** `**x**`；`**x**` 会被吞掉。转换是必须的，不是可选的。
 
-use fuyubot_simplify::Text;
+use crate::simplify::Text;
 use serde_json::Value;
 
 // ── 消息文本 ──────────────────────────────────────────────────────

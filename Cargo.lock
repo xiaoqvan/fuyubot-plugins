@@ -652,7 +652,6 @@ name = "fuyubot-plugin-adblock"
 version = "0.1.0"
 dependencies = [
  "fuyubot-abi",
- "fuyubot-simplify",
  "serde",
  "serde_json",
  "ureq",
@@ -677,27 +676,6 @@ dependencies = [
  "fuyubot-abi",
  "rusqlite",
  "serde_json",
-]
-
-[[package]]
-name = "fuyubot-simplify"
-version = "0.1.3"
-dependencies = [
- "fuyubot-abi",
- "fuyubot-tdlib-sys",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
-name = "fuyubot-tdlib-sys"
-version = "0.1.3"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror",
- "toml",
- "ureq",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@
 //! 中间那段按「存疑」处理。命中后还会把关键词 / 全文 / 名称 / 简介 / 转发来源 /
 //! 贴纸集写进对应的黑名单库——这是原版最有价值的一半：一次人工举报，之后自动拦。
 
-use fuyubot_simplify::{Command, ReplyButton};
+use crate::simplify::{Command, ReplyButton};
 use serde_json::Value;
 
 use crate::ai::{self, AiMeta, Contact, ModerationInput, ModerationResult, Profile, Sticker};
@@ -719,7 +719,7 @@ fn persist_ai_result(
         "insertedIds": inserted,
     });
     if let Some(channel) = rt.cfg.ai_db_channel {
-        let topic = rt.cfg.ai_db_topic.map(fuyubot_simplify::Topic::forum);
+        let topic = rt.cfg.ai_db_topic.map(crate::simplify::Topic::forum);
         let _ = rt.td.send_text(
             channel,
             text::plain(

@@ -2,7 +2,7 @@
 //!
 //! 只收 `-100` 开头的频道/超级群 ID：普通群与用户没有「频道转发」这种来源。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 use serde_json::Value;
 
 use crate::api::Sender;

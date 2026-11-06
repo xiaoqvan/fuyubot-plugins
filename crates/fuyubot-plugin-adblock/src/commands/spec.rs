@@ -5,7 +5,7 @@
 //! ## 为什么需要这张表
 //!
 //! TS 的插件框架替插件做 scope 与 permission 校验（`PluginValidator.ts`）；
-//! FuyuBot **没有这一层**——[`fuyubot_simplify::on_command`] 只解析
+//! FuyuBot **没有这一层**——[`crate::simplify::command_of`] 只解析
 //! `/cmd@bot args` 并过滤「点名给别人的」，`Command` 结构里连 sender 都没有。
 //! 所以那一层只能由插件补，而补法必须是「一张表 + 一个入口」，散在 17 个 handler
 //! 里必然漏（本插件此前就漏了 private scope 与 `admin` 档）。
@@ -24,7 +24,7 @@
 
 use std::sync::Arc;
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 use serde_json::Value;
 
 use crate::api::Sender;

@@ -10,18 +10,18 @@ rust-version = "1.99"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/CatMoeCircle/fuyubot-plugins"
 
-# ⚠️ `fuyubot-abi` / `fuyubot-simplify` 只在运行时仓库（Fuyu-Bot）里，
-# 而且 `fuyubot-simplify` 是 `publish = false`——外部插件只能走 path。
+# ⚠️ `fuyubot-abi` 只在运行时仓库（Fuyu-Bot）里发——这里走 path。
 # 本仓库假定与 FuyuBot checkout **并排**放在同一父目录下：
 #
 #     <父目录>/
 #     ├── FuyuBot/          # 运行时仓库
 #     └── fuyubot-plugins/  # 本仓库
 #
-# 换目录布局就改下面两行（或者改成 git 依赖）。
+# 换目录布局就改下面这行（或者改成 crates.io / git 依赖）。
+# `fuyubot-simplify`（`publish = false`）**不依赖**：裁剪版内联在
+# adblock 的 `src/simplify.rs`，发送走 ABI v5 的 `simplify_invoke` op 表。
 [workspace.dependencies]
 fuyubot-abi = { path = "../FuyuBot/crates/fuyubot-abi" }
-fuyubot-simplify = { path = "../FuyuBot/crates/fuyubot-simplify" }
 
 # 三个插件共享的第三方依赖，版本只写在这一处。
 serde = { version = "1.0.229", features = ["derive"] }

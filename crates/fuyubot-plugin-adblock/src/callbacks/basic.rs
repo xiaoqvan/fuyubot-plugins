@@ -3,7 +3,7 @@
 //! 三个真实动作都会：先回 callback（否则客户端一直转圈）→ 改原消息 → 写日志频道 →
 //! 10 秒后删掉群里的提示。顺序是有意的：**先回弹窗，再做慢操作**，用户不会觉得按钮没反应。
 
-use fuyubot_simplify::ReplyButton;
+use crate::simplify::ReplyButton;
 
 use crate::action;
 use crate::api::{Sender, callback_row, unban_callback};

@@ -12,7 +12,7 @@
 //! 流程状态只活在内存里（[`crate::cache`]），30 分钟不作答就作废——它是一次性引导，
 //! 没有写库的必要，重启丢掉反而干净。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 use serde_json::Value;
 
 use crate::ai::{self, mask_secret};

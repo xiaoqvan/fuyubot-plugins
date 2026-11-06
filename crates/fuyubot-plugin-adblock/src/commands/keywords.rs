@@ -3,7 +3,7 @@
 //! 关键词组是 **AND** 语义（一组里每个词都出现才算命中），这是原版的设计：
 //! 「兼职」「日赚」分开都能命中，合成一组就只会打掉同时说这两件事的广告。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 
 use crate::api::Sender;
 use crate::flow;

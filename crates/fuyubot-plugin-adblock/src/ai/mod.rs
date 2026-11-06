@@ -712,7 +712,7 @@ fn write_log(
     let Some(channel) = rt.cfg.ai_log_channel else {
         return;
     };
-    let topic = rt.cfg.ai_log_topic.map(fuyubot_simplify::Topic::forum);
+    let topic = rt.cfg.ai_log_topic.map(crate::simplify::Topic::forum);
 
     let chat_label = chat_id
         .map(|chat_id| rt.td.sender_mention(Sender::Chat(chat_id), false))

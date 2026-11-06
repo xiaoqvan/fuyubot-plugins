@@ -48,6 +48,8 @@ mod log;
 mod pool;
 mod runtime;
 mod scheduler;
+/// 本地化的 simplify 层（上游 `fuyubot-simplify` 的裁剪版，不依赖该 crate）。
+pub mod simplify;
 mod store;
 mod subscribe;
 mod text;

@@ -15,7 +15,7 @@
 //! `getChatMember` …）。Bot API 那套（`kickChatMember`、`restrictChatMember`）不存在。
 
 use fuyubot_abi::HostApi;
-use fuyubot_simplify::{EditTextParams, ReplyButton, SendMessageParams, Simplify, Text, Topic};
+use crate::simplify::{EditTextParams, ReplyButton, SendMessageParams, Simplify, Text, Topic};
 use serde_json::{Value, json};
 
 /// 普通请求的等待上限。发消息另算（`send_message` 自带 30 秒预算）。
@@ -633,7 +633,7 @@ pub fn status_has_rights(status: &Value, rights: &[&str]) -> bool {
 
 // ── 键盘 ──────────────────────────────────────────────────────────
 
-/// 一行里放一个回调按钮（数据会被 `fuyubot-simplify` 自动 base64 编码）。
+/// 一行里放一个回调按钮（数据会被 `crate::simplify` 自动 base64 编码）。
 pub fn callback_row(text: impl Into<String>, data: impl Into<String>) -> Vec<ReplyButton> {
     vec![ReplyButton::callback(text, data)]
 }

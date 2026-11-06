@@ -8,7 +8,7 @@
 //! 那条「禁言待复审」记录由 [`crate::flow::sweeper`] 定时兜底，`/重新审查` 按钮由
 //! `callbacks::new_member` 处理。
 
-use fuyubot_simplify::{ButtonStyle, ReplyButton};
+use crate::simplify::{ButtonStyle, ReplyButton};
 use serde_json::Value;
 
 use crate::ai::{self, AiMeta, ModerationInput};

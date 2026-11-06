@@ -139,7 +139,7 @@ pub(crate) fn send_group_log_with_buttons(
     rt: &Runtime,
     group_id: i64,
     body: &str,
-    buttons: Vec<Vec<fuyubot_simplify::ReplyButton>>,
+    buttons: Vec<Vec<crate::simplify::ReplyButton>>,
 ) {
     let config = rt.db.config_or_default(group_id);
     let Some(channel) = config.log_channel else {

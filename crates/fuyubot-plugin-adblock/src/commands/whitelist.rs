@@ -3,7 +3,7 @@
 //! 参数解析与 TS 版一致：支持数字 ID、`@username`、以及「回复某条消息」。
 //! 所有提示 10 秒后自删，避免刷屏。
 
-use fuyubot_simplify::Command;
+use crate::simplify::Command;
 use serde_json::Value;
 
 use crate::api::Sender;
