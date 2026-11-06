@@ -1,0 +1,19 @@
+[package]
+name = "fuyubot-plugin-adblock"
+description = "FuyuBot 广告拦截插件：关键词 / 文件 / 贴纸 / AI 审核，命中即删除、禁言或封禁，并写入日志频道"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主 dlopen；rlib 让单测能直接测纯函数（Markdown 转义、base64、查询解析）。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+fuyubot-simplify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true

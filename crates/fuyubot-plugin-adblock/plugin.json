@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "fuyubot.adblock",
+  "name": "Adblock",
+  "version": "0.1.0",
+  "kind": "native",
+  "entry": "bin/fuyubot_plugin_adblock.dll",
+  "abi": 5,
+  "platforms": [
+    "windows-x86_64",
+    "windows-aarch64",
+    "linux-x86_64",
+    "linux-aarch64",
+    "macos-aarch64",
+    "android-aarch64",
+    "android-x86_64"
+  ],
+  "depends": ["storage.mongo"],
+  "optional_depends": ["fuyubot.help.commands"],
+  "description": "广告拦截：关键词 / 文件 / 贴纸 / 转发来源 / AI 审核，命中即删除、禁言或封禁，并写入日志频道。数据全部存在 MongoDB。",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins"
+}

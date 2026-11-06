@@ -1,0 +1,30 @@
+# Rust
+/target
+**/*.rs.bk
+
+# 打包产物
+/dist
+__pycache__/
+*.pyc
+
+# 运行时产物 / 本地实例状态
+.plugins/
+plugins/*.dll
+plugins/*.so
+plugins/*.dylib
+.fuyubot/
+
+# 插件运行期数据（用户的库文件，绝不入库）
+/data/
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+
+# 本地凭据（fuyubot.toml 里可能带 api_key / api_hash，别提交）
+fuyubot.toml

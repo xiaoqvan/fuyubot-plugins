@@ -1,0 +1,122 @@
+# 发布三个插件：全平台编 cdylib，按 bundle 契约打 zip 挂到 Release。
+#
+# 打出来的是**一个插件一个 zip**（不是本体发布包）：
+#   <plugin-id>-<版本>-<平台>.zip
+#     ├── plugin.json        entry 指向 bin/ 下的动态库
+#     └── bin/<动态库>
+# 平台名与 `crates/fuyubot-loader` 的 `current_platform()` 同一套口径：
+# windows / linux / macos / android × x86_64 / aarch64（macOS 只有 aarch64）。
+#
+# ⚠️ 本仓库用 path 依赖指向 ../FuyuBot，所以两个仓库都要 checkout，
+# 且必须是兄弟目录（fuyubot-plugins 的 ../FuyuBot）。
+#
+# 桌面与 Android 分成两个 job：Android 要用 NDK + cargo-ndk 交叉编译，
+# 和另外五个 runner 的步骤没有交集。`release` 把两边的 artifact 合到一个 Release。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows-x86_64
+          - os: windows-11-vs2026-arm
+            platform: windows-aarch64
+          - os: ubuntu-latest
+            platform: linux-x86_64
+          - os: ubuntu-24.04-arm
+            platform: linux-aarch64
+          - os: macos-14
+            platform: macos-aarch64
+    runs-on: ${{ matrix.os }}
+    steps:
+      # 两个仓库都要，且是兄弟目录：都在 $GITHUB_WORKSPACE 下面，
+      # cargo 的工作目录是 fuyubot-plugins/，`../FuyuBot` 正好解析到运行时仓库。
+      - uses: actions/checkout@v4
+        with:
+          path: fuyubot-plugins
+      - uses: actions/checkout@v4
+        with:
+          repository: CatMoeCircle/Fuyu-Bot
+          path: FuyuBot
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        working-directory: fuyubot-plugins
+        run: cargo build --release
+      - name: Package
+        shell: bash
+        working-directory: fuyubot-plugins
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for plugin in fuyubot-plugin-sqlite fuyubot-plugin-mongo fuyubot-plugin-adblock; do
+            python scripts/package.py --plugin "$plugin" --platform "${{ matrix.platform }}" --version "$version"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}
+          path: fuyubot-plugins/dist/*.zip
+          if-no-files-found: error
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fuyubot-plugins
+      - uses: actions/checkout@v4
+        with:
+          repository: CatMoeCircle/Fuyu-Bot
+          path: FuyuBot
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: nttld/setup-ndk@v1
+        id: ndk
+        with:
+          ndk-version: r27c
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      # `rusqlite` 的 bundled SQLite 是 C 源码，Android 上由 cargo-ndk 把
+      # NDK 的 clang 塞进 CC/AR，交叉编译才会走到正确的 sysroot。
+      - name: Build
+        working-directory: fuyubot-plugins
+        run: cargo ndk -t arm64-v8a -t x86_64 --platform 24 build --release
+      - name: Package
+        shell: bash
+        working-directory: fuyubot-plugins
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for plugin in fuyubot-plugin-sqlite fuyubot-plugin-mongo fuyubot-plugin-adblock; do
+            python scripts/package.py --plugin "$plugin" --platform android-aarch64 --version "$version"
+            python scripts/package.py --plugin "$plugin" --platform android-x86_64 --version "$version"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: fuyubot-plugins/dist/*.zip
+          if-no-files-found: error
+
+  release:
+    needs: [build, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip

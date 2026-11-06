@@ -1,0 +1,43 @@
+# FuyuBot 广告拦截插件 —— 配置样例
+#
+# 把这一段并进项目的 fuyubot.toml。所有项都可选：不配也能启动，
+# 只是「仅 Bot 主人」命令与内置 AI 接口不可用。
+
+[plugin.fuyubot.adblock]
+# 能执行「仅 Bot 主人」命令的 TGID（不是 @username）。
+owner_ids = [123456789]
+
+# 「Bot 管理员」：可执行 TS 里 permission=admin 的 6 条命令
+# （/qadid /delad /addkw /editkw /addfwdbl /rmfwdbl）；主人天然也算管理员。
+# 不配时这 6 条只有 owner_ids 能用。
+admin_ids = [987654321]
+
+# 覆盖 mongo 插件的默认库。留空 / 删掉 = 用 mongo 插件的 db。
+# 想接 TS 版的老库，把这里指到 TS 版用的库名即可。
+db = "fuyubot"
+
+# 全局封禁审计频道（可选）。原 TS 版写死了一个频道 + 话题，
+# 这里默认不配：换个人部署就会往别人群里灌消息。
+# log_channel = -1001234567890
+# log_topic = 1622
+
+# 内置默认 AI 接口（OpenAI 兼容）。不配就只用各群自定义的接口。
+[plugin.fuyubot.adblock.ai]
+api_key = "sk-xxxxxxxxxxxxxxxx"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+
+# AI 审查总日志（可选）。
+[plugin.fuyubot.adblock.ai_log]
+channel = -1001234567890
+topic = 11740
+
+# /spam 判定后写库的通知（可选）。
+[plugin.fuyubot.adblock.ai_db_notify]
+channel = -1001234567890
+topic = 3034
+
+# 硬依赖：mongo 插件（提供 storage.mongo）。这段由 mongo 插件自己读。
+[plugin.fuyubot.mongo]
+uri = "mongodb://127.0.0.1:27017"
+db = "fuyubot"

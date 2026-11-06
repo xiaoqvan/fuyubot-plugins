@@ -1,0 +1,55 @@
+[workspace]
+members = ["crates/*"]
+default-members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/CatMoeCircle/fuyubot-plugins"
+
+# ⚠️ `fuyubot-abi` / `fuyubot-simplify` 只在运行时仓库（Fuyu-Bot）里，
+# 而且 `fuyubot-simplify` 是 `publish = false`——外部插件只能走 path。
+# 本仓库假定与 FuyuBot checkout **并排**放在同一父目录下：
+#
+#     <父目录>/
+#     ├── FuyuBot/          # 运行时仓库
+#     └── fuyubot-plugins/  # 本仓库
+#
+# 换目录布局就改下面两行（或者改成 git 依赖）。
+[workspace.dependencies]
+fuyubot-abi = { path = "../FuyuBot/crates/fuyubot-abi" }
+fuyubot-simplify = { path = "../FuyuBot/crates/fuyubot-simplify" }
+
+# 三个插件共享的第三方依赖，版本只写在这一处。
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+# adblock 的 OpenAI 兼容接口：同步阻塞 + 能逐条控制请求头/超时。
+# 用 rustls（FuyuBot 本体也是这套）：不依赖系统证书栈，跨平台行为一致。
+# ⚠️ rustls 的 ring 要在构建机上编 C 代码，Windows 下 MSVC 工具链必须和 vcvars 对上，
+# 否则会出 `cl : Command line error D8050`——排障见 adblock README「Windows 上的两个坑」。
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+# mongo 插件：官方驱动 + bson。
+# `chrono-0_4`：让 `DateTime<Utc>` 直接映射成 BSON `Date`（与 TS 版写入的
+# `new Date()` 字段二进制兼容）；`serde` + `serde_json-1`：Extended JSON 互转。
+bson = { version = "3", features = ["chrono-0_4", "serde", "serde_json-1"] }
+mongodb = { version = "3", features = ["bson-3"] }
+futures-util = "0.3.34"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "time"] }
+# sqlite 插件：`bundled` 把 SQLite 源码编进插件，不依赖系统库。
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+
+# 本地迭代：比 dev 略高优化，保留调试信息。
+[profile.debug]
+inherits = "dev"
+opt-level = 1
+
+# 插件是 cdylib（宿主 dlopen 出来的动态库）。
+# ⚠️ 不要加 `panic = "abort"`：`define_plugin!` 靠 `catch_unwind` 兜住插件里的 panic，
+# abort 会让一次插件崩直接带走整个宿主进程。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3

@@ -1,0 +1,17 @@
+[package]
+name = "fuyubot-plugin-sqlite"
+description = "FuyuBot SQLite 插件：注册 fuyubot.sqlite 服务，给其它插件提供进程级 SQLite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主加载；rlib 让单测直接调用业务逻辑。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
