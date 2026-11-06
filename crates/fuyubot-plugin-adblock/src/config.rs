@@ -9,23 +9,19 @@
 //! 3. **FuyuBot 没有「Bot 主人」概念**——`owner_ids` 是这张名单的唯一来源。
 //!
 //! ```toml
-//! [plugin.fuyubot.adblock]
-//! owner_ids = [123456789]            # /qadid /delad /addkw /adkew /adaiset … 的授权人
-//! log_channel = -1001234567890       # 可选：全局封禁审计频道
-//! log_topic = 1622                   # 可选：论坛群的话题 id
-//!
-//! [plugin.fuyubot.adblock.ai]
-//! api_key = "sk-…"                   # 可选：没配置时只用各群自定义接口
-//! base_url = "https://api.openai.com/v1"
-//! model = "gpt-4o-mini"
-//!
-//! [plugin.fuyubot.adblock.ai_log]
-//! channel = -1001234567890           # 可选：AI 审查总日志
-//! topic = 11740
-//!
-//! [plugin.fuyubot.adblock.ai_db_notify]
-//! channel = -1001234567890           # 可选：/spam 判定后写库的通知
-//! topic = 3034
+//! [plugin.fuyubot.adblock]                  # 只有这一个段，全部平铺
+//! owner_ids = [123456789]                   # /qadid /delad /addkw /adkew /adaiset … 的授权人
+//! admin_ids = [987654321]                   # TS 里 permission=admin 那一档
+//! db = "fuyubot"                            # 覆盖 storage.mongo 的默认库
+//! log_channel = -1001234567890              # 可选：全局封禁审计频道
+//! log_topic = 1622                          # 可选：论坛群的话题 id
+//! ai_api_key = "sk-…"                       # 可选：内置默认 AI 接口
+//! ai_base_url = "https://api.openai.com/v1"
+//! ai_model = "gpt-4o-mini"
+//! ai_log_channel = -1001234567890           # 可选：AI 审查总日志
+//! ai_log_topic = 11740
+//! ai_db_channel = -1001234567890            # 可选：/spam 判定后写库的通知
+//! ai_db_topic = 3034
 //! ```
 
 use std::collections::HashSet;
@@ -114,24 +110,19 @@ impl PluginConfig {
             config.admin_ids.insert(id);
         }
 
-        config.log_channel = get(host, "log_channel").as_ref().and_then(as_i64);
+        config.log_channel = channel_of(get(host, "log_channel"));
         config.db = get(host, "db")
             .as_ref()
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|db| !db.is_empty())
             .map(str::to_owned);
-        config.log_topic = get(host, "log_topic")
-            .as_ref()
-            .and_then(as_i64)
-            .and_then(|topic| i32::try_from(topic).ok());
+        config.log_topic = topic_of(get(host, "log_topic"));
 
-        let ai = get(host, "ai").unwrap_or(Value::Null);
-        let api_key = string_of(&ai, "api_key").unwrap_or_default();
-        let base_url = string_of(&ai, "base_url").unwrap_or_default();
-        let model = string_of(&ai, "model")
-            .filter(|model| !model.is_empty())
-            .unwrap_or_else(|| "gpt-4o-mini".to_owned());
+        // 内置默认 AI 接口：三项平铺（不再有 `.ai` 子表）。
+        let api_key = string_of(host, "ai_api_key").unwrap_or_default();
+        let base_url = string_of(host, "ai_base_url").unwrap_or_default();
+        let model = string_of(host, "ai_model").unwrap_or_else(|| "gpt-4o-mini".to_owned());
         if !api_key.is_empty() && !base_url.is_empty() {
             config.ai = Some(AiEndpoint {
                 api_key,
@@ -140,13 +131,10 @@ impl PluginConfig {
             });
         }
 
-        let ai_log = get(host, "ai_log").unwrap_or(Value::Null);
-        config.ai_log_channel = channel_of(&ai_log);
-        config.ai_log_topic = topic_of(&ai_log);
-
-        let ai_db = get(host, "ai_db_notify").unwrap_or(Value::Null);
-        config.ai_db_channel = channel_of(&ai_db);
-        config.ai_db_topic = topic_of(&ai_db);
+        config.ai_log_channel = channel_of(get(host, "ai_log_channel"));
+        config.ai_log_topic = topic_of(get(host, "ai_log_topic"));
+        config.ai_db_channel = channel_of(get(host, "ai_db_channel"));
+        config.ai_db_topic = topic_of(get(host, "ai_db_topic"));
 
         config
     }
@@ -204,26 +192,24 @@ fn as_i64(value: &Value) -> Option<i64> {
     }
 }
 
-fn string_of(value: &Value, key: &str) -> Option<String> {
-    value
-        .get(key)
+/// 取一个字符串项（去首尾空白；空串当没配）。
+fn string_of(host: &HostApi, key: &str) -> Option<String> {
+    get(host, key)
+        .as_ref()
         .and_then(Value::as_str)
         .map(str::trim)
+        .filter(|text| !text.is_empty())
         .map(str::to_owned)
 }
 
-fn channel_of(value: &Value) -> Option<i64> {
-    value
-        .get("channel")
-        .and_then(as_i64)
-        .or_else(|| value.get("chat_id").and_then(as_i64))
+/// 频道 id（数字或数字字符串都认）。
+fn channel_of(value: Option<Value>) -> Option<i64> {
+    value.as_ref().and_then(as_i64)
 }
 
-fn topic_of(value: &Value) -> Option<i32> {
-    value
-        .get("topic")
-        .and_then(as_i64)
-        .and_then(|topic| i32::try_from(topic).ok())
+/// 论坛话题 id（必须落在 i32 里）。
+fn topic_of(value: Option<Value>) -> Option<i32> {
+    channel_of(value).and_then(|topic| i32::try_from(topic).ok())
 }
 
 #[cfg(test)]
@@ -245,9 +231,11 @@ mod tests {
 
     #[test]
     fn channel_and_topic() {
-        let value = json!({"channel": -100, "topic": 42});
-        assert_eq!(channel_of(&value), Some(-100));
-        assert_eq!(topic_of(&value), Some(42));
-        assert_eq!(channel_of(&json!({})), None);
+        assert_eq!(channel_of(Some(json!(-100))), Some(-100));
+        assert_eq!(channel_of(Some(json!("-100"))), Some(-100));
+        assert_eq!(channel_of(None), None);
+        assert_eq!(topic_of(Some(json!(42))), Some(42));
+        // 超出 i32 的话题 id 当没配（TDLib 的 topic id 是 i32）。
+        assert_eq!(topic_of(Some(json!(9_999_999_999_i64))), None);
     }
 }

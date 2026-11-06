@@ -86,7 +86,8 @@ fuyubot plugin install target/release/fuyubot_plugin_adblock.dll
 
 ## 配置
 
-全部在 `fuyubot.toml` 的 `[plugin.fuyubot.adblock]` 下，**所有项都可选**：
+全部在 `fuyubot.toml` 的 `[plugin.fuyubot.adblock]` 下，**只有这一个段、全部平铺**，
+所有项都可选：
 
 ```toml
 [plugin.fuyubot.adblock]
@@ -102,20 +103,17 @@ log_channel = -1001234567890
 log_topic = 1622
 
 # 内置默认 AI 接口（可选；没有它就只在「群自定义了接口」的群里启用 AI）
-[plugin.fuyubot.adblock.ai]
-api_key = "sk-…"
-base_url = "https://api.openai.com/v1"
-model = "gpt-4o-mini"
+ai_api_key = "sk-…"
+ai_base_url = "https://api.openai.com/v1"
+ai_model = "gpt-4o-mini"
 
 # AI 审查总日志（可选）
-[plugin.fuyubot.adblock.ai_log]
-channel = -1001234567890
-topic = 11740
+ai_log_channel = -1001234567890
+ai_log_topic = 11740
 
 # /spam 判定后写库的通知（可选）
-[plugin.fuyubot.adblock.ai_db_notify]
-channel = -1001234567890
-topic = 3034
+ai_db_channel = -1001234567890
+ai_db_topic = 3034
 ```
 
 > ⚠️ 密钥不要提交进版本库。TS 版源码里硬编码过 API Key，这一版**一个都没搬**。

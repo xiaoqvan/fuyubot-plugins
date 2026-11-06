@@ -3,7 +3,8 @@
 //! TS 版用 `openai` SDK、客户端里写死两把 Key（已进仓库）。这一版：
 //!
 //! - **任何密钥都不进源码**：接口地址 / Key / 模型来自
-//!   `[plugin.fuyubot.adblock.ai]`（默认接口）或各群 `/adconfig` 配的自定义接口；
+//!   `[plugin.fuyubot.adblock]` 的 `ai_api_key` / `ai_base_url`（默认接口）或各群
+//!   `/adconfig` 配的自定义接口；
 //! - HTTP 用 `ureq`（同步阻塞），只在工作线程里发——回调线程一秒都不能停；
 //! - 提示词用 `include_str!` 嵌进动态库（见 [`prompt`]）；
 //! - 判定结果的字段名与 TS 版一致（`Reason` / `quoted_message` / `PersonalChannel`…），
@@ -470,7 +471,7 @@ pub async fn review(
         let reason = if chat_id.is_some() {
             "该群未配置AI接口，请管理员在群内使用 /adconfig 并点击「配置AI接口」完成配置"
         } else {
-            "未配置默认AI接口，请在 [plugin.fuyubot.adblock.ai] 里填写 api_key / base_url"
+            "未配置默认AI接口，请在 [plugin.fuyubot.adblock] 里填写 ai_api_key / ai_base_url"
         };
         log::warn(
             &rt.host,
