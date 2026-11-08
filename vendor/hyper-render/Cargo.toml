@@ -1,0 +1,48 @@
+[package]
+name = "hyper-render"
+version = "0.2.2"
+edition = "2021"
+description = "A Chromium-free HTML rendering engine for generating PNG and PDF outputs"
+license = "MIT OR Apache-2.0"
+# 本地 vendored fork：禁止误发布到 crates.io（同名 crate 属于上游）。
+publish = false
+repository = "https://github.com/thomasmost/hyper-render"
+documentation = "https://docs.rs/hyper-render"
+readme = "README.md"
+keywords = ["html", "pdf", "png", "render", "headless"]
+categories = ["rendering", "graphics", "multimedia::images"]
+
+[features]
+default = ["png"]  # 本地 fork 只发 PNG；PDF 依赖不参与构建
+png = ["dep:anyrender", "dep:anyrender_vello_cpu", "dep:png"]
+pdf = ["dep:krilla", "dep:stylo", "dep:parley", "dep:linebender_resource_handle"]
+
+[dependencies]
+# Core HTML/CSS parsing and layout (always required)
+blitz-dom = "=0.3.0-alpha.4"
+blitz-html = "=0.3.0-alpha.4"
+blitz-traits = "=0.3.0-alpha.4"
+blitz-paint = "=0.3.0-alpha.4"
+
+# PNG rendering (optional, enabled by default)
+anyrender = { version = "0.10", optional = true }
+anyrender_vello_cpu = { version = "0.12.1", optional = true }
+png = { version = "0.17", optional = true }
+
+# PDF rendering (optional, enabled by default)
+krilla = { version = "0.7", optional = true }
+stylo = { version = "0.17", optional = true }  # For accessing computed styles in PDF rendering
+parley = { version = "0.9", optional = true }  # For text layout types
+linebender_resource_handle = { version = "0.1", optional = true }  # For font data types
+
+# Common dependencies
+thiserror = "2"
+data-url = "0.3"
+# 外部 http(s) 资源（图片 / 字体）。PR #3 用 blitz-net，但它绑定 blitz 0.2，
+# 与 PR #1 的 blitz 0.3.0-alpha.4 不兼容；这里用阻塞客户端实现同一个 NetProvider。
+ureq = { version = "2.12", default-features = false, features = ["tls", "gzip"] }
+
+# 本地兼容性 pin：vello_cpu 0.0.8 的 glifo 依赖范围是 `0.1`，但 glifo 0.1.1
+# 改了 `GlyphRenderer` trait（vello_cpu 0.0.8 编译不过）。锁到它验证过的 0.1.0。
+# 详见 LOCAL.md。
+glifo = { version = "=0.1.0", default-features = false }

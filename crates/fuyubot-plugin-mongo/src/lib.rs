@@ -35,8 +35,7 @@ use crate::service::{
 
 /// 插件服务的公共外壳：名字 / 方法表 / JSON 进出的胶水层。
 ///
-/// 原是 XQAnimeBot-Rust 的共享 crate `fuyubot-service`，重写并入本插件——
-/// 单一插件自成一体，示例与测试直接 `fuyubot_plugin_mongo::service` 也能用到。
+/// 示例与测试可以直接用 `fuyubot_plugin_mongo::service`。
 pub mod service;
 
 const SERVICE: &str = "storage.mongo";
@@ -45,7 +44,7 @@ const PLUGIN: &str = "mongo";
 /// 启动配置：
 ///
 /// ```json
-/// { "uri": "mongodb://127.0.0.1:27017", "db": "xqanime" }
+/// { "uri": "mongodb://127.0.0.1:27017", "db": "appdata" }
 /// ```
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -155,7 +154,7 @@ pub mod api {
         fn default() -> Self {
             Self {
                 uri: "mongodb://127.0.0.1:27017".to_owned(),
-                db: "xqanime".to_owned(),
+                db: "appdata".to_owned(),
                 timeout_ms: 10_000,
                 app_name: "fuyubot".to_owned(),
             }

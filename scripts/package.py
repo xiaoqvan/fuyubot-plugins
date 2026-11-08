@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """把 `cargo build --release` 的产物打成 FuyuBot bundle zip（契约 v1）。
 
-一个仓库三个插件，每个插件各自一份 `plugin.json`（在 `crates/<crate>/` 根部）。
-本脚本对三个插件一视同仁，用 `--plugin` 选目标：
+一个仓库四个插件，每个插件各自一份 `plugin.json`（在 `crates/<crate>/` 根部）。
+本脚本对所有插件一视同仁，用 `--plugin` 选目标：
 
     python scripts/package.py --plugin fuyubot-plugin-sqlite \
         --platform windows-x86_64 --version 0.1.0

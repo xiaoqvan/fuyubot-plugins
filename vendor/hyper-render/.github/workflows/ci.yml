@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-features
+
+  test-features:
+    name: Test Features
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - ""  # No default features
+          - "png"
+          - "pdf"
+          - "png,pdf"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --no-default-features --features "${{ matrix.features }}"
+        if: matrix.features != ''
+      - run: cargo test --no-default-features
+        if: matrix.features == ''
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  bench:
+    name: Benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run benchmarks
+        run: cargo bench --all-features --bench render
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          retention-days: 30
+
+  size:
+    name: Library Size
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Feature size matrix
+        run: |
+          echo "## Library Size Report" >> $GITHUB_STEP_SUMMARY
+          echo "| Features | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|------|" >> $GITHUB_STEP_SUMMARY
+
+          cargo build --release --no-default-features 2>/dev/null
+          NONE=$(ls -lh target/release/libhyper_render.rlib 2>/dev/null | awk '{print $5}' || echo "N/A")
+          echo "| none | $NONE |" >> $GITHUB_STEP_SUMMARY
+
+          cargo build --release --no-default-features --features png 2>/dev/null
+          PNG=$(ls -lh target/release/libhyper_render.rlib 2>/dev/null | awk '{print $5}' || echo "N/A")
+          echo "| png | $PNG |" >> $GITHUB_STEP_SUMMARY
+
+          cargo build --release --no-default-features --features pdf 2>/dev/null
+          PDF=$(ls -lh target/release/libhyper_render.rlib 2>/dev/null | awk '{print $5}' || echo "N/A")
+          echo "| pdf | $PDF |" >> $GITHUB_STEP_SUMMARY
+
+          cargo build --release --all-features 2>/dev/null
+          ALL=$(ls -lh target/release/libhyper_render.rlib 2>/dev/null | awk '{print $5}' || echo "N/A")
+          echo "| png,pdf | $ALL |" >> $GITHUB_STEP_SUMMARY
+
+  compile-time:
+    name: Compile Time
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Clean build with timing
+        run: |
+          cargo clean
+          cargo build --release --all-features --timings
+      - name: Upload timing report
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-timing
+          path: target/cargo-timings/
+          retention-days: 90

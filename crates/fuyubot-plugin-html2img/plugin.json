@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "fuyubot.html2img",
+  "name": "HTML to Image",
+  "version": "0.1.0",
+  "kind": "native",
+  "entry": "bin/fuyubot_plugin_html2img.dll",
+  "abi": 5,
+  "platforms": [
+    "windows-x86_64",
+    "windows-aarch64",
+    "linux-x86_64",
+    "linux-aarch64",
+    "macos-aarch64",
+    "android-aarch64",
+    "android-x86_64"
+  ],
+  "description": "提供 fuyubot.html2img 跨插件服务（方法 render）：把 HTML / CSS 或 Vue 模板渲染成 PNG / JPEG（默认 JPEG；hyper-render，纯 Rust，无 Chromium），返回本地文件路径。",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins"
+}

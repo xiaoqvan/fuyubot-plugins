@@ -28,7 +28,7 @@ fn main() {
     let apply = args.iter().any(|arg| arg == "--apply");
 
     let uri = std::env::var("MONGO_URI").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_owned());
-    let db = std::env::var("MONGO_DB").unwrap_or_else(|_| "xqanime".to_owned());
+    let db = std::env::var("MONGO_DB").unwrap_or_else(|_| "demo".to_owned());
     if let Err(error) = configure(&uri, &db) {
         eprintln!("连接失败：{error}");
         std::process::exit(1);
@@ -40,7 +40,11 @@ fn main() {
     );
     match found {
         Ok(reply) => {
-            let docs = reply.get("docs").and_then(Value::as_array).cloned().unwrap_or_default();
+            let docs = reply
+                .get("docs")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default();
             println!("{} 命中 {} 条：", collection, docs.len());
             for doc in &docs {
                 println!("  {}", serde_json::to_string(doc).unwrap_or_default());

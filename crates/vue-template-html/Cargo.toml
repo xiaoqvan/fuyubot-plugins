@@ -1,0 +1,23 @@
+[package]
+name = "vue-template-html"
+description = "轻量级 Vue 3 模板 → HTML 编译器：预编译、无 JS 运行时、无 Node/DOM，适合服务端与图片生成"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/vue-template-html"
+homepage = "https://github.com/CatMoeCircle/fuyubot-plugins"
+keywords = ["vue", "template", "html", "render"]
+categories = ["template-engine", "text-processing"]
+# 给用户看的文档只有 README.md；docs/ 是本地调研笔记，不进发布包。
+exclude = ["docs/"]
+
+[dependencies]
+serde_json.workspace = true
+
+[features]
+default = []
+# 让 serde_json 的 Map 保留插入顺序（v-for 遍历对象时与 JS 的属性顺序一致）。
+# 默认关闭：开启它会改变整个依赖图里 serde_json 的行为。
+preserve_order = ["serde_json/preserve_order"]

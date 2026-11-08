@@ -31,3 +31,8 @@ fuyubot.toml
 
 # Serena 项目元数据
 /.serena/
+
+# 内部文档：只本地保留，不提交、不进发布包
+/docs/
+crates/vue-template-html/docs/
+crates/fuyubot-plugin-html2img/docs/

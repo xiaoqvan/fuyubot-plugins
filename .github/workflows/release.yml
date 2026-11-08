@@ -1,4 +1,4 @@
-# 发布三个插件：全平台编 cdylib，按 bundle 契约打 zip 挂到 Release。
+# 发布四个插件：全平台编 cdylib，按 bundle 契约打 zip 挂到 Release。
 #
 # 打出来的是**一个插件一个 zip**（不是本体发布包）：
 #   <plugin-id>-<版本>-<平台>.zip
@@ -61,7 +61,7 @@ jobs:
         working-directory: fuyubot-plugins
         run: |
           version="${GITHUB_REF_NAME#v}"
-          for plugin in fuyubot-plugin-sqlite fuyubot-plugin-mongo fuyubot-plugin-adblock; do
+          for plugin in fuyubot-plugin-sqlite fuyubot-plugin-mongo fuyubot-plugin-adblock fuyubot-plugin-html2img; do
             python scripts/package.py --plugin "$plugin" --platform "${{ matrix.platform }}" --version "$version"
           done
       - uses: actions/upload-artifact@v4
@@ -99,7 +99,7 @@ jobs:
         working-directory: fuyubot-plugins
         run: |
           version="${GITHUB_REF_NAME#v}"
-          for plugin in fuyubot-plugin-sqlite fuyubot-plugin-mongo fuyubot-plugin-adblock; do
+          for plugin in fuyubot-plugin-sqlite fuyubot-plugin-mongo fuyubot-plugin-adblock fuyubot-plugin-html2img; do
             python scripts/package.py --plugin "$plugin" --platform android-aarch64 --version "$version"
             python scripts/package.py --plugin "$plugin" --platform android-x86_64 --version "$version"
           done

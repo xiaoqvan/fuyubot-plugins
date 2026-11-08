@@ -6,15 +6,15 @@
 //! MONGO_URI=mongodb://127.0.0.1:27017 cargo run -p fuyubot-plugin-mongo --example live
 //! ```
 //!
-//! **只在独立的测试库里跑**（默认 `xqanime_it`），跑完把文档清空，
-//! 不会碰正式库 `xqanime`。每一步都打印实际返回值，失败立刻退出。
+//! **只在独立的测试库里跑**（默认 `demo_it`），跑完把文档清空，
+//! 不会碰默认库 `demo`。每一步都打印实际返回值，失败立刻退出。
 
 use fuyubot_plugin_mongo::api::{call, configure};
 use serde_json::{Value, json};
 
 fn main() {
     let uri = std::env::var("MONGO_URI").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_owned());
-    let db = std::env::var("MONGO_TEST_DB").unwrap_or_else(|_| "xqanime_it".to_owned());
+    let db = std::env::var("MONGO_TEST_DB").unwrap_or_else(|_| "demo_it".to_owned());
     let collection = "smoke";
 
     println!("连接 {uri} / 测试库 {db}");

@@ -1,12 +1,10 @@
 # fuyubot-plugin-adblock
 
-FuyuBot 的广告拦截插件：把 TS 框架里的 `plugins/adblock` 重写成 **Rust cdylib 插件**。
+FuyuBot 的广告拦截插件：一条消息进来，按「关键词 / 文件 / 贴纸 / 转发来源 / 用户名 / 资料」逐项匹配；命中就撤回消息、禁言或封禁，并把处置记录写进群绑定的日志频道。
 
-一条消息进来，按「关键词 / 文件 / 贴纸 / 转发来源 / 用户名 / 资料」逐项匹配；命中就
-撤回消息、禁言或封禁，并把处置记录写进群绑定的日志频道。没命中的可疑消息（引用、
-联系人、带全局触发词、入群 24h 内改过资料的人）再送 **AI 深度审核**，判定为广告后
-自动把关键词 / 全文 / 名称 / 简介 / 转发来源 / 贴纸集写回黑名单——下一次同样的广告
-就不用再过 AI 了。
+没命中的可疑消息（引用、联系人、带全局触发词、入群 24h 内改过资料的人）会再送 **AI 深度审核**。判定为广告后，关键词 / 全文 / 名称 / 简介 / 转发来源 / 贴纸集会被写回黑名单——下一次同样的广告就不用再过 AI 了。
+
+数据全部存在 MongoDB，插件启动时自动建好集合与索引。
 
 ## 功能
 
@@ -24,55 +22,13 @@ FuyuBot 的广告拦截插件：把 TS 框架里的 `plugins/adblock` 重写成 
 
 ## 依赖
 
-- **`storage.mongo`（硬依赖）**：数据全部通过宿主里的 MongoDB 插件服务读写。
-  插件在 `inject()` 里声明了它——mongo 插件不在时本插件**不会激活**（停在 Pending），
-  而不是静默地「不拦截」。集合名与字段沿用 TS 版，**同一个库可以直接接上**。
-- FuyuBot 运行时仓库（`fuyubot-abi` 走 path 指向 `../FuyuBot`）。**不依赖
-  `fuyubot-simplify`**（它是 `publish = false`）：裁剪版内联在
-  [`src/simplify.rs`](src/simplify.rs)，发送走 ABI v5 的 `simplify_invoke` op 表。
+- **`storage.mongo`（硬依赖）**：数据全部通过宿主里的 MongoDB 插件服务读写。插件在加载时声明了它——mongo 插件不在时本插件**不会激活**（停在 Pending），而不是静默地「不拦截」。
+- **FuyuBot 运行时**（ABI v5），发布包覆盖 Windows / Linux / macOS / Android，具体平台见 `plugin.json`。
+- **可选 `fuyubot.help.commands`**：装了宿主 help 插件时 `/help` 会列出下文的命令；没装也能正常使用。
 
-> mongo 插件就在本仓库的 [`crates/fuyubot-plugin-mongo`](../fuyubot-plugin-mongo/)；
-> 本插件只认服务名 `storage.mongo` 与它的 JSON 方法约定，两个插件各自独立发布。
-
-## 构建
-
-```bash
-# 两个仓库并排（根 Cargo.toml 用的是 ../FuyuBot 相对路径）
-git clone <Fuyu-Bot>            FuyuBot
-git clone <本仓库>              fuyubot-plugins
-
-cd fuyubot-plugins
-cargo build --release           # 产物：target/release/fuyubot_plugin_adblock.dll
-```
-
-换目录布局就改根 `Cargo.toml` 的 `[workspace.dependencies]` 里两行 path（也可以用绝对路径）。
-
-### Windows 上的两个坑
-
-1. **cargo 在受限沙箱里起不了 rustc**：这是运行环境的限制，不是仓库问题，在普通终端里正常。
-2. **MSVC 工具链选错会报 `cl : Command line error D8050`**：机器上装了多套 MSVC 时，
-   `vcvars64.bat` 选中的版本和 cc-rs 按版本号挑的最高版本可能不是同一套。
-   `ring`（rustls 的依赖）需要编 C 代码，版本对不上就会失败。**仓库根上备好了
-   [`build.cmd`](../../build.cmd)，一键把环境对齐**；手工做的话配方是：
-
-   ```bat
-   call "…\VC\Auxiliary\Build\vcvars64.bat"
-   set CC=…\VC\Tools\MSVC\<同版本>\bin\HostX64\x64\cl.exe
-   set CRATE_CC_NO_DEFAULTS=1
-   set CFLAGS_x86_64_pc_windows_msvc=/MD
-   cargo build --release
-   ```
-
-   ⚠️ `CRATE_CC_NO_DEFAULTS=1` 会把 cc-rs 的 `/MD` 一起剥掉（裸 cl 默认 `/MT`），
-   所以必须手动补 `/MD`，否则链接时一片 `LNK4098: defaultlib 'LIBCMT' conflicts`。bat
-   call "…\VC\Auxiliary\Build\vcvars64.bat"
-   set CC=…\VC\Tools\MSVC\<同版本>\bin\HostX64\x64\cl.exe
-   set CRATE_CC_NO_DEFAULTS=1
-   cargo build --release
-   ```
-
-不想折腾 C 工具链的话，可以把 `ureq` 的 feature 换成 `native-tls-no-default`
-（Windows 走 schannel，不需要 C 编译器；本机缓存里缺 `der` 时需要联网拉一次）。
+> mongo 插件就在本仓库的 [`crates/fuyubot-plugin-mongo`](../fuyubot-plugin-mongo/)；本插件只认服务名 `storage.mongo` 与它的 JSON 方法约定，两个插件各自独立发布。
+>
+> AI 审核走 OpenAI 兼容的对话接口，后端与模型由 `ai_base_url` / `ai_model` 决定，群内也可以单独配置。
 
 ## 安装
 
@@ -81,24 +37,31 @@ fuyubot plugin install target/release/fuyubot_plugin_adblock.dll
 # 或者直接把动态库拷进项目的 plugins/
 ```
 
-前提：同一个项目里已经装了 mongo 插件（它注册 `storage.mongo`），并且
-`fuyubot.toml` 的 `[plugin.fuyubot.mongo]` 指向你的 MongoDB。
+手工放置时的目录结构：
+
+```text
+plugins/
+└── fuyubot.adblock/
+    ├── plugin.json
+    └── bin/fuyubot_plugin_adblock.dll
+```
+
+前提：同一个项目里已经装了 mongo 插件（它注册 `storage.mongo`），并且 `fuyubot.toml` 的 `[plugin.fuyubot.mongo]` 指向你的 MongoDB。
 
 ## 配置
 
-全部在 `fuyubot.toml` 的 `[plugin.fuyubot.adblock]` 下，**只有这一个段、全部平铺**，
-所有项都可选：
+全部在 `fuyubot.toml` 的 `[plugin.fuyubot.adblock]` 下，**只有这一个段、全部平铺**，所有项都可选：
 
 ```toml
 [plugin.fuyubot.adblock]
 # 能执行「仅 Bot 主人」命令的 TGID（/adkew /admatch /adaiadd /adaiset …）
 owner_ids = [123456789]
-# 「Bot 管理员」：可执行 TS 里 permission=admin 的那 6 条
+# 「Bot 管理员」：可执行下面命令表里标了「主人/管理员」的那 6 条
 # （/qadid /delad /addkw /editkw /addfwdbl /rmfwdbl）；主人天然也算管理员
 admin_ids = [987654321]
 # 覆盖 mongo 插件的默认库（不写就用 mongo 插件的 db）
 db = "fuyubot"
-# 全局封禁审计频道（可选；原 TS 版写死了一个频道，这里默认关闭）
+# 全局封禁审计频道（可选；默认关闭）
 log_channel = -1001234567890
 log_topic = 1622
 
@@ -116,31 +79,27 @@ ai_db_channel = -1001234567890
 ai_db_topic = 3034
 ```
 
-> ⚠️ 密钥不要提交进版本库。TS 版源码里硬编码过 API Key，这一版**一个都没搬**。
+> 密钥不要提交进版本库。本插件只从配置读密钥，仓库里没有任何密钥。
 
-## 离线自检（不需要 Telegram 账号）
+各键的含义与默认值：
 
-FuyuBot 的 `run --replay` 不接 TDLib，可以直接验证「插件加载 → 硬依赖 → 建索引 → 命令写库」：
+| 键 | 不配置时 | 说明 |
+| --- | --- | --- |
+| `owner_ids` | 空 | Bot 主人；`/adkew` `/admatch` `/adaiadd` `/adaiset` 等主人命令只认这里 |
+| `admin_ids` | 空 | Bot 管理员；可执行 `/qadid` `/delad` `/addkw` `/editkw` `/addfwdbl` `/rmfwdbl` |
+| `db` | mongo 插件的 db | 覆盖本插件用的库名；多个 bot 共用一套 MongoDB 时用它隔离 |
+| `log_channel` / `log_topic` | 不发送 | 全局封禁审计频道及其话题 |
+| `ai_api_key` / `ai_base_url` / `ai_model` | 未配置 | 内置默认 AI 接口；没有它时只有「群自定义了接口」的群启用 AI |
+| `ai_log_channel` / `ai_log_topic` | 不发送 | AI 审查总日志 |
+| `ai_db_channel` / `ai_db_topic` | 不发送 | `/spam` 判定写库后的通知 |
 
-```bash
-# plugins/ 里放 mongo 与 adblock 两个 dll，fuyubot.toml 里给 mongo 的连接串
-fuyubot run --config fuyubot.toml --replay replay.json --replay-wait 2000
-```
+## 快速开始
 
-一次实测（本机 MongoDB，`owner_ids = [777]`）：
-
-```text
-adblock 已启动（库 adblock_smoke，…）：主人 1 人；…
-storage.mongo 连通（服务默认库 xqanime，集合 8 个；本插件用 adblock_smoke）
-索引就绪：成功 13 条，跳过/冲突 0 条
-[addkw] ads 新增 6ae6…（3 个关键词）
-```
-
-库里能看到集合与索引真的建在该库上（`message_records.createdAt` TTL 172800s、
-`new_member_watch_records.expires_at` TTL 0、`adb_config.chat_id` 唯一…），
-`/addkw`、`/adkew`、`/adaiset` 回放后各自落一条记录。
-
->TDLib 相关路径在回放里只会「记录请求、不发送」，因此消息级检测需要在真账号下验证。
+1. 装好 mongo 插件，把 `[plugin.fuyubot.mongo]` 指到你的 MongoDB；
+2. 装本插件，在 `[plugin.fuyubot.adblock]` 里填 `owner_ids`（你自己的 TGID，不是 `@username`）；
+3. 把 Bot 拉进群并设为管理员，在群里发 `/adconfig`：开关、处置方式、日志频道都在这里；
+4. 要用 AI：在 `/adconfig` 里给本群配接口，或由主人 `/adaiset add <chat_id>` 授权内置接口；
+5. 补规则：私聊 `/addkw ads 关键词`（同一组关键词按 AND 匹配，需同时出现），用 `/admatch 一段文本` 验证命中结果。
 
 ## 命令
 
@@ -160,17 +119,15 @@ storage.mongo 连通（服务默认库 xqanime，集合 8 个；本插件用 adb
 | `/adaiset add\|rm\|list [chat_id\|@群用户名]` | 私聊 | Bot 主人 |
 | `/start aiConfig_<chat_id>` | 私聊 | 目标群管理员 |
 
-命令表（名字 / 说明 / scope / permission）是 `commands/spec.rs` 里的一张静态表，
-同时用于分发与 `/help` 登记：装了宿主 help 插件时 `/help` 会列出这 17 条，
-没装时插件照常工作（`fuyubot.help.commands` 是软依赖）。私聊命令在群里发会被
-**静默忽略**（不回复、不提示权限），与 TS 框架的 `validateCommandAccess` 一致。
+命令名、说明与权限同时用于分发和 `/help` 登记：装了宿主 help 插件时 `/help` 会列出这 17 条，没装时插件照常工作。
 
-群内 `/adconfig` 的「🔑 配置AI接口」按钮会跳到 Bot 私聊，走三步向导
-（API Key → 后端地址 → 模型名），最后自动测一次连通性。
+群内 `/adconfig` 的「🔑 配置AI接口」按钮会跳到 Bot 私聊，走三步向导（API Key → 后端地址 → 模型名），最后自动测一次连通性。
+
+群管理员的群内命令还会再核一次「真的是本群管理员」；`/spam` 另外要求 Bot 自己有管理权限，否则无法撤回或禁言。
 
 ## 数据
 
-集合名与 TS 版一致（包括那个拼错的 `flieId_blacklist`）：
+集合与索引在插件启动时自动创建（已存在的跳过，冲突不影响启动）：
 
 | 集合 | 用途 |
 | --- | --- |
@@ -184,53 +141,24 @@ storage.mongo 连通（服务默认库 xqanime，集合 8 个；本插件用 adb
 | `flieId_blacklist` / `sticker_blacklist` / `sticker_set_blacklist` | 文件 / 单贴纸 / 贴纸集 |
 | `ai_fulltext_blacklist` | AI 判定的广告全文（精确匹配） |
 | `ai_default_chats` | 内置 AI 授权群 |
-| `adblock_settings` | 全局 AI 触发关键词（TS 版是本地 lowdb 文件） |
+| `adblock_settings` | 全局 AI 触发关键词 |
 | `SPAM_Log` | `/spam` 举报流水 |
 
-索引在插件启动时幂等创建（已存在 / 冲突只记 debug）。
+## 注意
 
-## 与 TS 版的有意差异
+- **Bot 需要管理权限**：撤回要「删除消息」，禁言/封禁要「限制成员」。没有权限时群内不会有任何动作，先确认 Bot 是群管理员。
+- **私聊命令在群里发会被静默忽略**：不回复、也不提示权限。这是刻意的——群里可能还装着别的 bot，回一句「你没权限」只会暴露命令存在；主人命令请私聊 Bot。
+- **AI 失败不静默放行**：未配置、HTTP 4xx、返回格式不符都会得到明确原因，该消息按「未命中」处理，需要时人工复核。
+- **日志频道默认不发**：只有配了 `log_channel` / `log_topic` 才会往审计频道写；群内日志则在 `/adconfig` 或 `/setlogchannel` 里绑。
+- **`/setlogchannel` 先验证再落库**：测试消息真的发出去了才写配置，频道填错不会留下半套配置。
+- **换库要谨慎**：`db` 指向已有数据的库会直接沿用其中的集合；指向空库时会新建集合与索引，不会导入任何旧数据。
+- **封禁只撤回近 48 小时**：可连带撤回的历史消息来自 `message_records` 索引，更早的消息不会被翻出来。
 
-1. **密钥不硬编码**：原代码里的 API Key 已进仓库，这里只从配置读；
-2. **内置 AI 的授权群**用 `ai_default_chats` 管（`/adaiset`），不再有写死的群列表；
-3. **总日志频道默认关闭**：原版写死 `-1003040986800` 的固定话题，换部署就是往别人群里灌消息；
-4. **「Bot 主人」= `owner_ids`**：FuyuBot 没有框架级 owner 概念；
-5. **数据库走 `storage.mongo`**：不自带连接池，也不依赖宿主私有的 db API；
-6. **`/setlogchannel` 更严格**：只有测试消息真的发出去了才写配置（原版失败也报成功）；
-7. **链接预览自己抓**：不拖 `link-preview-js`，只取 `<title>` 与 description；
-8. **全程 tokio 异步**：事件回调只把更新 `submit` 成任务，TDLib 往返走宿主的
-   `ResponseRouter` 真 `await`，Mongo 服务调用与 `ureq` 请求（同步客户端）丢给
-   `spawn_blocking`——没有线程池、没有调度线程，延时/周期任务用 `tokio::time`。
-9. **HTTP 仍用 `ureq`（同步客户端）**：不为了异步再拖一个 HTTP 客户端进来，
-   请求整段进 `spawn_blocking`，行为与原来一致。
+## 来源与致谢
 
-判定阈值、文案、按钮、超时时间、复审规则都按原逻辑保留，各模块头部有对应说明。
-
-## 排障
-
-- 启动日志里先看 `adblock 已启动（库 …）` 与 `storage.mongo 连通（库 …，集合 … 个）`；
-- 日志级别调到 `debug` 能看到每条回调查询、跳过原因与索引冲突；
-- `/admatch <文本>` 是排查「为什么这条被拦/没被拦」最快的入口；
-- 群里没反应时先确认 Bot 有「删除消息 + 限制成员」权限（`/adconfig` 能看到 AI 配置状态）；
-- AI 一直失败时会返回明确的 `Reason`（未配置 / HTTP 4xx / JSON 格式不符），不会静默放行。
-
-## 目录
-
-```text
-crates/fuyubot-plugin-adblock/
-  src/
-    lib.rs         插件入口：inject / 订阅 / 周期任务
-    runtime.rs     共享状态、tokio 运行时（闸门 + 在飞计数 + 停机顺序）
-    store.rs       storage.mongo 客户端 + 集合与查询（兼容旧库）
-    api.rs         TDLib 调用（async，经 ResponseRouter 等响应）
-    detect.rs      内容检测
-    action.rs      处置与通知
-    flow/          消息、入群、资料复检、超时扫描、消息索引、GKY 转发
-    commands/      17 个命令
-    callbacks/     回调按钮
-    ai/            AI 审核 + 内置提示词（include_str!）
-    text.rs        文本提取 + MarkdownV2 渲染
-```
+- 本插件是独立实现：检测规则、提示语与按钮交互都在本仓库内维护。
+- `src/simplify.rs` 内联了 FuyuBot 的 `fuyubot-simplify`（`publish = false`，不能作为依赖发布）的裁剪版，只保留本插件用到的命令解析与消息渲染部分。
+- TDLib 调用与消息发送走 FuyuBot 的 ABI v5；AI 审核走 OpenAI 兼容的对话接口。
 
 ## License
 

@@ -1,29 +1,45 @@
 # fuyubot-plugin-mongo
 
-MongoDB 插件：注册 `storage.mongo`，给**任意**插件提供集合级 CRUD。不认识番剧，也不认识任何业务表。
+FuyuBot 的 **MongoDB 服务插件**（Rust，cdylib），服务名 `storage.mongo`，ABI v5。它给**任意**
+插件提供集合级 CRUD：不认识番剧，也不认识任何业务表。
 
-```
-业务插件 ──get_service("storage.mongo")──▶ 本插件 ──官方 mongodb 驱动──▶ MongoDB
+```text
+业务插件 ──call_service("storage.mongo", …)──▶ 本插件 ──官方 mongodb 驱动──▶ MongoDB
 ```
 
-## 启动配置
+## 安装
+
+发布页按平台提供 zip，解压到插件目录即可（一个插件一个目录），布局是
+`plugins/fuyubot.mongo/plugin.json` 加 `plugins/fuyubot.mongo/bin/fuyubot_plugin_mongo.dll`。
+Windows 用 `fuyubot_plugin_mongo.dll`，Linux / Android 用 `libfuyubot_plugin_mongo.so`，
+macOS 用 `libfuyubot_plugin_mongo.dylib`。装好后重启机器人即可。
+
+## 配置
+
+启动配置是一段 JSON（优先级：显式配置 > 环境变量 > 默认值）：
 
 ```json
-{ "uri": "mongodb://127.0.0.1:27017", "db": "xqanime" }
+{ "uri": "mongodb://127.0.0.1:27017", "db": "appdata", "timeout_ms": 10000, "app_name": "fuyubot" }
 ```
 
-`uri` 支持标准连接串（含副本集、SRV、账号密码）。`start()` 会真连一次——配错了在启动日志里就能看到，不用等第一条业务查询。
+| 键 | 默认 | 环境变量 | 说明 |
+| --- | --- | --- | --- |
+| `uri` | `mongodb://127.0.0.1:27017` | `MONGO_URI` | 标准连接串，含副本集、SRV、账号密码；`mongodb+srv://` 由驱动自己解析 DNS |
+| `db` | `appdata` | `MONGO_DB` | 默认库名，调用时可用 `db` 覆盖 |
+| `timeout_ms` | `10000` | `MONGO_TIMEOUT_MS` | server selection + connect 超时（驱动默认 30 秒会把调用线程按住） |
+| `app_name` | `fuyubot` | `MONGO_APP_NAME` | 连接串没带 `appName` 时补上，云控制台按它区分客户端 |
 
-**连不上不拦启动**：预热最多等 2 秒（`WARMUP_TIMEOUT`），超时就打一行
-`[mongo] 没连上 …；插件照常运行，库起来后第一次查询会自动重连`，插件照常激活。
-驱动是懒连接的，所以本机没开 mongod 时其它插件仍能起来跑回放；真连不上的业务调用各自返回错误。
-（业务侧的 `ping` 服务方法仍按 `timeout_ms` 等，那是给「现在到底通不通」用的。）
+`start()` 会真连一次，配错了在启动日志里就能看到，不用等第一条业务查询。**连不上不拦启动**：
+预热最多等 2 秒，超时就打一行
+`[mongo] 没连上 …；插件照常运行，库起来后第一次查询会自动重连`，插件照常激活；真连不上的业务
+调用各自返回错误。要确认「现在到底通不通」就调 `ping`，它按 `timeout_ms` 等结果。
 
-**云端连接**：`uri` 原样透传，`mongodb+srv://` 由驱动自己解析 DNS；server selection / connect 超时默认 **10 秒**（驱动默认 30 秒会把调用线程按住），用 `timeout_ms` 调；`appName` 默认 `fuyubot`。业务插件可以通过服务方法 `configure`（`{uri, db, timeout_ms}`）下发参数——XQAnimeBot 的 `[mongodb]` 就是这么生效的；已建立过连接时返回 `applied:false`，只切换库名。
+业务插件也可以通过服务方法 `configure`（`{uri, db, timeout_ms}`）下发参数；已经建立过连接时返回
+`applied: false`，此时只切换库名。
 
 ## 方法
 
-所有方法入参都是 JSON，出参统一 `{"ok":true, ...}`；失败是 `{"ok":false,"error":"..."}`。
+入参都是 JSON，出参统一 `{"ok":true, ...}`；失败是 `{"ok":false,"error":"..."}`。
 `collection` 必填，`db` 可选（覆盖默认库）。
 
 | 方法 | 入参 | 说明 |
@@ -33,12 +49,13 @@ MongoDB 插件：注册 `storage.mongo`，给**任意**插件提供集合级 CRU
 | `find_one` | `collection, filter?, projection?` | |
 | `insert` | `collection, docs`（对象或数组） | 返回 `inserted` 与 `ids` |
 | `update` | `collection, filter, update?/patch?, upsert?, many?` | `patch` 会自动包 `$set` |
-| `delete` | `collection, filter, many?` | 空过滤会被拒绝（要清空得传 `allow_empty:true`） |
+| `delete` | `collection, filter, many?` | 空过滤会被拒绝（确实要清空传 `allow_empty:true`） |
 | `count` | `collection, filter?` | |
 | `aggregate` | `collection, pipeline` | 大集合用这个，服务端先筛 |
 | `distinct` | `collection, field, filter?` | |
 | `ensure_index` | `collection, keys, unique?, sparse?, name?, ttl_seconds?` | 幂等 |
 | `collections` | `db?` | 列集合名 |
+| `configure` | `uri, db, timeout_ms?` | 下发连接参数，见「配置」 |
 
 示例：
 
@@ -47,30 +64,29 @@ MongoDB 插件：注册 `storage.mongo`，给**任意**插件提供集合级 CRU
 {"collection":"torrents","patch":{"status":"done"},"filter":{"hash":"abc"},"upsert":true}
 ```
 
-## 联调
+## 数据约定
 
-```bash
-cargo run -p fuyubot-plugin-mongo --example live
-# 自定义：MONGO_URI=mongodb://127.0.0.1:27017 MONGO_TEST_DB=xqanime_it
-```
+- **BSON 走 relaxed Extended JSON**：`ObjectId` 回来是 `{"$oid":"..."}`，日期是 `{"$date":"..."}`，
+  数字和字符串保持自然形态；回写时同样的形态会被识别成对应 BSON 类型，而不是普通子文档。
+- **服务是同步的**：调用方（业务插件）不需要 async 传染，但别在 TDLib 更新回调线程里跑慢查询，
+  一次重查询就会占住那个线程。
 
-在**独立测试库**（默认 `xqanime_it`）里跑完整 CRUD：建唯一索引 → 插入（含重复 id 拦截）→
-find/find_one/count/aggregate/distinct → patch 更新 → upsert → 删除 → 清空。
-不会碰正式库。
+## 注意
 
-> `src/service.rs` 是「名字 / 方法表 / JSON 进出」的服务外壳，内联自
-> XQAnimeBot-Rust 的 `fuyubot-service` 共享 crate（2026 重写并入本插件）。
+- **`find` 有上限**：一次最多回 10 000 条，要更多用 `limit` + `skip` 分页；大集合优先
+  `aggregate`，让服务端先筛再回。
+- **`delete` 默认拒绝空过滤**：`{}` 要显式传 `allow_empty:true`，避免一次写错参数清库。
+- **`update` 的 `patch` 会包成 `$set`**：要用 `$inc`、`$push` 等操作符就把完整 update 文档
+  放进 `update`，不要再走 `patch`。
+- **索引要自己建**：`ensure_index` 幂等，可以每次启动都调；唯一索引建在已有重复数据的集合上
+  会失败，先清理重复再建。
 
-## 两个约定
+## 来源与致谢
 
-1. **BSON 走 relaxed Extended JSON**：`ObjectId` 回来是 `{"$oid":"..."}`，日期是 `{"$date":"..."}`，
-   数字和字符串保持自然形态。回写时同样的形态会被识别成对应 BSON 类型，不是普通子文档。
-2. **服务是同步的**：驱动是异步的，插件内部用专用 tokio 运行时 + `Handle::block_on` 摊平。
-   调用方（业务插件）不需要 async 传染，但别在 TDLib 更新回调线程里跑慢查询。
+- 服务接口按 FuyuBot ABI v5 编写；插件只做通用通道，业务语义（该查哪些字段、怎么排序）留在
+  业务侧，换个业务不用改数据库插件。
+- MongoDB 驱动用官方 `mongodb` crate，BSON 类型来自 `bson` crate。
 
-## 为什么没有「按业务建表」
+## License
 
-TS 版的 `database/query.ts`（804 行）是「番剧专用查询函数集合」。搬到 Rust 后拆成两层：
-本插件只做**通用通道**，业务语义（该查哪些字段、怎么排序）留在业务侧
-（XQAnimeBot 用的是它的 `anime-core`）。
-好处是换个业务不用改数据库插件，坏处是业务侧要自己写 filter——这是有意的取舍。
+MIT OR Apache-2.0

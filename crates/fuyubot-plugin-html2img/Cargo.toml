@@ -1,0 +1,20 @@
+[package]
+name = "fuyubot-plugin-html2img"
+description = "FuyuBot HTML/Vue 转图片插件：注册 fuyubot.html2img 服务，把 HTML/CSS 或 Vue 模板渲染成 PNG / JPEG（hyper-render，无 Chromium）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主 dlopen；rlib 让单测直接测解析 / 组装 / 渲染。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hyper-render.workspace = true
+vue-template-html.workspace = true
+image.workspace = true

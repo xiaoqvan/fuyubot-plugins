@@ -1,73 +1,25 @@
 # fuyubot-plugins
 
-个人的 [FuyuBot](https://github.com/CatMoeCircle/Fuyu-Bot) 插件集合：**一个仓库，三个插件**。
-每个插件是独立的 cdylib 动态库，按[插件分发格式 v1](https://catmoecircle.github.io/FuyuBot-docs/docs/plugin/bundle/)
-各自打成一个 bundle zip 发布——一个仓库多插件，索引里各占一条、Release 里各挂各的资产。
+个人的 [FuyuBot](https://github.com/CatMoeCircle/Fuyu-Bot) 插件集合：**一个仓库，四个插件**，
+外加一个可以独立发布的库 crate。每个插件是一个独立的 cdylib，按
+[插件分发格式](https://catmoecircle.github.io/FuyuBot-docs/docs/plugin/bundle/) 打成 bundle zip。
 
 | 插件 | id | 说明 |
 | --- | --- | --- |
 | [fuyubot-plugin-sqlite](crates/fuyubot-plugin-sqlite/) | `fuyubot.sqlite` | SQLite 存储服务：参数化查询、表结构模板、事务批量写入，按插件隔离库文件 |
 | [fuyubot-plugin-mongo](crates/fuyubot-plugin-mongo/) | `fuyubot.mongo` | MongoDB 存储服务（`storage.mongo`）：集合级 CRUD、聚合、索引管理 |
 | [fuyubot-plugin-adblock](crates/fuyubot-plugin-adblock/) | `fuyubot.adblock` | 广告拦截：关键词 / 文件 / 贴纸 / AI 审核，命中即删除、禁言或封禁；**硬依赖 `storage.mongo`** |
+| [fuyubot-plugin-html2img](crates/fuyubot-plugin-html2img/) | `fuyubot.html2img` | HTML / Vue 转图片服务：把 HTML、CSS 或 Vue 模板渲染成 PNG / JPEG（默认 JPEG）并返回本地文件路径（hyper-render，纯 Rust，无 Chromium） |
 
-## 仓库布局
+库 crate（不是插件、不依赖 `fuyubot-abi`）：
 
-```text
-fuyubot-plugins/
-├── Cargo.toml            # workspace：三个插件 crate 的依赖与 profile 只写在这一处
-├── crates/
-│   ├── fuyubot-plugin-sqlite/    # 每个 crate 根部有自己的一份 plugin.json
-│   ├── fuyubot-plugin-mongo/
-│   └── fuyubot-plugin-adblock/
-├── scripts/package.py    # 统一打包：cargo 产物 → bundle zip（--plugin 选目标）
-└── .github/workflows/release.yml
-```
-
-## 依赖布局（重要）
-
-`fuyubot-abi` 只在运行时仓库里发，本仓库用 **path 依赖**，要求与 FuyuBot checkout **并排**：
-
-```text
-<父目录>/
-├── FuyuBot/            # 运行时仓库
-└── fuyubot-plugins/    # 本仓库
-```
-
-换布局就改根 `Cargo.toml` 的 `[workspace.dependencies]` 里那一行（或改成 crates.io / git 依赖）。
-**不依赖 `fuyubot-simplify`**（它是 `publish = false`）：裁剪版内联在
-adblock 的 [`src/simplify.rs`](crates/fuyubot-plugin-adblock/src/simplify.rs)，
-发送走 ABI v5 的 `simplify_invoke` op 表。
-
-## 构建
-
-```bash
-cargo build --workspace          # 三个插件一起编
-cargo test  --workspace          # 单测（含纯函数与 service 外壳）
-```
-
-⚠️ Windows 上 `ureq` → rustls 的 ring 要编 C 代码，MSVC 工具链必须和 vcvars 对上，
-否则报 `cl : Command line error D8050`——仓库根上的 **`build.cmd`** 一键把环境对齐
-（`build.cmd` = `cargo build --workspace`，`build.cmd test --workspace` 跑测试）；
-原理与手工配方见 [adblock README](crates/fuyubot-plugin-adblock/README.md)「Windows 上的两个坑」。
-
-## 打包发布
-
-一个插件一个 zip（`<id>-<版本>-<平台>.zip`），平台口径与 `fuyubot-loader` 的
-`current_platform()` 一致：
-
-```bash
-cargo build --release
-python scripts/package.py --plugin fuyubot-plugin-sqlite --platform windows-x86_64 --version 0.1.0
-python scripts/package.py --plugin fuyubot-plugin-mongo   --platform windows-x86_64 --version 0.1.0
-python scripts/package.py --plugin fuyubot-plugin-adblock --platform windows-x86_64 --version 0.1.0
-```
-
-打 tag（`v*`）后 CI 自动全平台编译、打包并挂到 Release。商店索引照契约 §7 各插件
-各写一条，`assets` 的 url 指向同一个 Release 里的不同 zip 即可。
+| 库 | 说明 |
+| --- | --- |
+| [vue-template-html](crates/vue-template-html/) | 轻量级 Vue 3 模板 → HTML 编译器：预编译、无 JS 运行时、无 DOM，含 `.vue` 拆块与 props 读取 |
 
 ## 安装
 
-TUI 插件商店直接装，或手动把解压出来的目录放进机器人的插件目录：
+TUI 插件商店里直接装，或者把发布页对应的 zip 解压到机器人的插件目录（一个插件一个目录）：
 
 ```text
 plugins/
@@ -77,13 +29,39 @@ plugins/
 ├── fuyubot.mongo/
 │   ├── plugin.json
 │   └── bin/fuyubot_plugin_mongo.dll
-└── fuyubot.adblock/
+├── fuyubot.adblock/
+│   ├── plugin.json
+│   └── bin/fuyubot_plugin_adblock.dll
+└── fuyubot.html2img/
     ├── plugin.json
-    └── bin/fuyubot_plugin_adblock.dll
+    └── bin/fuyubot_plugin_html2img.dll
 ```
 
-`fuyubot.adblock` 的 `plugin.json` 声明了 `depends: ["storage.mongo"]`，宿主会等
-`fuyubot.mongo` 先激活（mongo 插件缺席时 adblock 停在 Pending，不会静默失效）。
+Windows 用 `.dll`，Linux / Android 用 `.so`，macOS 用 `.dylib`；每个插件的 zip 里已经按平台放好。
+
+## 插件之间
+
+- **`fuyubot.adblock` 依赖 `storage.mongo`**（由 `fuyubot.mongo` 提供）：没装 mongo 插件时
+  adblock 不会激活（停在 Pending），不会静默失效。
+- **`fuyubot.sqlite` / `fuyubot.mongo` 是给别的插件用的存储服务**，自己不接收聊天消息；
+  配置和调用方式见各自的 README。
+- **`fuyubot.html2img` 只提供服务**（`call_service("fuyubot.html2img", "render", …)`），
+  不注册命令、不主动发消息；图片怎么用由调用方决定。
+- 想用 Vue 模板出图，`fuyubot.html2img` 已经内置了本仓库的 `vue-template-html`。
+
+## 来源与致谢
+
+- **`fuyubot.html2img` 的渲染器**是 [hyper-render](https://github.com/thomasmost/hyper-render)
+  的本地 vendored fork（`vendor/`），合并了 upstream PR #1（blitz 0.3.0-alpha.4 + `data:` URI
+  资源 + StyleThreading）并实现了 PR #3 的外部 URL 资源能力；底层是 Blitz、Stylo、Taffy 与
+  Vello。来源与升级方式见 [`vendor/hyper-render/LOCAL.md`](vendor/hyper-render/LOCAL.md)。
+- **`vue-template-html` 的模板语义**对照 [Vue 3](https://github.com/vuejs/core)
+  （`compiler-core` / `runtime-core`，3.5 行为）；代码是纯 Rust 重写，不含 Vue 源码，也不在
+  运行时依赖它。
+- **`fuyubot.adblock` 中的 `src/simplify.rs`** 是 FuyuBot 的 `fuyubot-simplify`
+  （`publish = false`，不能作为依赖发布）的裁剪内联版。
+- PNG → JPEG 转码用 [`image`](https://crates.io/crates/image)；MongoDB 驱动用官方
+  `mongodb` / `bson`。
 
 ## 许可
 

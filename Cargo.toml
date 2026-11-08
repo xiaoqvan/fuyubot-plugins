@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/*"]
+members = ["crates/*", "vendor/hyper-render"]
 default-members = ["crates/*"]
 resolver = "3"
 
@@ -23,9 +23,11 @@ repository = "https://github.com/CatMoeCircle/fuyubot-plugins"
 [workspace.dependencies]
 fuyubot-abi = { path = "../FuyuBot/crates/fuyubot-abi" }
 
-# 三个插件共享的第三方依赖，版本只写在这一处。
+# 四个插件共享的第三方依赖，版本只写在这一处。
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+# `vue-template-html`（独立可发布的库 crate，不是插件）只用 serde_json；
+# 错误类型手写 Display/Error，不额外引 thiserror，保持依赖树最小。
 # adblock 的 OpenAI 兼容接口：同步阻塞 + 能逐条控制请求头/超时。
 # 用 rustls（FuyuBot 本体也是这套）：不依赖系统证书栈，跨平台行为一致。
 # ⚠️ rustls 的 ring 要在构建机上编 C 代码，Windows 下 MSVC 工具链必须和 vcvars 对上，
@@ -40,6 +42,16 @@ futures-util = "0.3.34"
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "time"] }
 # sqlite 插件：`bundled` 把 SQLite 源码编进插件，不依赖系统库。
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# html2img 插件：纯 Rust 的 HTML → PNG 渲染（Blitz + Stylo + Vello CPU，不带 Chromium）。
+# 只开 `png`：默认的 `pdf` 会额外拖进 krilla / parley，而插件只发图片。
+# 本地 vendored fork：thomasmost/hyper-render 的 PR #1（blitz 0.3.0-alpha.4 +
+# DataUrlNetProvider + StyleThreading）。provenance 见 vendor/hyper-render/LOCAL.md。
+hyper-render = { path = "vendor/hyper-render", default-features = false, features = ["png"] }
+# html2img 插件：可选地把 Vue 模板先编译成 HTML 再渲染。
+# 同仓库的独立库 crate（不是插件），只依赖 serde_json。
+vue-template-html = { path = "crates/vue-template-html" }
+# html2img 插件：PNG → JPEG 转码（`image` 本来就在依赖树里，这里只额外开 jpeg 编解码）。
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 # 本地迭代：比 dev 略高优化，保留调试信息。
 [profile.debug]
