@@ -9,10 +9,13 @@
 //!
 //! `code` 是稳定的（写分支用），`message` 是给人看的。
 //!
-//! **调用方必须显式给 `plugin`**：ABI 的 `ServiceMethodFn` 只有
-//! `(context, input_json)`，没有「调用者是谁」——宿主不传身份，服务也不会去猜。
-//! 所以隔离是**协作式**的：插件名由调用方声明；同进程的原生插件本来就能
-//! 绕过任何边界，这里的目标是防「数据注入」，不是防「恶意插件」。
+//! **调用者身份由宿主给**（ABI v6）：服务方法里用 `current_plugin()` 问「谁在调我」，
+//! 插件伪造不了。所以 `plugin` 字段可以省——省了就用调用者自己的名字；显式写了就必须
+//! 与调用者一致，冒用别人的名字读写别人的库会被拒（`caller_mismatch`）。
+//! 宿主自己调（没有调用者）时仍然要显式给 `plugin`，错误码 `bad_request`。
+//!
+//! 隔离仍然是**协作式**的：同进程的原生插件本来就能绕过任何边界，这里的目标是
+//! 防「数据注入」，不是防「恶意插件」。
 
 use std::sync::MutexGuard;
 
@@ -39,15 +42,18 @@ pub const METHODS: &[&str] = &[
 ];
 
 /// 分发一次调用，返回 JSON 字符串（永远不 panic、永远返回合法 JSON）。
-pub fn dispatch(manager: &Manager, method: &str, input: &str) -> String {
+///
+/// `caller` 是宿主判定出来的**调用方插件名**（`current_plugin`）；`None` 表示
+/// 不是某个插件在调（宿主自己调、或者测试直接调），这时只认入参里的 `plugin`。
+pub fn dispatch(manager: &Manager, caller: Option<&str>, method: &str, input: &str) -> String {
     let result = match method {
-        "info" => info(manager, input),
-        "query" => query(manager, input),
-        "execute" => execute(manager, input),
-        "batch" => batch(manager, input),
+        "info" => info(manager, caller, input),
+        "query" => query(manager, caller, input),
+        "execute" => execute(manager, caller, input),
+        "batch" => batch(manager, caller, input),
         "templates" => list_templates(input),
-        "migrate" => migrate(manager, input),
-        "tables" => tables(manager, input),
+        "migrate" => migrate(manager, caller, input),
+        "tables" => tables(manager, caller, input),
         other => Err(ServiceError::new(
             "unknown_method",
             format!("没有方法 {other:?}（可用：{}）", METHODS.join(", ")),
@@ -68,7 +74,7 @@ pub fn error_json(error: &ServiceError) -> String {
     .to_string()
 }
 
-fn info(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
+fn info(manager: &Manager, caller: Option<&str>, input: &str) -> Result<Value, ServiceError> {
     let request = parse_input(input)?;
     let config = manager.config();
     let mut body = json!({
@@ -92,7 +98,7 @@ fn info(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
         "templates": templates::template_names(),
     });
 
-    if let Some(plugin) = optional_plugin(&request)? {
+    if let Some(plugin) = declared_plugin(&request, caller)? {
         let (path, prefix) = manager.describe(&plugin);
         body["plugin"] = json!(plugin);
         body["database"] = json!(path.display().to_string());
@@ -101,9 +107,9 @@ fn info(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
     Ok(body)
 }
 
-fn query(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
+fn query(manager: &Manager, caller: Option<&str>, input: &str) -> Result<Value, ServiceError> {
     let request = parse_input(input)?;
-    let plugin = require_plugin(&request)?;
+    let plugin = require_plugin(&request, caller)?;
     let sql_text = require_str(&request, "sql")?;
     let statement = sql::ensure_single(sql_text, manager.config().max_sql_bytes)?;
     let params = db::params_from_json(request.get("params"))?;
@@ -137,9 +143,9 @@ fn query(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
     Ok(body)
 }
 
-fn execute(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
+fn execute(manager: &Manager, caller: Option<&str>, input: &str) -> Result<Value, ServiceError> {
     let request = parse_input(input)?;
-    let plugin = require_plugin(&request)?;
+    let plugin = require_plugin(&request, caller)?;
     let sql_text = require_str(&request, "sql")?;
     let statement = sql::ensure_single(sql_text, manager.config().max_sql_bytes)?;
     let params = db::params_from_json(request.get("params"))?;
@@ -156,9 +162,9 @@ fn execute(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
     }))
 }
 
-fn batch(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
+fn batch(manager: &Manager, caller: Option<&str>, input: &str) -> Result<Value, ServiceError> {
     let request = parse_input(input)?;
-    let plugin = require_plugin(&request)?;
+    let plugin = require_plugin(&request, caller)?;
     let list = request
         .get("statements")
         .and_then(Value::as_array)
@@ -238,9 +244,9 @@ fn list_templates(input: &str) -> Result<Value, ServiceError> {
     }))
 }
 
-fn migrate(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
+fn migrate(manager: &Manager, caller: Option<&str>, input: &str) -> Result<Value, ServiceError> {
     let request = parse_input(input)?;
-    let plugin = require_plugin(&request)?;
+    let plugin = require_plugin(&request, caller)?;
 
     let mut migrations = Vec::new();
     if let Some(names) = request.get("templates") {
@@ -311,9 +317,9 @@ fn migrate(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
     }))
 }
 
-fn tables(manager: &Manager, input: &str) -> Result<Value, ServiceError> {
+fn tables(manager: &Manager, caller: Option<&str>, input: &str) -> Result<Value, ServiceError> {
     let request = parse_input(input)?;
-    let plugin = require_plugin(&request)?;
+    let plugin = require_plugin(&request, caller)?;
     let resolved = manager.resolve(&plugin)?;
     let connection = lock(&resolved.connection);
     let tables = db::list_tables(&connection, &resolved.prefix)?;
@@ -341,12 +347,34 @@ fn parse_input(input: &str) -> Result<Value, ServiceError> {
     Ok(value)
 }
 
-fn require_plugin(request: &Value) -> Result<String, ServiceError> {
-    optional_plugin(request)?.ok_or_else(|| {
-        ServiceError::bad_request(
-            "缺少 plugin 字段：ABI 不传调用者身份，请显式写自己的插件名（如 \"fuyubot.manage\"）",
-        )
-    })
+/// 入参里声明的 `plugin`，**并由调用者身份校验**（ABI v6）。
+///
+/// 声明了就必须与调用者一致：`current_plugin()` 由宿主判定、插件伪造不了，
+/// 所以「冒用别人的名字读写别人的库」这条以前堵不住的路，现在直接拒掉
+/// （`caller_mismatch`）。调用者未知（宿主自己调 / 测试直接调 `dispatch`）时不校验。
+fn declared_plugin(request: &Value, caller: Option<&str>) -> Result<Option<String>, ServiceError> {
+    let declared = optional_plugin(request)?;
+    if let (Some(plugin), Some(caller)) = (declared.as_deref(), caller)
+        && plugin != caller
+    {
+        return Err(ServiceError::new(
+            "caller_mismatch",
+            format!("plugin 是 {plugin:?}，实际调用者是 {caller:?}：只能说自己"),
+        ));
+    }
+    Ok(declared)
+}
+
+/// 必须知道「给谁用」的方法：入参优先，其次用调用者自己的名字（v6 起可以省）。
+fn require_plugin(request: &Value, caller: Option<&str>) -> Result<String, ServiceError> {
+    match declared_plugin(request, caller)? {
+        Some(plugin) => Ok(plugin),
+        None => caller.map(str::to_owned).ok_or_else(|| {
+            ServiceError::bad_request(
+                "缺少 plugin 字段：宿主没给出调用者身份，请显式写自己的插件名（如 \"fuyubot.manage\"）",
+            )
+        }),
+    }
 }
 
 fn optional_plugin(request: &Value) -> Result<Option<String>, ServiceError> {
@@ -419,7 +447,12 @@ mod tests {
     }
 
     fn call(manager: &Manager, method: &str, input: Value) -> Value {
-        let text = dispatch(manager, method, &input.to_string());
+        call_as(manager, None, method, input)
+    }
+
+    /// 带调用者身份的调用：`Some(..)` 模拟「某个插件在调」，`None` 模拟宿主自己调。
+    fn call_as(manager: &Manager, caller: Option<&str>, method: &str, input: Value) -> Value {
+        let text = dispatch(manager, caller, method, &input.to_string());
         serde_json::from_str(&text).expect("返回值必须是 JSON")
     }
 
@@ -446,6 +479,53 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("plugin")
+        );
+        drop(manager);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// ABI v6：宿主给得出调用者时，`plugin` 可以省，服务用调用者自己的名字。
+    #[test]
+    fn caller_identity_fills_in_plugin() {
+        let (manager, dir) = manager("caller", Mode::PerPlugin);
+        let created = call_as(
+            &manager,
+            Some("demo.bot"),
+            "execute",
+            json!({"sql": "CREATE TABLE t (v TEXT)"}),
+        );
+        assert_eq!(created["ok"], json!(true));
+        assert_eq!(created["plugin"], json!("demo.bot"));
+
+        // 显式写自己（旧写法）照样能用。
+        let body = call_as(
+            &manager,
+            Some("demo.bot"),
+            "query",
+            json!({"plugin": "demo.bot", "sql": "SELECT count(*) FROM t"}),
+        );
+        assert_eq!(body["rows"], json!([[0]]));
+        drop(manager);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// ABI v6：声明别人名字（v5 时代能冒用）现在被拒，错误码稳定。
+    #[test]
+    fn spoofing_another_plugin_is_rejected() {
+        let (manager, dir) = manager("spoof", Mode::PerPlugin);
+        let body = call_as(
+            &manager,
+            Some("attacker"),
+            "query",
+            json!({"plugin": "victim", "sql": "SELECT 1"}),
+        );
+        assert_eq!(body["ok"], json!(false));
+        assert_eq!(body["error"]["code"], json!("caller_mismatch"));
+        assert!(
+            body["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("attacker")
         );
         drop(manager);
         let _ = std::fs::remove_dir_all(dir);

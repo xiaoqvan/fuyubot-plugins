@@ -410,7 +410,7 @@ fn parse_rfc3339_ms(text: &str) -> Option<i64> {
     Some(seconds * 1000 + millis)
 }
 
-/// 与 [`crate::util::fmt_utc`] 的 `civil_from_days` 互逆。
+/// 与日期格式化互逆：把本地/UTC 都能解析的日期还原成天数。
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
@@ -1422,6 +1422,45 @@ impl Db {
         {
             log::warn(&self.host, format!("写全局 AI 关键词失败：{error}"));
         }
+    }
+
+    /// 今天已累计的默认 AI token 数（`adblock_settings` 里按本地日期保存）。
+    pub async fn ai_token_usage(&self, day: &str) -> u64 {
+        self.mongo
+            .find_one(collections::SETTINGS, json!({ "_id": "ai_token_usage" }))
+            .await
+            .ok()
+            .flatten()
+            .filter(|doc| doc.get("day").and_then(Value::as_str) == Some(day))
+            .and_then(|doc| doc.get("total_tokens").and_then(Value::as_u64))
+            .unwrap_or(0)
+    }
+
+    /// 累加默认 AI token；跨本地日期自动从 0 开始。返回累加后的总数。
+    pub async fn add_ai_tokens(&self, day: &str, tokens: u64) -> u64 {
+        let current = self.ai_token_usage(day).await;
+        let total = current.saturating_add(tokens);
+        let update = json!({
+            "$set": {
+                "day": day,
+                "total_tokens": total,
+                "updatedAt": date(now_ms()),
+            }
+        });
+        if let Err(error) = self
+            .mongo
+            .update(
+                collections::SETTINGS,
+                json!({ "_id": "ai_token_usage" }),
+                update,
+                true,
+                false,
+            )
+            .await
+        {
+            log::warn(&self.host, format!("写 AI token 用量失败：{error}"));
+        }
+        total
     }
 
     // ── 禁言复审 ──────────────────────────────────────────────────

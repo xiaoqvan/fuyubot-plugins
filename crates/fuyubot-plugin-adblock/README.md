@@ -23,12 +23,13 @@ FuyuBot 的广告拦截插件：一条消息进来，按「关键词 / 文件 / 
 ## 依赖
 
 - **`storage.mongo`（硬依赖）**：数据全部通过宿主里的 MongoDB 插件服务读写。插件在加载时声明了它——mongo 插件不在时本插件**不会激活**（停在 Pending），而不是静默地「不拦截」。
-- **FuyuBot 运行时**（ABI v5），发布包覆盖 Windows / Linux / macOS / Android，具体平台见 `plugin.json`。
+- **FuyuBot 运行时**（ABI v6），发布包覆盖 Windows / Linux / macOS / Android，具体平台见 `plugin.json`。
 - **可选 `fuyubot.help.commands`**：装了宿主 help 插件时 `/help` 会列出下文的命令；没装也能正常使用。
 
 > mongo 插件就在本仓库的 [`crates/fuyubot-plugin-mongo`](../fuyubot-plugin-mongo/)；本插件只认服务名 `storage.mongo` 与它的 JSON 方法约定，两个插件各自独立发布。
 >
-> AI 审核走 OpenAI 兼容的对话接口，后端与模型由 `ai_base_url` / `ai_model` 决定，群内也可以单独配置。
+> AI 审核走 OpenAI 兼容的对话接口，后端与模型由 `ai_base_url` / `ai_model` 决定，群内也可以单独配置；
+> 默认接口支持每日 token 上限，超限或调用失败时自动切换备用接口（`ai_fallback_*`）。
 
 ## 安装
 
@@ -69,6 +70,13 @@ log_topic = 1622
 ai_api_key = "sk-…"
 ai_base_url = "https://api.openai.com/v1"
 ai_model = "gpt-4o-mini"
+# 默认接口每天累计 token 上限；超过后优先走备用接口（0 = 不限制）
+ai_token_limit = 2000000
+
+# 备用 AI 接口（可选；默认接口超限或失败时切换）
+# ai_fallback_api_key = "sk-…"
+# ai_fallback_base_url = "https://api.deepseek.com/v1"
+# ai_fallback_model = "deepseek-chat"
 
 # AI 审查总日志（可选）
 ai_log_channel = -1001234567890
@@ -90,6 +98,8 @@ ai_db_topic = 3034
 | `db` | mongo 插件的 db | 覆盖本插件用的库名；多个 bot 共用一套 MongoDB 时用它隔离 |
 | `log_channel` / `log_topic` | 不发送 | 全局封禁审计频道及其话题 |
 | `ai_api_key` / `ai_base_url` / `ai_model` | 未配置 | 内置默认 AI 接口；没有它时只有「群自定义了接口」的群启用 AI |
+| `ai_token_limit` | `2000000` | 默认接口每天累计 token 上限；按本地日期归零，`0` = 不限制 |
+| `ai_fallback_api_key` / `ai_fallback_base_url` / `ai_fallback_model` | 未配置 | 备用 AI 接口；默认接口超限或调用失败时切换，三项都配齐才生效 |
 | `ai_log_channel` / `ai_log_topic` | 不发送 | AI 审查总日志 |
 | `ai_db_channel` / `ai_db_topic` | 不发送 | `/spam` 判定写库后的通知 |
 
@@ -141,14 +151,16 @@ ai_db_topic = 3034
 | `flieId_blacklist` / `sticker_blacklist` / `sticker_set_blacklist` | 文件 / 单贴纸 / 贴纸集 |
 | `ai_fulltext_blacklist` | AI 判定的广告全文（精确匹配） |
 | `ai_default_chats` | 内置 AI 授权群 |
-| `adblock_settings` | 全局 AI 触发关键词 |
+| `adblock_settings` | 全局 AI 触发关键词、每日默认接口 token 用量 |
 | `SPAM_Log` | `/spam` 举报流水 |
 
 ## 注意
 
 - **Bot 需要管理权限**：撤回要「删除消息」，禁言/封禁要「限制成员」。没有权限时群内不会有任何动作，先确认 Bot 是群管理员。
 - **私聊命令在群里发会被静默忽略**：不回复、也不提示权限。这是刻意的——群里可能还装着别的 bot，回一句「你没权限」只会暴露命令存在；主人命令请私聊 Bot。
-- **AI 失败不静默放行**：未配置、HTTP 4xx、返回格式不符都会得到明确原因，该消息按「未命中」处理，需要时人工复核。
+- **AI 失败不静默放行**：未配置、HTTP 4xx、返回格式不符都会得到明确原因，该消息按「未命中」处理，需要时人工复核；配置了备用接口时，默认接口超限或失败会自动切过去。
+- **命令回复交给宿主**：所有回命令的消息都走宿主的命令回复服务（`fuyubot.host.command`）——发新消息、编辑原命令消息还是发 ephemeral 全由宿主按账号类型与命令形态决定。`/adconfig`、`/setlogchannel` 这类「只该给操作人看」的回复因此在群里是 ephemeral 消息（只对执行者可见）；user 账户自己敲的命令则由宿主编辑原消息，不再多发一条。
+- **回复的保留策略**：私聊命令的回复永不自动删除；群内只有封禁提示、`/spam`、`/adconfig`、`/setlogchannel`、`/whitelist`(`/rmwhitelist`) 的回复会按配置的秒数自删，`/qban` 等查询结果保留。**编辑进原命令消息的回复同样到点自删**（删掉的就是那条命令消息）。
 - **日志频道默认不发**：只有配了 `log_channel` / `log_topic` 才会往审计频道写；群内日志则在 `/adconfig` 或 `/setlogchannel` 里绑。
 - **`/setlogchannel` 先验证再落库**：测试消息真的发出去了才写配置，频道填错不会留下半套配置。
 - **换库要谨慎**：`db` 指向已有数据的库会直接沿用其中的集合；指向空库时会新建集合与索引，不会导入任何旧数据。
@@ -158,7 +170,7 @@ ai_db_topic = 3034
 
 - 本插件是独立实现：检测规则、提示语与按钮交互都在本仓库内维护。
 - `src/simplify.rs` 内联了 FuyuBot 的 `fuyubot-simplify`（`publish = false`，不能作为依赖发布）的裁剪版，只保留本插件用到的命令解析与消息渲染部分。
-- TDLib 调用与消息发送走 FuyuBot 的 ABI v5；AI 审核走 OpenAI 兼容的对话接口。
+- TDLib 调用与消息发送走 FuyuBot 的 ABI v6（`simplify_invoke` op 表 + 响应通道）；AI 审核走 OpenAI 兼容的对话接口。
 
 ## License
 

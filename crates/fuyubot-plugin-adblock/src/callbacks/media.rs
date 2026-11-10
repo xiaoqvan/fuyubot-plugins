@@ -143,14 +143,13 @@ async fn finish(
     answer(rt, ctx, answer_text, false, 10).await;
 
     let chat_mention = rt.td.sender_mention(Sender::Chat(group), true).await;
-    let title = rt.td.chat_title(group).await;
     let target = rt.td.sender_mention(member, true).await;
     let admin = rt
         .td
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Ban\n**Group**: {chat_mention}({title})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Reason**: Spam detected",
+        "#Ban\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Reason**: Spam detected",
         member.id(),
         ctx.sender_user_id
     );

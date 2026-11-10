@@ -167,7 +167,7 @@ pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
         log::info(
             &rt.host,
             format!(
-                "用户({user_id}) 在群({group}) 点击重新审查，复审未通过 (confidence: {}) operator={}",
+                "用户 {name}({user_id}) 在群({group}) 点击重新审查，复审未通过 (confidence: {}) operator={}",
                 result.confidence, ctx.sender_user_id
             ),
         );
@@ -215,7 +215,7 @@ pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
     log::info(
         &rt.host,
         format!(
-            "用户({user_id}) 在群({group}) 复审通过，已解除禁言 operator={}",
+            "用户 {name}({user_id}) 在群({group}) 复审通过，已解除禁言 operator={}",
             ctx.sender_user_id
         ),
     );

@@ -18,6 +18,10 @@
 //! ai_api_key = "sk-…"                       # 可选：内置默认 AI 接口
 //! ai_base_url = "https://api.openai.com/v1"
 //! ai_model = "gpt-4o-mini"
+//! ai_token_limit = 2000000                  # 默认接口每日 token 上限；0 = 不限制
+//! ai_fallback_api_key = "sk-…"              # 可选：备用接口
+//! ai_fallback_base_url = "https://api.deepseek.com/v1"
+//! ai_fallback_model = "deepseek-chat"
 //! ai_log_channel = -1001234567890           # 可选：AI 审查总日志
 //! ai_log_topic = 11740
 //! ai_db_channel = -1001234567890            # 可选：/spam 判定后写库的通知
@@ -68,6 +72,10 @@ pub struct PluginConfig {
     pub log_topic: Option<i32>,
     /// 内置默认 AI 接口（群没有自定义配置时用它）。
     pub ai: Option<AiEndpoint>,
+    /// 备用 AI 接口：默认接口 token 超限或调用失败时切过去。
+    pub ai_fallback: Option<AiEndpoint>,
+    /// 默认接口的每日 token 上限；`0` = 不限制。
+    pub ai_token_limit: u64,
     /// AI 审查总日志（对应 TS 版的 topic 11740）。
     pub ai_log_channel: Option<i64>,
     pub ai_log_topic: Option<i32>,
@@ -131,6 +139,22 @@ impl PluginConfig {
             });
         }
 
+        let fallback_key = string_of(host, "ai_fallback_api_key").unwrap_or_default();
+        let fallback_url = string_of(host, "ai_fallback_base_url").unwrap_or_default();
+        let fallback_model =
+            string_of(host, "ai_fallback_model").unwrap_or_else(|| "gpt-4o-mini".to_owned());
+        if !fallback_key.is_empty() && !fallback_url.is_empty() {
+            config.ai_fallback = Some(AiEndpoint {
+                api_key: fallback_key,
+                base_url: fallback_url.trim_end_matches('/').to_owned(),
+                model: fallback_model,
+            });
+        }
+        config.ai_token_limit = get(host, "ai_token_limit")
+            .as_ref()
+            .and_then(Value::as_u64)
+            .unwrap_or(2_000_000);
+
         config.ai_log_channel = channel_of(get(host, "ai_log_channel"));
         config.ai_log_topic = topic_of(get(host, "ai_log_topic"));
         config.ai_db_channel = channel_of(get(host, "ai_db_channel"));
@@ -151,7 +175,17 @@ impl PluginConfig {
     /// 启动时打一行，把「哪些能力没开」说清楚——比事后猜为什么 AI 不工作省事。
     pub fn summary(&self) -> String {
         let ai = match &self.ai {
-            Some(endpoint) => format!("默认 AI 接口 {} / {}", endpoint.base_url, endpoint.model),
+            Some(endpoint) => {
+                let fallback = self
+                    .ai_fallback
+                    .as_ref()
+                    .map(|item| format!("，备用 {} / {}", item.base_url, item.model))
+                    .unwrap_or_default();
+                format!(
+                    "默认 AI 接口 {} / {}{fallback}，每日 token 上限 {}",
+                    endpoint.base_url, endpoint.model, self.ai_token_limit
+                )
+            }
             None => "无默认 AI 接口（只用各群自定义配置）".to_owned(),
         };
         let audit = match self.log_channel {

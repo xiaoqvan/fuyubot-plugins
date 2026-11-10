@@ -26,7 +26,10 @@
 //! 3. **连接加固**：`defensive=ON`、`trusted_schema=OFF`、关闭双引号字符串兼容、
 //!    `ATTACH` / `PRAGMA` / `VACUUM` / 事务控制语句一律拒绝。
 //!
-//! 注意：ABI 不告诉服务「调用者是谁」，所以每次调用都要显式给 `plugin`。
+//! 注意：`plugin` 字段从 ABI v6 起**可以省**——宿主在服务调用期间压「调用者栈」，
+//! 服务用 `current_plugin()` 问得到是谁在调，省了就自动用调用者自己的名字；
+//! 显式写了就必须与调用者一致（冒用别人的名字读写别人的库会被拒）。
+//! 宿主自己调（没有调用者）时仍然要显式给 `plugin`。
 //! 同进程的原生插件本来就能绕过任何边界，这里的隔离是**协作式**的，
 //! 目标是防「数据里的注入」，不是防「恶意插件」。
 
@@ -106,7 +109,7 @@ impl Plugin for SqlitePlugin {
         })?);
         set_manager(Some(Arc::clone(&manager)));
 
-        let service = build_service();
+        let service = build_service(&self.host);
         let handle = self
             .host
             .provide_service_shared(service::SERVICE_NAME, &service.vtable);
@@ -134,10 +137,22 @@ impl Plugin for SqlitePlugin {
         self.service = None;
         set_manager(None);
     }
+
+    fn display_name() -> &'static str {
+        "SQLite 存储"
+    }
+
+    fn description() -> &'static str {
+        "注册 fuyubot.sqlite：参数化查询、表结构模板、事务批量写入"
+    }
 }
 
 /// 服务表 + 它指向的方法名缓冲。字段从不被读，但必须活在 `vtable` 的裸指针期间。
 struct SqliteService {
+    /// 服务方法的 `context`：让方法回问宿主「谁在调我」（ABI v6 的 `current_plugin`）。
+    /// 单独 `Box` 一层是为了地址稳定——`vtable.context` 指向它，移动外层结构不能移动它。
+    #[allow(dead_code)]
+    host: Box<HostApi>,
     vtable: ServiceVTable,
     #[allow(dead_code)]
     methods: Vec<ServiceMethod>,
@@ -150,7 +165,7 @@ struct SqliteService {
 unsafe impl Send for SqliteService {}
 unsafe impl Sync for SqliteService {}
 
-fn build_service() -> Box<SqliteService> {
+fn build_service(host: &HostApi) -> Box<SqliteService> {
     let service_name = CString::new(service::SERVICE_NAME).expect("服务名不该含 NUL");
     let mut names = Vec::with_capacity(service::METHODS.len() + 1);
     names.push(service_name);
@@ -177,15 +192,18 @@ fn build_service() -> Box<SqliteService> {
         })
         .collect();
 
+    // `Box` 把 `HostApi` 挪到堆上：`vtable.context` 指向它，地址从此不再随本结构移动。
+    let host = Box::new(*host);
     let vtable = ServiceVTable {
         name: names[0].as_ptr(),
         version: 1,
         size: core::mem::size_of::<ServiceVTable>() as u32,
-        context: core::ptr::null_mut(),
+        context: (&*host as *const HostApi).cast_mut().cast(),
         methods: methods.as_ptr(),
         method_count: methods.len(),
     };
     Box::new(SqliteService {
+        host,
         vtable,
         methods,
         names,
@@ -195,10 +213,10 @@ fn build_service() -> Box<SqliteService> {
 macro_rules! service_method {
     ($name:ident, $method:literal) => {
         unsafe extern "C" fn $name(
-            _context: *mut c_void,
+            context: *mut c_void,
             input_json: *const c_char,
         ) -> *const c_char {
-            handle($method, input_json)
+            handle(context, $method, input_json)
         }
     };
 }
@@ -211,8 +229,8 @@ service_method!(svc_templates, "templates");
 service_method!(svc_migrate, "migrate");
 service_method!(svc_tables, "tables");
 
-/// 所有服务方法的公共入口：读入参、取管理器、分发、把 panic 挡在 `extern "C"` 内。
-fn handle(method: &str, input_json: *const c_char) -> *const c_char {
+/// 所有服务方法的公共入口：认调用者、读入参、取管理器、分发、把 panic 挡在 `extern "C"` 内。
+fn handle(context: *mut c_void, method: &str, input_json: *const c_char) -> *const c_char {
     let output = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let input = if input_json.is_null() {
             String::new()
@@ -227,8 +245,14 @@ fn handle(method: &str, input_json: *const c_char) -> *const c_char {
                 }
             }
         };
+        let caller = caller_of(context);
         match manager_snapshot() {
-            Some(manager) => reply(&service::dispatch(&manager, method, &input)),
+            Some(manager) => reply(&service::dispatch(
+                &manager,
+                caller.as_deref(),
+                method,
+                &input,
+            )),
             None => reply(&error_json(&ServiceError::new(
                 "not_ready",
                 "sqlite 服务还没就绪（插件 start 没跑或已经 stop）",
@@ -242,6 +266,20 @@ fn handle(method: &str, input_json: *const c_char) -> *const c_char {
             "sqlite 服务内部 panic（已拦截，详见宿主日志）",
         ))),
     }
+}
+
+/// 问宿主「现在是谁在调我」：`context` 是 `build_service` 交给服务表的那份 `Box<HostApi>`。
+///
+/// ABI v6 起宿主在服务调用期间压「调用者栈」，所以这里拿到的是**权威**调用方
+/// （插件在自己的线程上调进来也认得），插件伪造不了。
+fn caller_of(context: *mut c_void) -> Option<String> {
+    if context.is_null() {
+        return None;
+    }
+    // SAFETY: `build_service` 把 `vtable.context` 指向 `SqliteService` 自持的
+    // `Box<HostApi>`，只要服务表还注册着就一直有效（`stop()` 先摘服务再关库）。
+    let host = unsafe { &*(context as *const HostApi) };
+    host.current_plugin()
 }
 
 fn error_json(error: &ServiceError) -> String {

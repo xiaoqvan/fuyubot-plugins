@@ -98,13 +98,12 @@ pub async fn punish(
     // ⑤ 文案与按钮
     let member = rt.td.sender_mention(sender, true).await;
     let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
-    let title = rt.td.chat_title(chat_id).await;
     let detail = match &hit.id {
         Some(id) => format!("\n - Type: {}\n - ID: `{id}`", hit.kind),
         None => format!("\n - Type: {}\n - Reason: {}", hit.kind, hit.details),
     };
     let log_text = format!(
-        "#{}\n**ID**: {member}({})\n**Chat ID**: {chat_mention}({title})\n**Reason**: Spam detected\n**Detail**:{detail}",
+        "#{}\n**ID**: {member}({})\n**Chat ID**: {chat_mention}({chat_id})\n**Reason**: Spam detected\n**Detail**:{detail}",
         if action_is_ban { "Ban" } else { "Mute" },
         sender.id()
     );

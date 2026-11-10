@@ -35,7 +35,7 @@ const TOGGLES: [(&str, &str, &str, &str); 3] = [
     ),
 ];
 
-pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &Value) {
+pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &Value) {
     let chat_id = command.chat_id;
     let reply_to = Some(command.message_id);
     if !flow::ensure_group(rt, chat_id, reply_to).await {
@@ -48,7 +48,7 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &
     let words = super::words(command);
     let key = words.first().map(String::as_str).unwrap_or("");
     if key.is_empty() || key == "status" {
-        show_status(rt, chat_id).await;
+        show_status(rt, chat_id, sender, message).await;
         return;
     }
 
@@ -169,7 +169,7 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, _message: &
 }
 
 /// 状态页。
-async fn show_status(rt: &Runtime, chat_id: i64) {
+async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Value) {
     let config = rt.db.config_or_default(chat_id).await;
     let mut body = String::from("📋 **当前广告屏蔽配置：**\n\n");
     for (name, description, _, _) in TOGGLES {
@@ -207,5 +207,10 @@ async fn show_status(rt: &Runtime, chat_id: i64) {
             format!("https://t.me/{username}?start=aiConfig_{chat_id}"),
         )]
     };
-    flow::send_with(rt, chat_id, &body, None, buttons, 0).await;
+
+    // 回复走宿主：普通的发新消息 + 回原命令（60 秒后自删）；user 账户自己触发命令时
+    // 编辑原消息（不删，那是用户自己发的）；群里的 ephemeral 命令由宿主改走
+    // `sendEphemeralMessage`（只对执行者可见）。
+    let reply_to = message.get("id").and_then(Value::as_i64);
+    flow::send_with(rt, chat_id, &body, reply_to, buttons, 60).await;
 }

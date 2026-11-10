@@ -20,10 +20,16 @@ use fuyubot_abi::HostApi;
 use fuyubot_abi::ResponseRouter;
 use serde_json::{Value, json};
 
-use crate::simplify::{EditTextParams, ReplyButton, SendMessageParams, Simplify, Text, Topic};
+use crate::simplify::{
+    EditTextParams, ReplyButton, SendMessageParams, Simplify, Text, Topic, send_params,
+};
 
 /// 普通请求的等待上限。发消息另算（`send_message` 自带 30 秒预算）。
 pub const CALL_TIMEOUT_MS: u64 = 15_000;
+
+/// 宿主预置的**命令回复**服务（方法 `reply`）：由宿主决定发新消息 / 编辑原命令 /
+/// 发 ephemeral。名字写错或宿主太旧时调用会失败，[`Td::send`] 会退回普通发送。
+pub const COMMAND_SERVICE: &str = "fuyubot.host.command";
 
 // ── 发送者 ────────────────────────────────────────────────────────
 
@@ -520,10 +526,65 @@ impl Td {
 
     // ── 消息收发 ──────────────────────────────────────────────────
 
+    /// 走宿主的命令回复服务回一条消息。`None` = 没发出去（服务不存在 / 入参被拒 /
+    /// TDLib 报错 / 返回的不是消息）。
+    ///
+    /// 宿主知道 `message_id` 是不是一条命令：是就按账号类型决定**发新消息**还是
+    /// **编辑原命令消息**；群里的 ephemeral 命令还会改走 `sendEphemeralMessage`。
+    /// 不是命令时与 `sendMessage + reply_to` 等价。
+    ///
+    /// `call_service` 是**同步阻塞**的（最长等到 `params.timeout_ms`），所以丢进
+    /// `spawn_blocking`：不能用一次发送占住 tokio worker。
+    async fn reply_command(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        params: &SendMessageParams,
+    ) -> Option<Value> {
+        let simplify = Simplify::new(self.host);
+        let payload = send_params(chat_id, params, &|text| simplify.formatted(text));
+        let input = json!({
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "timeout_ms": params.timeout_ms,
+            "payload": payload,
+        })
+        .to_string();
+        let host = self.host;
+        // join 失败（任务被取消）与服务调用失败（宿主没有这个服务）都返回 None，
+        // 调用方据此退回普通发送——回复宁可变成普通消息，也不能丢。
+        let reply = tokio::task::spawn_blocking(move || {
+            host.call_service(COMMAND_SERVICE, "reply", &input)
+        })
+        .await
+        .ok()?
+        .ok()?;
+        let value: Value = serde_json::from_str(&reply).ok()?;
+        if value.get("@type").and_then(Value::as_str) == Some("error") {
+            let code = value.get("code").and_then(Value::as_i64).unwrap_or(0);
+            let message = value.get("message").and_then(Value::as_str).unwrap_or("");
+            crate::log::warn(
+                &self.host,
+                format!("命令回复失败（chat {chat_id} / message {message_id}）：{code} {message}"),
+            );
+            return None;
+        }
+        Some(value)
+    }
+
     /// 发一条消息，等到「真的发出去了」再返回最终消息。
+    ///
+    /// `reply_to` 有值时先走**宿主的命令回复服务**（见 [`Self::reply_command`]）：
+    /// 宿主要么发新消息、要么编辑原命令消息，插件不用自己判断账号类型与 ephemeral。
+    /// 服务不可用（宿主太旧 / 名字不对）时退回 simplify 的普通发送。
     ///
     /// `None` 表示失败（网络 / 权限 / 超时），调用方一般只需要记日志。
     pub async fn send(&self, chat_id: i64, params: &SendMessageParams) -> Option<Value> {
+        if let Some(message_id) = params.reply_to_message_id
+            && let Some(message) = self.reply_command(chat_id, message_id, params).await
+        {
+            return Some(message);
+        }
         Simplify::new(self.host)
             .send_message(chat_id, params)
             .await
@@ -606,7 +667,12 @@ impl Td {
     /// 发送者 → Markdown 链接（对应 TS 版 `chatoruserMdown`）。
     ///
     /// `name = true` 时链接文字用**名字**（用户在群里被处置时更有用），
-    /// 否则用 ID。行为与 TS 版一致，包括那个「频道用 `tg://resolve`」的分支。
+    /// 否则用 ID。
+    ///
+    /// 与 TS 版有两个刻意的不同（都是原版日志里「名字显示成 id」的根因）：
+    /// - 频道/超级群在 `name = true` 时用 **title**，而不是把 `chat_id` 当链接文字；
+    /// - 没有公开用户名时不再生成 `[title](id:…)` 这种 TDLib 不认的链接，
+    ///   直接给纯 title。调用方本来就会在末尾追加 `(id)`，不需要伪链接。
     pub async fn sender_mention(&self, sender: Sender, name: bool) -> String {
         match sender {
             Sender::User(user_id) => {
@@ -629,41 +695,55 @@ impl Td {
                         )
                     })
                     .unwrap_or_default();
-                format!("[{first} {last}](tg://user?id={user_id})")
+                // 用户没有名字时退回 ID：`[](tg://user?id=…)` 在日志里是一片空白。
+                let label = display_name(&first, &last).unwrap_or_else(|| user_id.to_string());
+                format!("[{label}](tg://user?id={user_id})")
             }
             Sender::Chat(chat_id) => {
+                if !name {
+                    return chat_id.to_string();
+                }
                 let Ok(chat) = self.chat(chat_id).await else {
-                    return format!("[{chat_id}]");
+                    return chat_id.to_string();
                 };
-                let title = chat
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_owned();
+                let title = chat.get("title").and_then(Value::as_str).unwrap_or("");
+                let label = if title.trim().is_empty() {
+                    chat_id.to_string()
+                } else {
+                    title.trim().to_owned()
+                };
+                let mut username = None;
                 if let Some(supergroup_id) = chat
                     .get("type")
                     .and_then(|kind| kind.get("supergroup_id"))
                     .and_then(Value::as_i64)
                     && let Ok(supergroup) = self.supergroup(supergroup_id).await
-                    && let Some(username) = supergroup
+                {
+                    username = supergroup
                         .get("usernames")
                         .and_then(|names| names.get("active_usernames"))
                         .and_then(Value::as_array)
                         .and_then(|names| names.first())
                         .and_then(Value::as_str)
-                {
-                    if name {
-                        return format!("[{chat_id}](tg://resolve?domain={username})");
-                    }
-                    return format!("[{title}](id:{chat_id})");
+                        .map(str::to_owned);
                 }
-                if !name {
-                    return format!("[{chat_id}]");
+                match username {
+                    Some(username) => format!("[{label}](tg://resolve?domain={username})"),
+                    None => label,
                 }
-                format!("[{title}](id:{chat_id})")
             }
         }
     }
+}
+
+/// 用户显示名：`first last`，两边都空时返回 `None`。
+///
+/// TS 版直接 `first_name + last_name`（没有空格，缺失时还会拼出 `undefinedundefined`）；
+/// 这里统一成「有空格、缺一个就只显示另一个、全缺才回退 ID」。
+fn display_name(first: &str, last: &str) -> Option<String> {
+    let name = format!("{} {}", first.trim(), last.trim());
+    let name = name.trim();
+    (!name.is_empty()).then(|| name.to_owned())
 }
 
 /// 管理员状态是否覆盖这些权限（空列表 = 只要是管理员就行）。
@@ -745,6 +825,14 @@ mod tests {
         assert!(status_has_rights(&creator, &["can_restrict_members"]));
         let member = json!({"@type": "chatMemberStatusMember"});
         assert!(!status_has_rights(&member, &[]));
+    }
+
+    #[test]
+    fn display_names_are_trimmed_and_fall_back() {
+        assert_eq!(display_name("Ada", "Lovelace"), Some("Ada Lovelace".into()));
+        assert_eq!(display_name("Ada", ""), Some("Ada".into()));
+        assert_eq!(display_name("", "Lovelace"), Some("Lovelace".into()));
+        assert_eq!(display_name("  ", "\t"), None);
     }
 
     #[test]

@@ -110,7 +110,7 @@ pub async fn handle_chat_member(rt: &Runtime, update: &Value) {
         log::info(
             &rt.host,
             format!(
-                "新成员({user_id}) 在群({chat_id}) bio为空且无主页频道，跳过AI检查，仅登记24h监视"
+                "新成员 {name}({user_id}) 在群({chat_id}) bio为空且无主页频道，跳过AI检查，仅登记24h监视"
             ),
         );
         return;
@@ -232,7 +232,10 @@ pub async fn mute_new_member(
     }
     log::info(
         &rt.host,
-        format!("新成员({user_id}) 因资料含广告被永久禁言 (confidence: {confidence})"),
+        format!(
+            "新成员 {}({user_id}) 因资料含广告被永久禁言 (confidence: {confidence})",
+            if name.trim().is_empty() { "" } else { name }
+        ),
     );
 }
 

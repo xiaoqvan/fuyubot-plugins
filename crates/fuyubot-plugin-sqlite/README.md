@@ -1,6 +1,6 @@
 # fuyubot-plugin-sqlite
 
-FuyuBot 的 **SQLite 服务插件**（Rust，cdylib），服务名 `fuyubot.sqlite`，ABI v5。它自己不订阅
+FuyuBot 的 **SQLite 服务插件**（Rust，cdylib），服务名 `fuyubot.sqlite`，ABI v6。它自己不订阅
 命令、不发消息：启动时把进程级服务注册到宿主，其它插件在 `start()` 里
 `call_service("fuyubot.sqlite", …)` 就能建表、读写数据。所有方法 **JSON 进、JSON 出**，值永远
 走参数绑定，SQL 文本里只有占位符；SQLite 以 bundled 方式编入，运行时不依赖系统库。
@@ -53,8 +53,10 @@ read_only = false         # true = 以只读方式打开，所有写操作返回
 服务名 `fuyubot.sqlite`。成功 `{"ok": true, "...": "..."}`，失败
 `{"ok": false, "error": {"code": "denied_sql", "message": "…"}}`。
 
-**每次调用都要带 `plugin`**：ABI 的 `ServiceMethodFn` 只有 `(context, input_json)`，宿主不告诉
-服务「调用者是谁」。插件名由调用方自己声明，服务会校验它能否安全地变成文件名 / 表前缀。
+**`plugin` 可以省**：ABI v6 起宿主在服务调用期间压「调用者栈」，服务用 `current_plugin()`
+问得到真实调用方（插件伪造不了）——省了 `plugin` 就自动用调用者自己的名字。显式写了就必须与
+调用者一致，否则返回 `caller_mismatch`；宿主自己调（没有调用者）时仍然要显式给 `plugin`。
+插件名会校验能否安全地变成文件名 / 表前缀。
 
 ### `info`
 
@@ -194,12 +196,15 @@ fn bootstrap(host: &HostApi) -> Result<(), String> {
 
 在自己的 `soft_inject()` 里声明 `"fuyubot.sqlite"`，宿主会保证服务在被调用前已加载。
 
+> 示例里保留 `plugin` 是为了让「读写的是谁的库」一眼可见；ABI v6 起它**可以省**，
+> 服务会自动用调用者自己的名字。
+
 ## 注意
 
 - **不是安全边界**：服务能做到「不把值拼进 SQL」「不让调用方改连接参数」「不越出数据目录」，
   但同进程插件可以直接 `dlopen`、调任意 C 函数。隔离靠约定，不靠权限。
-- **`plugin` 必须自己传**：ABI 没有调用者身份，服务无法验证你是不是那个插件。冒用名字会读写到
-  对方的库，所以别把插件名做成用户可控的输入。
+- **`plugin` 写自己的名字**：ABI v6 起服务能向宿主核实调用者，冒用别人的名字会直接
+  `caller_mismatch`（v5 时代只能靠自律）。仍然别把插件名做成用户可控的输入。
 - **同一库串行执行**：每个库一个连接，同一时刻只有一条语句在跑（避免事务串台）。单条慢查询会
   挡住同库其它调用，`busy_timeout` 只管锁等待；长任务请分页查、小批 batch 写。
 - **模板只管「表存在」**：schema 演进（加字段、改类型）要自己写 `ALTER TABLE`；`migrate` 幂等，
@@ -209,7 +214,7 @@ fn bootstrap(host: &HostApi) -> Result<(), String> {
 ## 来源与致谢
 
 - 代码来源：本仓库自行实现，只提供通用 SQL 通道，不含业务语义。
-- 服务接口按 FuyuBot ABI v5 编写，依赖运行时仓库提供的 `fuyubot-abi` crate（`define_plugin!`、
+- 服务接口按 FuyuBot ABI v6 编写，依赖运行时仓库提供的 `fuyubot-abi` crate（`define_plugin!`、
   `HostApi::call_service` 由它提供）；SQLite 本体来自 rusqlite 的 `bundled` 特性（随构建编入的
   sqlite3 C 源码），所以单文件分发即可。
 

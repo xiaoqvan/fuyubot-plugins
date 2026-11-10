@@ -50,14 +50,13 @@ pub async fn unban(rt: &Runtime, ctx: &CallbackCtx) {
     .await;
 
     let chat_mention = rt.td.sender_mention(Sender::Chat(group), true).await;
-    let title = rt.td.chat_title(group).await;
     let target = rt.td.sender_mention(member, true).await;
     let admin = rt
         .td
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Unban\n**Group**: {chat_mention}({title})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Action**: 已解除封禁{}",
+        "#Unban\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Action**: 已解除封禁{}",
         member.id(),
         ctx.sender_user_id,
         if whitelisted {
@@ -130,14 +129,13 @@ pub async fn unmute(rt: &Runtime, ctx: &CallbackCtx) {
     }
 
     let chat_mention = rt.td.sender_mention(Sender::Chat(group), true).await;
-    let title = rt.td.chat_title(group).await;
     let target = rt.td.sender_mention(member, true).await;
     let admin = rt
         .td
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Unmute\n**Group**: {chat_mention}({title})\n**User**: {target}({})\n**Admin**: {admin}({})",
+        "#Unmute\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})",
         member.id(),
         ctx.sender_user_id
     );
@@ -174,14 +172,13 @@ pub async fn ban(rt: &Runtime, ctx: &CallbackCtx) {
     answer(rt, ctx, "该用户已被封禁", false, 10).await;
 
     let chat_mention = rt.td.sender_mention(Sender::Chat(group), true).await;
-    let title = rt.td.chat_title(group).await;
     let target = rt.td.sender_mention(member, true).await;
     let admin = rt
         .td
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Ban\n**Group**: {chat_mention}({title})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Reason**: Spam detected",
+        "#Ban\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Reason**: Spam detected",
         member.id(),
         ctx.sender_user_id
     );

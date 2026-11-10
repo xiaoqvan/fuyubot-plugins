@@ -26,6 +26,16 @@ ai_api_key = "sk-xxxxxxxxxxxxxxxx"
 ai_base_url = "https://api.openai.com/v1"
 ai_model = "gpt-4o-mini"
 
+# 默认接口每天累计 token 上限；超过后优先走备用接口。0 = 不限制。
+# 用量按本地日期（不是 UTC）每天 0 点自动归零。
+ai_token_limit = 2000000
+
+# 备用 AI 接口（可选）：默认接口 token 超限，或调用失败时切过去。
+# 三项都配齐才生效；模型不写默认 gpt-4o-mini。
+# ai_fallback_api_key = "sk-yyyyyyyyyyyyyyyy"
+# ai_fallback_base_url = "https://api.deepseek.com/v1"
+# ai_fallback_model = "deepseek-chat"
+
 # AI 审查总日志（可选）。
 ai_log_channel = -1001234567890
 ai_log_topic = 11740

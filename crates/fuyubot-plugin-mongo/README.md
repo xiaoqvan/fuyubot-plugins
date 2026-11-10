@@ -1,6 +1,6 @@
 # fuyubot-plugin-mongo
 
-FuyuBot 的 **MongoDB 服务插件**（Rust，cdylib），服务名 `storage.mongo`，ABI v5。它给**任意**
+FuyuBot 的 **MongoDB 服务插件**（Rust，cdylib），服务名 `storage.mongo`，ABI v6。它给**任意**
 插件提供集合级 CRUD：不认识番剧，也不认识任何业务表。
 
 ```text
@@ -83,7 +83,8 @@ macOS 用 `libfuyubot_plugin_mongo.dylib`。装好后重启机器人即可。
 
 ## 来源与致谢
 
-- 服务接口按 FuyuBot ABI v5 编写；插件只做通用通道，业务语义（该查哪些字段、怎么排序）留在
+- 服务接口按 FuyuBot ABI v6 编写（服务调用经宿主，提供方用 `current_plugin()` 能看到真实
+  调用方）；插件只做通用通道，业务语义（该查哪些字段、怎么排序）留在
   业务侧，换个业务不用改数据库插件。
 - MongoDB 驱动用官方 `mongodb` crate，BSON 类型来自 `bson` crate。
 

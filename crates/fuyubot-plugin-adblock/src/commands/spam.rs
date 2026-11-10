@@ -631,14 +631,13 @@ async fn send_report_log(rt: &Runtime, chat_id: i64, command_message: &Value, ta
         return;
     };
     let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
-    let title = rt.td.chat_title(chat_id).await;
     let user_mention = rt.td.sender_mention(target, true).await;
     let reporter_mention = match message_sender(command_message) {
         Some(sender) => rt.td.sender_mention(sender, true).await,
         None => "-".to_owned(),
     };
     let body = format!(
-        "#SPAM\n**Group**:{chat_mention}({title}) \n**User**:{reporter_mention}(ID: {reporter})\n**Reported User**:{user_mention}(ID: {})",
+        "#SPAM\n**Group**:{chat_mention}({chat_id}) \n**User**:{reporter_mention}(ID: {reporter})\n**Reported User**:{user_mention}(ID: {})",
         target.id()
     );
     let _ = rt

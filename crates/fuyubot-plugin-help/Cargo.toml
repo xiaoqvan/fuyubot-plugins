@@ -1,0 +1,21 @@
+[package]
+name = "fuyubot-plugin-help"
+description = "FuyuBot /help 图片版：替代内置 help（同 id + 同一命令注册服务），硬依赖 fuyubot.html2img"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主 dlopen；rlib 让单测直接测命令解析、配置与模板数据。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# 只用于测试：在本地把同一份模板编译一遍，确认 `{{ }}` / `v-for` 都能正常出 HTML。
+vue-template-html.workspace = true

@@ -6,8 +6,11 @@
 //! 数据库插件只保证「JSON 进、JSON 出，语义与 Mongo Shell 一致」。
 //!
 //! ```text
-//! 业务插件 ──get_service("storage.mongo")──▶ 本插件 ──官方 mongodb 驱动──▶ MongoDB
+//! 业务插件 ──call_service("storage.mongo")──▶ 本插件 ──官方 mongodb 驱动──▶ MongoDB
 //! ```
+//!
+//! 服务调用 ABI v6 起**经过宿主**：业务插件用 `HostApi::call_service`，
+//! 本插件在方法里能用 `current_plugin()` 看到真实调用方（插件伪造不了）。
 //!
 //! 三个刻意的设计：
 //!
@@ -114,6 +117,14 @@ impl Plugin for MongoPlugin {
             ),
         }
         Ok(())
+    }
+
+    fn display_name() -> &'static str {
+        "MongoDB 存储"
+    }
+
+    fn description() -> &'static str {
+        "注册 storage.mongo：集合级 CRUD、聚合、索引管理"
     }
 }
 

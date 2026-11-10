@@ -3,7 +3,7 @@
 //! 为什么放在这里：上游 `fuyubot-simplify` 是 `publish = false`，外部插件
 //! 拿不到 crates.io 包。ABI v5 已经把 simplify 语义下沉成宿主的 op 表
 //! （`simplify_invoke` / `simplify_invoke_result`，实现在宿主的
-//! `fuyubot-simplify::ops`），所以本模块只保留两样东西：
+//! `fuyubot-simplify::ops`；v6 沿用这张表，只把**服务调用**改走宿主），所以本模块只保留两样东西：
 //!
 //! 1. 「人话参数 → TDLib 请求体」的构造器：`Text` / `Media` / `SendMessageParams`
 //!    / `send_params` / `edit_*_params` / 按钮 / 命令解析；
@@ -598,7 +598,7 @@ impl ReplyButton {
 }
 
 /// 二维按钮 → `replyMarkupInlineKeyboard`；全空就是「不要键盘」。
-fn reply_markup(rows: &[Vec<ReplyButton>]) -> Option<Value> {
+pub fn reply_markup(rows: &[Vec<ReplyButton>]) -> Option<Value> {
     if rows.iter().all(|row| row.is_empty()) {
         return None;
     }

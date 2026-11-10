@@ -110,8 +110,9 @@ fn help_payload(spec: &spec::CommandSpec) -> String {
 
 /// help 插件成功时回 `{"ok":true}`，入参不合法回 `{"error":"…"}`。
 ///
-/// `call_service` 在两种情况下都返回 `Ok`（它只表示「调用回来了」），
-/// 所以要自己看回包，否则一条被拒的命令会被算成登记成功。
+/// ABI v6 起 `call_service` 的 `Err` 是**真失败**（服务不存在 / 没这个方法 / 入参非法，
+/// 原因由宿主经 `last_error` 带回）；`Ok` 只表示调用回来了，所以还要看回包——
+/// `{"error":…}` 表示 help 拒了这条命令，不能算登记成功。
 fn help_accepted(reply: &str) -> bool {
     serde_json::from_str::<Value>(reply)
         .ok()

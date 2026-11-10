@@ -18,6 +18,15 @@ use crate::util::now_ms;
 /// 复检最小间隔。
 const RECHECK_THROTTLE_MS: i64 = 30_000;
 
+/// 日志里标识一个用户：`名字(id)`；名字为空时只写 id。
+fn user_tag(name: &str, user_id: i64) -> String {
+    if name.trim().is_empty() {
+        user_id.to_string()
+    } else {
+        format!("{name}({user_id})")
+    }
+}
+
 /// 处理 `updateUser`。
 pub async fn handle_update_user(rt: &Runtime, update: &Value) {
     let Some(user) = update.get("user") else {
@@ -82,7 +91,8 @@ pub async fn handle_update_user(rt: &Runtime, update: &Value) {
         log::info(
             &rt.host,
             format!(
-                "[入群监视] 用户({user_id}) 在群({}) 入群{}分钟内变更资料 name={name_changed} bio={bio_changed}，触发AI复检",
+                "[入群监视] 用户 {} 在群({}) 入群{}分钟内变更资料 name={name_changed} bio={bio_changed}，触发AI复检",
+                user_tag(&name, user_id),
                 watch.chat_id,
                 (now - watch.join_at).max(0) / 60_000
             ),
@@ -93,7 +103,8 @@ pub async fn handle_update_user(rt: &Runtime, update: &Value) {
             log::info(
                 &rt.host,
                 format!(
-                    "[入群监视] 用户({user_id}) 群({}) 已复审通过，跳过资料变更复检处置",
+                    "[入群监视] 用户 {} 群({}) 已复审通过，跳过资料变更复检处置",
+                    user_tag(&name, user_id),
                     watch.chat_id
                 ),
             );
@@ -165,7 +176,8 @@ async fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, b
         log::info(
             &rt.host,
             format!(
-                "[入群监视] 用户({user_id}) 群({chat_id}) 资料变更复检通过 (confidence={})",
+                "[入群监视] 用户 {} 群({chat_id}) 资料变更复检通过 (confidence={})",
+                user_tag(name, user_id),
                 result.confidence
             ),
         );
@@ -187,7 +199,8 @@ async fn recheck_profile(rt: &Runtime, chat_id: i64, user_id: i64, name: &str, b
         log::info(
             &rt.host,
             format!(
-                "[入群监视] 用户({user_id}) 群({chat_id}) 复审已通过，忽略资料变更弱广告信号 (confidence={})",
+                "[入群监视] 用户 {} 群({chat_id}) 复审已通过，忽略资料变更弱广告信号 (confidence={})",
+                user_tag(name, user_id),
                 result.confidence
             ),
         );

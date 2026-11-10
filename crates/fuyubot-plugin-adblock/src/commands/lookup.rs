@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::api::Sender;
 use crate::flow;
 use crate::runtime::Runtime;
-use crate::util::{fmt_utc, truncate};
+use crate::util::{fmt_local, truncate};
 
 /// 单条消息的安全长度。
 const MAX_LEN: usize = crate::store::MAX_TEXT;
@@ -94,7 +94,7 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
             chat_id,
             "用法: /qban <tgid|@username> [limit]",
             reply_to,
-            15,
+            0,
         )
         .await;
         return;
@@ -112,7 +112,7 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
                 chat_id,
                 "用户名不能为空，请使用 /qban @username",
                 reply_to,
-                10,
+                0,
             )
             .await;
             return;
@@ -126,7 +126,7 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
                         chat_id,
                         &format!("未找到用户名对应的对象: @{username}"),
                         reply_to,
-                        10,
+                        0,
                     )
                     .await;
                     return;
@@ -138,7 +138,7 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
                     chat_id,
                     &format!("解析用户名失败: @{username}，{error}"),
                     reply_to,
-                    10,
+                    0,
                 )
                 .await;
                 return;
@@ -153,7 +153,7 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
                     chat_id,
                     &format!("参数格式错误: {raw}\n请使用数字 TGID 或 @username。"),
                     reply_to,
-                    10,
+                    0,
                 )
                 .await;
                 return;
@@ -168,7 +168,7 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
             chat_id,
             &format!("未找到 TGID {tgid} 的封禁记录"),
             reply_to,
-            10,
+            0,
         )
         .await;
         return;
@@ -186,7 +186,7 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
                 record.id,
                 record.trigger_db_id.as_deref().unwrap_or("null"),
                 record.chat_id,
-                fmt_utc(record.created_at)
+                fmt_local(record.created_at)
             )
         })
         .collect::<Vec<_>>()
@@ -198,5 +198,6 @@ pub async fn query_ban(rt: &Runtime, command: &Command, sender: Sender) {
         ),
         MAX_LEN,
     );
-    flow::send_tip(rt, chat_id, &body, reply_to, 30).await;
+    // 群里的 /qban 不在「需要自动删除」的清单里：结果留给管理员回查。
+    flow::send_tip(rt, chat_id, &body, reply_to, 0).await;
 }

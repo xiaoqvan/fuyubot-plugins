@@ -17,6 +17,8 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 ureq.workspace = true
+# 本地时区（TS 版日志时间口径）。只开 clock，不拖 serde。
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [dev-dependencies]
 # 测试里用 `Builder::new_current_thread()` / `tokio::test` 需要 rt；正常构建不带。

@@ -203,6 +203,14 @@ impl Plugin for AdblockPlugin {
         }
     }
 
+    fn display_name() -> &'static str {
+        "广告拦截"
+    }
+
+    fn description() -> &'static str {
+        "关键词 / 文件 / 贴纸 / AI 审核，命中即删除、禁言或封禁"
+    }
+
     /// 硬依赖：`storage.mongo` 不在时不要激活。
     fn inject() -> Vec<String> {
         vec![store::SERVICE.to_owned()]

@@ -2,7 +2,7 @@
 
 ## 这是什么
 
-FuyuBot 的 **HTML / Vue 转图片服务插件**（Rust，cdylib），服务名 `fuyubot.html2img`，ABI v5。它自己不接收、
+FuyuBot 的 **HTML / Vue 转图片服务插件**（Rust，cdylib），服务名 `fuyubot.html2img`，ABI v6。它自己不接收、
 不回复聊天消息：启动时把进程级服务注册到宿主，别的插件用
 `call_service("fuyubot.html2img", "render", …)` 就能把一段 HTML / CSS —— 或者一段 **Vue 模板** ——
 渲染成 **PNG / JPEG**，拿到本地文件路径。默认输出 JPEG。

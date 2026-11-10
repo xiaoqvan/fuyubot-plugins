@@ -441,6 +441,24 @@ fn trim_base_url(mut base_url: String) -> String {
     base_url
 }
 
+/// 备用接口：只在主接口 token 超限或调用失败时使用。
+fn resolve_fallback(rt: &Runtime) -> Option<ResolvedAi> {
+    rt.cfg
+        .ai_fallback
+        .as_ref()
+        .filter(|endpoint| endpoint.is_usable())
+        .map(|endpoint| ResolvedAi::from_endpoint(endpoint, AiSource::Default))
+}
+
+/// 两个接口配置是否完全一样（避免主/备重复请求同一地址）。
+fn same_endpoint(left: &ResolvedAi, right: &ResolvedAi) -> bool {
+    left.api_key == right.api_key && left.base_url == right.base_url && left.model == right.model
+}
+
+fn token_limit_reached(rt: &Runtime, used: u64) -> bool {
+    rt.cfg.ai_token_limit > 0 && used >= rt.cfg.ai_token_limit
+}
+
 // ── 调用元信息 ────────────────────────────────────────────────────
 
 /// 调用方补充的展示信息（写总日志、区分场景用）。
@@ -465,9 +483,53 @@ pub async fn review(
 ) -> ModerationResult {
     let has_image = photo.is_some();
     let system_prompt = prompt::build(input, has_image);
-    let ai = resolve_ai(rt, chat_id, meta.force_default).await;
+    let primary = resolve_ai(rt, chat_id, meta.force_default).await;
+    let fallback = resolve_fallback(rt);
+    let mut plans: Vec<(ResolvedAi, bool)> = Vec::new();
 
-    if !ai.usable() {
+    if primary.usable() {
+        let mut over_quota = false;
+        if primary.source == AiSource::Default && rt.cfg.ai_token_limit > 0 {
+            let used = rt.db.ai_token_usage(&crate::util::local_day()).await;
+            if token_limit_reached(rt, used) {
+                over_quota = true;
+                log::warn(
+                    &rt.host,
+                    format!(
+                        "默认 AI token 已达上限（{used}/{}），本次优先使用备用接口",
+                        rt.cfg.ai_token_limit
+                    ),
+                );
+            }
+        }
+        if over_quota {
+            match fallback
+                .clone()
+                .filter(|item| !same_endpoint(&primary, item))
+            {
+                Some(item) => plans.push((item, true)),
+                None => {
+                    log::warn(&rt.host, "token 已超限但没有可用备用接口，继续使用默认接口");
+                    plans.push((primary, false));
+                }
+            }
+        } else {
+            plans.push((primary.clone(), false));
+            if let Some(item) = fallback
+                .clone()
+                .filter(|item| !same_endpoint(&primary, item))
+            {
+                plans.push((item, true));
+            }
+        }
+    } else if meta.force_default {
+        // `/spam` `/adaiadd` 这类强制默认接口的场景：默认接口没配时，备用接口可以顶上。
+        if let Some(item) = fallback {
+            plans.push((item, true));
+        }
+    }
+
+    if plans.is_empty() {
         let reason = if chat_id.is_some() {
             "该群未配置AI接口，请管理员在群内使用 /adconfig 并点击「配置AI接口」完成配置"
         } else {
@@ -510,78 +572,109 @@ pub async fn review(
     });
 
     let mut last_error = String::new();
-    for attempt in 0..MAX_ATTEMPTS {
-        let messages = build_messages(&system_prompt, &user_prompt, image_base64.as_deref());
-        match call_api(rt, &ai, &messages).await {
-            Ok(content) => {
-                let string = match content {
-                    Some(content) => content,
-                    None => {
-                        last_error = "AI返回内容为空".to_owned();
-                        log::warn(
-                            &rt.host,
-                            format!("AI 第 {} 次返回空内容（模型 {}）", attempt + 1, ai.model),
-                        );
-                        continue;
+    let mut last_model = String::new();
+    for (plan_index, (ai, is_fallback)) in plans.iter().enumerate() {
+        if plan_index > 0 {
+            log::warn(
+                &rt.host,
+                format!(
+                    "主 AI 接口失败，切换备用接口（{} / {}）",
+                    ai.base_url, ai.model
+                ),
+            );
+        }
+        last_model = ai.model.clone();
+        for attempt in 0..MAX_ATTEMPTS {
+            let messages = build_messages(&system_prompt, &user_prompt, image_base64.as_deref());
+            match call_api(rt, ai, &messages).await {
+                Ok((content, tokens)) => {
+                    // 只统计默认接口的用量；群自定义接口由群自己结算。
+                    // 放在解析结果之前：模型返回了内容但 JSON 不合格，token 也已经花了。
+                    if !*is_fallback && ai.source == AiSource::Default {
+                        let total = rt.db.add_ai_tokens(&crate::util::local_day(), tokens).await;
+                        if token_limit_reached(rt, total) {
+                            log::warn(
+                                &rt.host,
+                                format!(
+                                    "默认 AI token 已达上限（{total}/{}），后续优先走备用接口",
+                                    rt.cfg.ai_token_limit
+                                ),
+                            );
+                        }
                     }
-                };
-                let parsed: Value = match serde_json::from_str(&string) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        last_error = "AI返回JSON解析失败".to_owned();
+                    let string = match content {
+                        Some(content) => content,
+                        None => {
+                            last_error = "AI返回内容为空".to_owned();
+                            log::warn(
+                                &rt.host,
+                                format!("AI 第 {} 次返回空内容（模型 {}）", attempt + 1, ai.model),
+                            );
+                            continue;
+                        }
+                    };
+                    let parsed: Value = match serde_json::from_str(&string) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            last_error = "AI返回JSON解析失败".to_owned();
+                            log::warn(
+                                &rt.host,
+                                format!(
+                                    "AI 第 {} 次返回不是 JSON（{error}）：{}",
+                                    attempt + 1,
+                                    truncate(&string, 200)
+                                ),
+                            );
+                            continue;
+                        }
+                    };
+                    let Some(result) = ModerationResult::from_ai_json(&parsed) else {
+                        last_error = "AI返回格式不符合ModerationResult规范".to_owned();
                         log::warn(
                             &rt.host,
                             format!(
-                                "AI 第 {} 次返回不是 JSON（{error}）：{}",
+                                "AI 第 {} 次返回格式不符：{}",
                                 attempt + 1,
                                 truncate(&string, 200)
                             ),
                         );
                         continue;
-                    }
-                };
-                let Some(result) = ModerationResult::from_ai_json(&parsed) else {
-                    last_error = "AI返回格式不符合ModerationResult规范".to_owned();
+                    };
+                    write_log(
+                        rt,
+                        meta,
+                        chat_id,
+                        input,
+                        Some(&result),
+                        true,
+                        None,
+                        Some(&ai.model),
+                        has_image,
+                    )
+                    .await;
+                    return result;
+                }
+                Err(error) => {
+                    last_error = error;
                     log::warn(
                         &rt.host,
                         format!(
-                            "AI 第 {} 次返回格式不符：{}",
+                            "AI 第 {} 次调用失败（{} / {}）：{last_error}",
                             attempt + 1,
-                            truncate(&string, 200)
+                            ai.base_url,
+                            ai.model
                         ),
                     );
-                    continue;
-                };
-                write_log(
-                    rt,
-                    meta,
-                    chat_id,
-                    input,
-                    Some(&result),
-                    true,
-                    None,
-                    Some(&ai.model),
-                    has_image,
-                )
-                .await;
-                return result;
-            }
-            Err(error) => {
-                last_error = error;
-                log::warn(
-                    &rt.host,
-                    format!(
-                        "AI 第 {} 次调用失败（{} / {}）：{last_error}",
-                        attempt + 1,
-                        ai.base_url,
-                        ai.model
-                    ),
-                );
+                }
             }
         }
     }
 
-    let reason = format!("AI服务{MAX_ATTEMPTS}次调用均失败: {last_error}");
+    let reason = if plans.len() > 1 {
+        format!("AI服务主/备用接口均失败: {last_error}")
+    } else {
+        format!("AI服务{MAX_ATTEMPTS}次调用均失败: {last_error}")
+    };
     let result = ModerationResult::failure(reason.clone());
     write_log(
         rt,
@@ -591,7 +684,7 @@ pub async fn review(
         Some(&result),
         false,
         Some(&reason),
-        Some(&ai.model),
+        Some(&last_model),
         has_image,
     )
     .await;
@@ -632,21 +725,27 @@ fn forbids_custom_temperature(model: &str) -> bool {
         || model.starts_with("o4")
 }
 
-/// 发一次 `/chat/completions`，返回 `choices[0].message.content`。
+/// 发一次 `/chat/completions`，返回 `choices[0].message.content` 与本次 token 用量。
 async fn call_api(
     rt: &Runtime,
     ai: &ResolvedAi,
     messages: &Value,
-) -> Result<Option<String>, String> {
+) -> Result<(Option<String>, u64), String> {
     let url = format!("{}/chat/completions", ai.base_url);
+    let completion_style = forbids_custom_temperature(&ai.model);
     let mut body = json!({
         "model": ai.model,
         "messages": messages,
-        "max_tokens": MAX_TOKENS,
         "response_format": { "type": "json_object" },
     });
+    // GPT-5 / o 系列只认 max_completion_tokens；其它 OpenAI 兼容接口仍用 max_tokens。
+    if completion_style {
+        body["max_completion_tokens"] = json!(MAX_TOKENS);
+    } else {
+        body["max_tokens"] = json!(MAX_TOKENS);
+    }
     let mut has_temperature = false;
-    if !forbids_custom_temperature(&ai.model) {
+    if !completion_style {
         body["temperature"] = json!(0.2);
         has_temperature = true;
     }
@@ -672,14 +771,20 @@ async fn call_api(
     }
     let value: Value =
         serde_json::from_str(&text).map_err(|error| format!("响应不是 JSON（{error}）"))?;
-    Ok(value
+    let content = value
         .get("choices")
         .and_then(Value::as_array)
         .and_then(|choices| choices.first())
         .and_then(|choice| choice.get("message"))
         .and_then(|message| message.get("content"))
         .and_then(Value::as_str)
-        .map(str::to_owned))
+        .map(str::to_owned);
+    let tokens = value
+        .get("usage")
+        .and_then(|usage| usage.get("total_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok((content, tokens))
 }
 
 /// 发 JSON 并读回正文（非 2xx 也读，错误信息在正文里才有用）。
@@ -743,7 +848,12 @@ async fn write_log(
     let topic = rt.cfg.ai_log_topic.map(crate::simplify::Topic::forum);
 
     let chat_label = match chat_id {
-        Some(chat_id) => rt.td.sender_mention(Sender::Chat(chat_id), false).await,
+        // 以前这里传 `false`，拿到的是 TS 版那条 `[title](id:…)` 伪链接；
+        // 现在统一成「群名 + 数字 id」，和处置日志的 Group 字段一致。
+        Some(chat_id) => format!(
+            "{}({chat_id})",
+            rt.td.sender_mention(Sender::Chat(chat_id), true).await
+        ),
         None => "-".to_owned(),
     };
     let status = if ok {
@@ -870,8 +980,18 @@ pub async fn ai_status_line(rt: &Runtime, chat_id: i64, config: Option<&GroupCon
             .as_ref()
             .map(|endpoint| endpoint.model.as_str())
             .unwrap_or("未知");
+        let used = rt.db.ai_token_usage(&crate::util::local_day()).await;
+        let quota = if rt.cfg.ai_token_limit > 0 {
+            format!("{used}/{}", rt.cfg.ai_token_limit)
+        } else {
+            format!("{used}/不限")
+        };
+        let fallback = match &rt.cfg.ai_fallback {
+            Some(endpoint) => format!("，备用 `{}`", endpoint.model),
+            None => String::new(),
+        };
         return format!(
-            "  → 🟢 使用内置默认接口（模型 {model}）\n  → 群主可点击下方按钮配置自定义接口覆盖默认配置"
+            "  → 🟢 使用内置默认接口（模型 {model}）\n  → 今日 token: {quota}{fallback}\n  → 群主可点击下方按钮配置自定义接口覆盖默认配置"
         );
     }
     "  → ❌ 未配置，AI 审查当前不可用\n  → 请点击下方按钮跳转到私聊完成配置".to_owned()
@@ -956,6 +1076,20 @@ mod tests {
         assert_eq!(mask_secret("sk-1234567890abcd"), "sk-1***abcd");
         assert_eq!(mask_secret("short"), "sh***");
         assert_eq!(mask_secret(""), "");
+    }
+
+    #[test]
+    fn endpoints_compare_by_connection() {
+        let endpoint = |key: &str, url: &str, model: &str| ResolvedAi {
+            api_key: key.to_owned(),
+            base_url: url.to_owned(),
+            model: model.to_owned(),
+            source: AiSource::Default,
+        };
+        let left = endpoint("sk", "https://a", "m");
+        assert!(same_endpoint(&left, &endpoint("sk", "https://a", "m")));
+        assert!(!same_endpoint(&left, &endpoint("sk", "https://b", "m")));
+        assert!(!same_endpoint(&left, &endpoint("sk", "https://a", "n")));
     }
 
     #[test]

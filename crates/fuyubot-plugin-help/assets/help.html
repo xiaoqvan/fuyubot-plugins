@@ -1,0 +1,53 @@
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:#fff;color:#000;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei","PingFang SC",sans-serif}
+.help-root{position:relative;display:flex;flex-direction:column;color:#000;background:linear-gradient(132.5deg,rgba(255,255,255,1) 0%,rgba(206,237,219,1) 100%)}
+.help-hero{position:absolute;top:0;left:0;display:flex;height:15rem;width:100%;overflow:hidden}
+.help-hero img{display:block;height:100%;width:100%;object-fit:cover}
+.help-hero-overlay{position:absolute;top:0;left:0;display:flex;height:100%;width:100%;background:linear-gradient(90deg,rgba(255,255,255,1) 0%,rgba(255,255,255,0.09) 70%)}
+.help-content{position:relative;z-index:1;display:flex;flex-direction:column;padding:1rem;gap:1rem}
+.help-head{display:flex;flex-direction:column;padding:1.5rem;margin-top:.5rem;margin-bottom:1.25rem;gap:3px}
+.help-title{font-size:2.25rem;line-height:2.5rem;font-weight:700;margin:0;padding:0}
+.help-subtitle{font-size:.875rem;line-height:1.25rem;color:#a3a3a3;margin:0;padding:0 0 0 .25rem}
+.help-card{display:flex;flex-direction:column;background:rgba(255,255,255,.9);padding:1rem;border-radius:.75rem;border:1px solid rgba(0,0,0,.1);box-shadow:0 4px 12px rgba(0,0,0,.1)}
+.help-card-head{display:flex;align-items:center;gap:.5rem}
+.help-card-title{font-size:1.25rem;line-height:1.75rem;font-weight:600;margin:0;padding:0}
+.help-card-desc{margin:0;padding:0;font-size:.75rem;line-height:1rem;color:#737373}
+.help-grid{display:flex;flex-wrap:wrap;margin-top:.5rem;gap:.5rem}
+.help-item{display:flex;flex-direction:column;width:24%;flex-grow:0;flex-shrink:0;padding:.375rem;border-radius:.5rem;background:rgba(255,255,255,.5);border:1px solid rgba(0,0,0,.1);box-shadow:0 0 6px rgba(0,0,0,.3)}
+.help-item-name{font-size:1rem;line-height:1.5rem;font-weight:500;margin:0;padding:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.help-item-desc{margin:0;padding:0;font-size:.75rem;line-height:1rem;color:rgba(0,0,0,.6);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;text-overflow:ellipsis}
+.help-empty{margin:.5rem 0 0;font-size:.875rem;line-height:1.25rem;color:#737373}
+.help-foot{display:flex;align-items:center;justify-content:space-between;width:100%}
+.help-tips{margin:0;padding:.25rem .75rem;background:#f3f4f6;color:#3b82f6;font-size:.75rem;line-height:1rem;border-radius:.375rem}
+.help-version{display:flex;margin:0 0 0 auto;padding:0;color:#a3a3a3;font-size:.75rem;line-height:1rem}
+</style>
+<div class="help-root">
+    <div class="help-hero" v-if="imgSrc">
+        <img :src="imgSrc" alt="">
+        <div class="help-hero-overlay"></div>
+    </div>
+    <div class="help-content">
+        <div class="help-head">
+            <h1 class="help-title">{{ title }}</h1>
+            <p class="help-subtitle">{{ description }}</p>
+        </div>
+        <div class="help-card" v-for="table in data" :key="table.name">
+            <div class="help-card-head">
+                <h2 class="help-card-title">{{ table.name }}</h2>
+                <p class="help-card-desc">{{ table.desc }}</p>
+            </div>
+            <div class="help-grid" v-if="table.commands.length">
+                <div class="help-item" v-for="command in table.commands" :key="command.name">
+                    <h3 class="help-item-name">/{{ command.name }}</h3>
+                    <p class="help-item-desc">{{ command.desc }}</p>
+                </div>
+            </div>
+            <p class="help-empty" v-if="!table.commands.length">暂无命令</p>
+        </div>
+        <div class="help-foot">
+            <p class="help-tips" v-if="tips">{{ tips }}</p>
+            <h1 class="help-version">{{ version }}</h1>
+        </div>
+    </div>
+</div>

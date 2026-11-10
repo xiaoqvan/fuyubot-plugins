@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::runtime::Runtime;
 use crate::text;
-use crate::util::fmt_utc_plain;
+use crate::util::fmt_local_plain;
 
 /// 播报封禁的机器人。
 const GKY_BOT_USER_ID: i64 = 8_048_217_739;
@@ -84,7 +84,7 @@ pub async fn forward_ban_record(rt: &Runtime, message: &Value) {
     let time = message
         .get("date")
         .and_then(Value::as_i64)
-        .map(|seconds| fmt_utc_plain(seconds * 1000))
+        .map(|seconds| fmt_local_plain(seconds * 1000))
         .unwrap_or_default();
     let user_mention = rt
         .td

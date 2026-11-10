@@ -25,8 +25,15 @@
 //! 三条约定（写新服务时别忘）：
 //!
 //! 1. 回复字符串由**提供方**持有，调用方读完即弃——所以用线程局部缓冲，不 free；
+//!    **成功但没有内容也要回 `""` 或 `{}`**：ABI v6 起方法返回 `NULL` 表示**失败**，
+//!    不再等于「成功但无输出」；
 //! 2. `ServiceMethodFn` 是同步的，慢操作要自己开线程，别堵住宿主回调线程；
 //! 3. 注册后 vtable 必须活到进程结束——[`Service::register`] 会把它泄漏成 `'static`。
+//!
+//! 调用**别人**的服务一律走 [`call_service`]（v6 起经宿主的 `call_service` 桥）：
+//! 被调方用 `current_plugin()` 问得到调用者，失败原因也由宿主带回。
+//! 自己 `get_service` 拿函数指针直调仍然能跑，但那次调用绕过了宿主，
+//! 提供方只会看到 `None`。
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
@@ -34,8 +41,6 @@ use std::sync::Mutex;
 
 use fuyubot_abi::{HostApi, LogLevel, ServiceMethod, ServiceVTable};
 use serde_json::{Value, json};
-
-pub use fuyubot_abi::ServiceMethodFn;
 
 /// 服务的实现函数签名（去掉 `Option`，注册时更好写）。
 pub type Handler = unsafe extern "C" fn(*mut c_void, *const c_char) -> *const c_char;
@@ -219,59 +224,47 @@ pub fn log(host: &HostApi, level: LogLevel, plugin: &str, message: &str) {
 
 // ─── 调用别人的服务 ────────────────────────────────────────────────────────
 
-/// 按名字取服务的方法指针。服务没装、方法不存在都返回 `None`。
+/// 宿主让本插件看见的服务清单（ABI v6 的 `list_services`）；解析不出来就当空表。
 ///
-/// 这是**调用方**该用的入口：业务插件不该自己遍历 `ServiceVTable` 的裸指针。
-pub fn service_method(host: &HostApi, service: &str, method: &str) -> Option<ServiceMethodFn> {
-    let vtable = host.get_service(service);
-    if vtable.is_null() {
-        return None;
-    }
-    // SAFETY: 服务表由提供方持有，插件在宿主进程存活期间一直有效（注册时已泄漏成 'static）。
-    let table = unsafe { &*vtable };
-    if table.methods.is_null() {
-        return None;
-    }
-    let methods = unsafe { std::slice::from_raw_parts(table.methods, table.method_count) };
-    for entry in methods {
-        if entry.name.is_null() {
-            continue;
-        }
-        let name = unsafe { CStr::from_ptr(entry.name) }.to_str().ok();
-        if name == Some(method) {
-            return entry.func;
-        }
-    }
-    None
+/// 每一项：`{"name":"…","version":1,"methods":["…"],"plugin":"提供方插件名"}`，
+/// `plugin` 为 `null` 表示宿主预置的服务。
+fn services(host: &HostApi) -> Vec<Value> {
+    serde_json::from_str(&host.list_services()).unwrap_or_default()
 }
 
-/// 服务是否在线（插件装没装）。
+/// 服务是否在线：名字在清单里，且方法表里有这个方法。
+///
+/// 比 `get_service(..).is_null()` 多问一句「有没有这个方法」，也顺带知道是谁提供的。
+/// 只用宿主给的清单，不碰服务表指针。
 pub fn service_available(host: &HostApi, service: &str, method: &str) -> bool {
-    service_method(host, service, method).is_some()
+    services(host).iter().any(|entry| {
+        entry.get("name").and_then(Value::as_str) == Some(service)
+            && entry
+                .get("methods")
+                .and_then(Value::as_array)
+                .is_some_and(|methods| methods.iter().any(|name| name.as_str() == Some(method)))
+    })
 }
 
-/// 调一次别人的服务，入参/出参都是 JSON。
+/// 调一次别人的服务，入参 / 出参都是 JSON。
 ///
-/// 回复字符串归提供方所有（读完即弃），这里只借用不释放。
+/// ABI v6 起服务调用**经过宿主**（[`HostApi::call_service`]）：被调方用
+/// `current_plugin()` 问出来的就是**本插件**，失败原因也由宿主带回。
+/// 别自己 `get_service` 拿函数指针直调——那条路绕过宿主，提供方只会看到 `None`，
+/// 而且 `context` 得自己编（各插件的 context 语义并不相同）。
 pub fn call_service(
     host: &HostApi,
     service: &str,
     method: &str,
     input: &Value,
 ) -> Result<Value, String> {
-    let func = service_method(host, service, method)
-        .ok_or_else(|| format!("服务 {service} 不可用（方法 {method} 不存在或插件未安装）"))?;
-    let payload = CString::new(input.to_string()).map_err(|_| "入参含 NUL".to_owned())?;
-    // SAFETY: 函数指针来自活着的服务表；返回值由提供方持有，读完即弃。
-    let raw = unsafe { func(std::ptr::null_mut(), payload.as_ptr()) };
-    if raw.is_null() {
-        return Err(format!("服务 {service}.{method} 返回空"));
-    }
-    let text = unsafe { CStr::from_ptr(raw) }
-        .to_str()
-        .map_err(|err| format!("响应不是 UTF-8：{err}"))?;
-    let value: Value = serde_json::from_str(text)
-        .map_err(|err| format!("响应不是 JSON：{err}（原文：{text}）"))?;
+    let payload = input.to_string();
+    let reply = host
+        .call_service(service, method, &payload)
+        .map_err(|error| format!("服务 {service}.{method} 调用失败：{error}"))?;
+    let value: Value = serde_json::from_str(&reply).map_err(|error| {
+        format!("服务 {service}.{method} 的响应不是 JSON：{error}（原文：{reply}）")
+    })?;
 
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
         let message = value

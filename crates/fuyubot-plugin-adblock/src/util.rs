@@ -1,9 +1,12 @@
 //! 与业务无关的小工具：时间戳、ID、base64、回调参数解析。
 //!
-//! 刻意只依赖标准库——插件是 cdylib，能少一个依赖就少一份「宿主那边编不了」的风险。
+//! 时间展示用 `chrono` 的本地时区（TS 版日志口径）；其余仍是标准库 +
+//! 本仓库已有的依赖，不额外拖运行时。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use chrono::{Local, TimeZone};
 
 /// 当前 Unix 毫秒时间戳。
 pub fn now_ms() -> i64 {
@@ -34,41 +37,30 @@ pub fn is_object_id(text: &str) -> bool {
     text.len() == 24 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Unix 毫秒 → `YYYY-MM-DDTHH:MM:SSZ`（UTC）。
+/// Unix 毫秒 → 本地时区的 ISO 时间（`YYYY-MM-DDTHH:MM:SS+08:00`）。
 ///
-/// TS 版 `qban` 用 `toISOString()`，也就是这个形状。**刻意不做本地时区**：
-/// 插件是动态库，拿本地时区要么拖 `chrono`，要么走平台 FFI，两条都不划算。
-pub fn fmt_utc(ms: i64) -> String {
-    let seconds = ms.div_euclid(1000);
-    let days = seconds.div_euclid(86_400);
-    let rest = seconds.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let hour = rest / 3600;
-    let minute = (rest % 3600) / 60;
-    let second = rest % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+/// TS 版 `/qban` 用的是 `toISOString()`（UTC）；用户要求所有时间跟 TS 的
+/// **本地时间口径**一致，不要 UTC，所以这里显式带本地 offset。
+pub fn fmt_local(ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|time| time.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+        .unwrap_or_else(|| "-".to_owned())
 }
 
-/// Unix 毫秒 → `YYYY-MM-DD HH:MM:SS`（UTC，给人看）。
-pub fn fmt_utc_plain(ms: i64) -> String {
-    fmt_utc(ms)
-        .replace('T', " ")
-        .trim_end_matches('Z')
-        .to_owned()
+/// Unix 毫秒 → 本地时区的 `YYYY-MM-DD HH:MM:SS`（GKY 转发同款）。
+pub fn fmt_local_plain(ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(ms)
+        .single()
+        .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "-".to_owned())
 }
 
-/// Howard Hinnant 的 `civil_from_days`：把「1970-01-01 起的天数」还原成日期。
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, m, d)
+/// 本地日期 `YYYY-MM-DD`，用于 AI token 的「按天重置」。
+pub fn local_day() -> String {
+    Local::now().format("%Y-%m-%d").to_string()
 }
 
 /// base64 解码（TDLib 的回调数据是 base64 字节串）。
@@ -234,8 +226,15 @@ mod tests {
     }
 
     #[test]
-    fn utc_format_is_iso() {
-        assert_eq!(fmt_utc(0), "1970-01-01T00:00:00Z");
-        assert_eq!(fmt_utc(1_600_000_000_000), "2020-09-13T12:26:40Z");
+    fn local_time_is_not_utc() {
+        let text = fmt_local(0);
+        assert!(text.starts_with("19") || text.starts_with("20"), "{text}");
+        assert!(text.contains('T'), "{text}");
+        assert!(!text.ends_with('Z'), "本地时间不应带 Z：{text}");
+
+        let plain = fmt_local_plain(0);
+        assert_eq!(plain.len(), 19, "{plain}");
+        assert!(!plain.contains('T'), "{plain}");
+        assert_eq!(local_day().len(), 10);
     }
 }

@@ -76,12 +76,13 @@ pub async fn sender_details(rt: &Runtime, chat_id: i64, sender: Sender) -> Sende
                 status.as_deref(),
                 Some("chatMemberStatusCreator") | Some("chatMemberStatusAdministrator")
             );
+            // 与 TS `getSenderDetails` 的 `isMember` 一致：Restricted **不算**成员。
+            // 否则「受限但仍在群里」的广告机器人会被当成正常成员，跳过访客机器人封禁。
             let is_member = matches!(
                 status.as_deref(),
                 Some("chatMemberStatusMember")
                     | Some("chatMemberStatusAdministrator")
                     | Some("chatMemberStatusCreator")
-                    | Some("chatMemberStatusRestricted")
             );
             let bio = rt
                 .td
@@ -110,12 +111,13 @@ pub async fn sender_details(rt: &Runtime, chat_id: i64, sender: Sender) -> Sende
                     status.as_deref(),
                     Some("chatMemberStatusCreator") | Some("chatMemberStatusAdministrator")
                 );
+            // 与 TS `getSenderDetails` 的 `isMember` 一致：Restricted **不算**成员。
+            // 否则「受限但仍在群里」的广告机器人会被当成正常成员，跳过访客机器人封禁。
             let is_member = matches!(
                 status.as_deref(),
                 Some("chatMemberStatusMember")
                     | Some("chatMemberStatusAdministrator")
                     | Some("chatMemberStatusCreator")
-                    | Some("chatMemberStatusRestricted")
             );
             SenderDetails {
                 is_admin,
@@ -248,6 +250,12 @@ pub async fn ensure_bot_admin(
 }
 
 /// 发一条提示并安排自删（`seconds = 0` 表示不删）。
+///
+/// **私聊里的回复永不自动删除**：私聊命令的输出是用户要回看/复制的，
+/// 只有群里的提示才按调用方给的 `seconds` 消失。
+///
+/// `reply_to` 指向**触发命令的那条消息**时，发送会走宿主的命令回复服务
+/// （发新消息 / 编辑原命令 / ephemeral 由宿主决定），见 [`crate::api::Td::send`]。
 pub async fn send_tip(
     rt: &Runtime,
     chat_id: i64,
@@ -278,8 +286,12 @@ pub async fn send_with(
             Some(false),
         )
         .await;
+    // 私聊不排自删：`send_with` 的调用方（如 AI 配置流程）传了秒数也不删。
+    // 群里的提示一律按 `seconds` 自删，**包括宿主编辑进原命令消息的那种**：
+    // 到点删掉的就是那条消息（user 账户自己触发命令时，宿主把回复编辑进用户那条命令）。
     if let Some(message) = &message
         && seconds > 0
+        && !is_private(chat_id)
         && let Some(id) = message.get("id").and_then(Value::as_i64)
     {
         action::schedule_delete(rt, chat_id, id, seconds);

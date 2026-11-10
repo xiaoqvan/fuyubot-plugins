@@ -142,6 +142,14 @@ impl Plugin for Html2ImgPlugin {
         // 避免这期间迟到的调用摸到已释放的内存。
         log::info(&self.host, "html2img 已停止");
     }
+
+    fn display_name() -> &'static str {
+        "HTML 转图片"
+    }
+
+    fn description() -> &'static str {
+        "提供 fuyubot.html2img 服务：HTML / Vue 模板渲染成 PNG / JPEG"
+    }
 }
 
 // 一个 crate 只能展开一次 `define_plugin!`（七个导出符号名是 ABI 定死的）。

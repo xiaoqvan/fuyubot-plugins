@@ -2,10 +2,10 @@
   "schema": 1,
   "id": "fuyubot.sqlite",
   "name": "SQLite Storage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "kind": "native",
   "entry": "bin/fuyubot_plugin_sqlite.dll",
-  "abi": 5,
+  "abi": 6,
   "platforms": [
     "windows-x86_64",
     "windows-aarch64",
