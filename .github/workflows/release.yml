@@ -14,21 +14,60 @@
 #   fuyubot.adblock-v0.1.2     只构建 / 发布 fuyubot-plugin-adblock，版本取 0.1.2
 #   fuyubot.help-v0.1.3        只构建 / 发布 fuyubot-plugin-help，版本取 0.1.3
 #
-# 旧的整体 tag `v0.1.2` 仍然兼容：八个插件全部按 0.1.2 打包，挂到同一个 Release。
-# 插件 id → crate 目录由 `crates/*/plugin.json` 里的 `id` 现场匹配，不在 workflow 里
-# 维护第二份映射。
+# 旧的整体 tag `v0.1.2` 仍然兼容：该 tag 里的插件全部按 0.1.2 打包，挂到同一个 Release。
+# 单插件 tag 的插件 id → crate 目录由 `crates/*/plugin.json` 里的 `id` 现场匹配；
+# 整包 tag 的插件集合 = 该 tag 的 `crates/*/plugin.json`，都不在 workflow 里维护第二份
+# 映射（老 tag 只带 4/5 个插件，硬编码名单会多编出当时还不存在的插件）。
 #
 # ⚠️ 本仓库用 path 依赖指向 ../FuyuBot，所以两个仓库都要 checkout，
 # 且必须是兄弟目录（fuyubot-plugins 的 ../FuyuBot）。
 #
 # 桌面与 Android 分成两个 job：Android 要用 NDK + cargo-ndk 交叉编译，
 # 和另外五个 runner 的步骤没有交集。`release` 把两边的 artifact 合到一个 Release。
+#
+# ## Linux 构建固定 Ubuntu 24.04
+#
+# 所有 Linux runner（含 prepare / android / release 这些跑在 Linux 上的 job）都**写死**
+# `ubuntu-24.04` / `ubuntu-24.04-arm`，不用 `ubuntu-latest`：
+# `ubuntu-latest` 会随 GitHub 的迁移漂移（22.04 → 24.04 → 26.04），同一个 tag 隔天重跑
+# 就可能换一套 glibc，产物的最低 glibc 基线跟着变。要换基线就显式改这两行。
+# 现状：Linux x86_64 / aarch64 产物的 glibc 基线都是 2.39（Ubuntu 24.04）。
+#
+# ## 只重建某几个平台 / 替换已发布 Release 的资产
+#
+# `workflow_dispatch` 三个输入（从 main 派发，用**本文件**的步骤编旧的 tag）：
+#
+#   tag          发布目标 tag。留空 = 触发该运行的 ref。给已有 tag 时只 `--clobber`
+#                覆盖这次产出的同名 zip，Release 上的其它资产与说明不动。
+#   targets      只建这些平台，逗号分隔，可写精确平台名（`linux-x86_64`）或前缀
+#                （`linux` / `windows` / `macos` / `android` / `desktop`）。留空 = 全部。
+#   fuyubot_ref  FuyuBot（运行时仓库）checkout 的 ref，留空 = `main`。重建老 ABI 的旧版本
+#                时要给对应 tag，否则旧插件源码编不到新 ABI 上。
+#
+# 例（把某插件 Release 上的 Linux zip 用 Ubuntu 24.04 重编并覆盖）：
+#   gh workflow run release.yml -f tag=fuyubot.help-v0.1.3 -f targets=linux
 name: release
 
 on:
   push:
     tags: ["v*", "*-v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布目标 tag（例：fuyubot.help-v0.1.3 / v0.1.1）。留空 = 触发该运行的 ref"
+        required: false
+        type: string
+        default: ""
+      targets:
+        description: "只建这些平台（逗号分隔：linux / linux-x86_64 / windows / macos / android / desktop）。留空 = 全部"
+        required: false
+        type: string
+        default: ""
+      fuyubot_ref:
+        description: "FuyuBot checkout 的 ref。留空 = main；重建老 ABI 的旧版本要给对应 tag（v0.1.0 用 v0.1.2）"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -37,78 +76,145 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # 从 tag 里解出「这次发哪个插件、版本是多少」。
+  # 从 tag 里解出「这次发哪个插件、版本是多少、建哪几个平台」。
   prepare:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
+      tag: ${{ steps.scope.outputs.tag }}
       version: ${{ steps.scope.outputs.version }}
       plugins: ${{ steps.scope.outputs.plugins }}
+      matrix: ${{ steps.scope.outputs.matrix }}
+      android: ${{ steps.scope.outputs.android }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # dispatch 重建旧 tag 时也要按那个 tag 的插件集合（`crates/*/plugin.json`）来编。
+          ref: ${{ inputs.tag || github.ref_name }}
+      # 各 runner 的 `python` 名字并不统一（ubuntu-24.04 只有 `python3`），统一由
+      # setup-python 供应，下面一律写 `python`。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - name: Resolve tag scope
         id: scope
         shell: bash
+        env:
+          TAG_INPUT: ${{ inputs.tag }}
+          TARGETS_INPUT: ${{ inputs.targets }}
+          # 源码里有中文，别让 runner 的 locale 决定解码方式。
+          PYTHONUTF8: "1"
         run: |
           set -euo pipefail
-          tag="${GITHUB_REF_NAME}"
-          if [[ "$tag" =~ ^(.+)-v([0-9]+\.[0-9]+\.[0-9]+.*)$ ]]; then
-            plugin_id="${BASH_REMATCH[1]}"
-            version="${BASH_REMATCH[2]}"
-            plugins=""
-            for manifest in crates/*/plugin.json; do
-              id=$(python -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["id"])' "$manifest")
-              if [[ "$id" == "$plugin_id" ]]; then
-                plugins="${manifest#crates/}"
-                plugins="${plugins%/plugin.json}"
-                break
-              fi
-            done
-            if [[ -z "$plugins" ]]; then
-              echo "::error::tag $tag 里的插件 id $plugin_id 在 crates/*/plugin.json 里找不到"
-              exit 1
-            fi
-          else
-            version="${tag#v}"
-            plugins="fuyubot-plugin-sqlite fuyubot-plugin-mongo fuyubot-plugin-adblock fuyubot-plugin-html2img fuyubot-plugin-help fuyubot-plugin-douyin fuyubot-plugin-music fuyubot-plugin-message-log"
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "plugins=$plugins" >> "$GITHUB_OUTPUT"
-          echo "发布范围：$plugins，版本 $version"
+          python - <<'PY'
+          # -*- coding: utf-8 -*-
+          import glob, json, os, re, sys
+
+          # 桌面矩阵：平台名与 package.py 的 --platform 一致。
+          # Linux 两行固定 24.04（见文件头）；改基线就改这里。
+          DESKTOP = [
+              {"platform": "windows-x86_64", "os": "windows-latest"},
+              {"platform": "windows-aarch64", "os": "windows-11-vs2026-arm"},
+              {"platform": "linux-x86_64", "os": "ubuntu-24.04"},
+              {"platform": "linux-aarch64", "os": "ubuntu-24.04-arm"},
+              {"platform": "macos-aarch64", "os": "macos-latest"},
+          ]
+          PREFIXES = {"linux", "windows", "macos", "desktop"}
+
+          tag_input = os.environ.get("TAG_INPUT", "").strip()
+          targets_input = os.environ.get("TARGETS_INPUT", "").strip()
+          tag = tag_input or os.environ["GITHUB_REF_NAME"]
+
+          selected = [t.strip() for t in targets_input.split(",") if t.strip()]
+          known = {row["platform"] for row in DESKTOP} | PREFIXES | {"android"}
+          unknown = [t for t in selected if t not in known]
+          if unknown:
+              print(f"::error::targets 里有不认识的平台：{', '.join(unknown)}")
+              raise SystemExit(1)
+
+          def keep(platform: str) -> bool:
+              if not selected:
+                  return True
+              for s in selected:
+                  if platform == s or platform.startswith(s + "-"):
+                      return True
+                  if s == "desktop" and platform != "android":
+                      return True
+              return False
+
+          # 单插件 tag：`<插件 id>-v<版本>`，插件 crate 由 plugin.json 的 id 现场匹配。
+          # 整包 tag：`v<版本>`，插件集合 = 该 ref 的 crates/*/plugin.json。
+          m = re.match(r"^(.+)-v([0-9]+\.[0-9]+\.[0-9]+.*)$", tag)
+          if m:
+              plugin_id, version = m.group(1), m.group(2)
+              plugins = ""
+              for manifest in sorted(glob.glob("crates/*/plugin.json")):
+                  with open(manifest, encoding="utf-8") as fh:
+                      if json.load(fh)["id"] == plugin_id:
+                          plugins = manifest[len("crates/"):-len("/plugin.json")]
+                          break
+              if not plugins:
+                  print(f"::error::tag {tag} 里的插件 id {plugin_id} 在 crates/*/plugin.json 里找不到")
+                  raise SystemExit(1)
+          else:
+              version = tag[1:] if tag.startswith("v") else tag
+              plugins = " ".join(
+                  manifest[len("crates/"):-len("/plugin.json")]
+                  for manifest in sorted(glob.glob("crates/*/plugin.json"))
+              )
+              if not plugins:
+                  print(f"::error::{tag} 里没有任何 crates/*/plugin.json")
+                  raise SystemExit(1)
+
+          rows = [row for row in DESKTOP if keep(row["platform"])]
+          # matrix 不能为空：一个都没选中时塞一行占位，各步骤按 platform == 'none' 跳过。
+          if not rows:
+              rows = [{"platform": "none", "os": "ubuntu-24.04"}]
+          android = "true" if keep("android") else "false"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"tag={tag}\n")
+              out.write(f"version={version}\n")
+              out.write(f"plugins={plugins}\n")
+              out.write(f"matrix={json.dumps(rows)}\n")
+              out.write(f"android={android}\n")
+          print(f"发布范围：{plugins}，版本 {version}，tag {tag}")
+          print(f"平台：{[row['platform'] for row in rows]}，android={android}")
+          PY
 
   build:
     needs: prepare
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            platform: windows-x86_64
-          - os: windows-11-vs2026-arm
-            platform: windows-aarch64
-          - os: ubuntu-latest
-            platform: linux-x86_64
-          - os: ubuntu-24.04-arm
-            platform: linux-aarch64
-          - os: macos-latest
-            platform: macos-aarch64
+        include: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     steps:
       # 两个仓库都要，且是兄弟目录：都在 $GITHUB_WORKSPACE 下面，
       # cargo 的工作目录是 fuyubot-plugins/，`../FuyuBot` 正好解析到运行时仓库。
       - uses: actions/checkout@v4
+        if: matrix.platform != 'none'
         with:
           path: fuyubot-plugins
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/checkout@v4
+        if: matrix.platform != 'none'
         with:
           repository: CatMoeCircle/Fuyu-Bot
           path: FuyuBot
+          ref: ${{ inputs.fuyubot_ref || 'main' }}
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.platform != 'none'
+      - uses: actions/setup-python@v5
+        if: matrix.platform != 'none'
+        with:
+          python-version: "3.13"
       - name: Install fontconfig (Linux)
-        if: runner.os == 'Linux'
+        if: matrix.platform != 'none' && runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config
       - name: Build
+        if: matrix.platform != 'none'
         shell: bash
         working-directory: fuyubot-plugins
         env:
@@ -121,6 +227,7 @@ jobs:
           done
           cargo build --release "${packages[@]}"
       - name: Package
+        if: matrix.platform != 'none'
         shell: bash
         working-directory: fuyubot-plugins
         env:
@@ -131,6 +238,7 @@ jobs:
             python scripts/package.py --plugin "$plugin" --platform "${{ matrix.platform }}" --version "$VERSION"
           done
       - uses: actions/upload-artifact@v4
+        if: matrix.platform != 'none'
         with:
           name: ${{ matrix.platform }}
           path: fuyubot-plugins/dist/*.zip
@@ -138,18 +246,24 @@ jobs:
 
   android:
     needs: prepare
-    runs-on: ubuntu-latest
+    if: needs.prepare.outputs.android == 'true'
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
           path: fuyubot-plugins
+          ref: ${{ needs.prepare.outputs.tag }}
       - uses: actions/checkout@v4
         with:
           repository: CatMoeCircle/Fuyu-Bot
           path: FuyuBot
+          ref: ${{ inputs.fuyubot_ref || 'main' }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - uses: nttld/setup-ndk@v1
         id: ndk
         with:
@@ -189,12 +303,33 @@ jobs:
 
   release:
     needs: [prepare, build, android]
-    runs-on: ubuntu-latest
+    # 只在这轮**请求的平台全绿**时发：缺平台的半成品不该挂上去（同名 --clobber 会覆盖
+    # 上一次的好产物）。
+    if: ${{ !cancelled() && needs.build.result == 'success' && (needs.prepare.outputs.android != 'true' || needs.android.result == 'success') }}
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.zip
+      # 用 gh 而不是 action-gh-release：已有 Release **只覆盖同名 zip**（--clobber），
+      # 说明、其它平台资产、latest 标记都不动。`targets=linux` 重建时就是这条路径。
+      - name: Publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/*.zip)
+          if (( ${#assets[@]} == 0 )); then
+            echo "::error::没有可发布的 zip"
+            exit 1
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "${assets[@]}" --title "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --notes "FuyuBot 插件 bundle（契约 v1）：一个插件一个 zip，解压后 plugin.json 在根、动态库在 bin/。"
+          fi
