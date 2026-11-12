@@ -6,12 +6,10 @@
 //! 1. **密钥不进源码**——TS 版里那两个 `sk-…` 已经提交进仓库了，重构时不再复制；
 //! 2. **总日志频道是可选的**——原代码把日志发到某个固定频道的固定话题，
 //!    换个人部署就是往别人群里灌消息；
-//! 3. **FuyuBot 没有「Bot 主人」概念**——`owner_ids` 是这张名单的唯一来源。
+//! 3. **主人 / 管理员归宿主**——`[roles].owners` / `[roles].admins`，插件不再自己存名单。
 //!
 //! ```toml
 //! [plugin.fuyubot.adblock]                  # 只有这一个段，全部平铺
-//! owner_ids = [123456789]                   # /qadid /delad /addkw /adkew /adaiset … 的授权人
-//! admin_ids = [987654321]                   # TS 里 permission=admin 那一档
 //! db = "fuyubot"                            # 覆盖 storage.mongo 的默认库
 //! log_channel = -1001234567890              # 可选：全局封禁审计频道
 //! log_topic = 1622                          # 可选：论坛群的话题 id
@@ -27,8 +25,6 @@
 //! ai_db_channel = -1001234567890            # 可选：/spam 判定后写库的通知
 //! ai_db_topic = 3034
 //! ```
-
-use std::collections::HashSet;
 
 use fuyubot_abi::HostApi;
 use serde_json::Value;
@@ -56,13 +52,6 @@ impl AiEndpoint {
 /// 插件启动时读一次的配置。
 #[derive(Debug, Clone, Default)]
 pub struct PluginConfig {
-    /// 能执行「仅 Bot 主人」命令的 TGID 名单。
-    pub owner_ids: HashSet<i64>,
-    /// 「Bot 管理员」名单：对应 TS 框架 `permission:"admin"` 的那一档
-    /// （`super_admin` 或 `admin[]`）。主人天然也算管理员。
-    ///
-    /// 影响 `/qadid` `/delad` `/addkw` `/editkw` `/addfwdbl` `/rmfwdbl`。
-    pub admin_ids: HashSet<i64>,
     /// 覆盖 `storage.mongo` 的默认库（`None` = 用 mongo 插件的 `db`）。
     ///
     /// 典型用法：把 adblock 的数据放进跟 TS 版同一个库，老数据直接接上。
@@ -91,32 +80,6 @@ impl PluginConfig {
     /// 这种情况下命令会自己给出可操作的提示（见 `commands::require_owner`）。
     pub fn load(host: &HostApi) -> Self {
         let mut config = Self::default();
-
-        if let Some(value) = get(host, "owner_ids") {
-            config.owner_ids = match value {
-                Value::Array(items) => items.iter().filter_map(as_i64).collect(),
-                other => as_i64(&other).into_iter().collect(),
-            };
-        }
-        // 单数写法也认：`owner_id = 123`
-        if let Some(value) = get(host, "owner_id")
-            && let Some(id) = as_i64(&value)
-        {
-            config.owner_ids.insert(id);
-        }
-
-        // `/help` 里 `permission:"admin"` 那一档（TS 的 `admin[]`）。
-        if let Some(value) = get(host, "admin_ids") {
-            config.admin_ids = match value {
-                Value::Array(items) => items.iter().filter_map(as_i64).collect(),
-                other => as_i64(&other).into_iter().collect(),
-            };
-        }
-        if let Some(value) = get(host, "admin_id")
-            && let Some(id) = as_i64(&value)
-        {
-            config.admin_ids.insert(id);
-        }
 
         config.log_channel = channel_of(get(host, "log_channel"));
         config.db = get(host, "db")
@@ -163,15 +126,6 @@ impl PluginConfig {
         config
     }
 
-    pub fn is_owner(&self, user_id: i64) -> bool {
-        self.owner_ids.contains(&user_id)
-    }
-
-    /// TS 框架 `permission:"admin"` 的等价判断：主人 ∪ `admin_ids`。
-    pub fn is_bot_admin(&self, user_id: i64) -> bool {
-        self.is_owner(user_id) || self.admin_ids.contains(&user_id)
-    }
-
     /// 启动时打一行，把「哪些能力没开」说清楚——比事后猜为什么 AI 不工作省事。
     pub fn summary(&self) -> String {
         let ai = match &self.ai {
@@ -196,11 +150,7 @@ impl PluginConfig {
             Some(db) => format!("库 {db}"),
             None => "用 storage.mongo 的默认库".to_owned(),
         };
-        format!(
-            "主人 {} 人 / 管理员 {} 人；{db}；{ai}；{audit}",
-            self.owner_ids.len(),
-            self.admin_ids.len()
-        )
+        format!("{db}；{ai}；{audit}")
     }
 }
 
@@ -250,18 +200,6 @@ fn topic_of(value: Option<Value>) -> Option<i32> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn owner_list_parsing() {
-        let list = json!([1, "2", 3]);
-        let ids: HashSet<i64> = list
-            .as_array()
-            .expect("数组")
-            .iter()
-            .filter_map(as_i64)
-            .collect();
-        assert_eq!(ids, HashSet::from([1, 2, 3]));
-    }
 
     #[test]
     fn channel_and_topic() {

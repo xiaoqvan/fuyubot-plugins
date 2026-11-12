@@ -89,9 +89,14 @@ impl Plugin for MongoPlugin {
     }
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
-        let raw: Value = serde_json::from_str(config_json).unwrap_or(Value::Null);
+        // 宿主 0.1.4 传给 start() 的是一段固定 JSON（plugins_dir / scripts_dir / spawn），
+        // **不会**把 `[plugin.fuyubot.mongo]` 带进来。不显式读一次自己的段，
+        // 配置文件里写的 uri / db 就等于没写，插件只会拿默认值连 127.0.0.1。
+        let base: Value = serde_json::from_str(config_json).unwrap_or(Value::Null);
+        let raw = merge_section(base, self.host.get_config("fuyubot.mongo", "").as_deref());
         let options = api::options_from(&raw);
-        let uri = options.uri.clone();
+        // 日志里别打明文密码：`mongodb://user:pass@host` → `mongodb://user:***@host`。
+        let uri = masked_uri(&options.uri);
         let db = options.db.clone();
         api::configure_with(&options)?;
 
@@ -111,7 +116,7 @@ impl Plugin for MongoPlugin {
                 LogLevel::Warn,
                 &format!(
                     "[{PLUGIN}] 没连上 {uri}（{}）；插件照常运行，库起来后第一次查询会自动重连。\
-                     若这不是预期，检查 [mongodb].uri 或本机 mongod。",
+                     若这不是预期，检查 [plugin.fuyubot.mongo] 的 uri 或本机 mongod。",
                     short_reason(&err)
                 ),
             ),
@@ -139,6 +144,40 @@ fn short_reason(error: &str) -> String {
     } else {
         first.to_owned()
     }
+}
+
+/// 把 `[plugin.fuyubot.mongo]` 段（JSON 文本）叠到宿主传给 `start()` 的配置上。
+///
+/// 宿主 0.1.4 传过来的是一段固定 JSON（`plugins_dir` / `scripts_dir` / `spawn`），
+/// 插件自己的配置段不下发；所以这里显式 `get_config` 读一次，配置文件才作数。
+/// 段里的键覆盖同名的启动键（启动键里本来也没有 uri / db）。
+fn merge_section(base: Value, section: Option<&str>) -> Value {
+    let Some(text) = section.map(str::trim).filter(|text| !text.is_empty()) else {
+        return base;
+    };
+    let Ok(Value::Object(section)) = serde_json::from_str::<Value>(text) else {
+        return base;
+    };
+    let mut merged = match base {
+        Value::Object(base) => base,
+        _ => serde_json::Map::new(),
+    };
+    merged.extend(section);
+    Value::Object(merged)
+}
+
+/// 日志里给连接串打码：`mongodb://user:pass@host` → `mongodb://user:***@host`。
+///
+/// 连接串从配置文件读，明文密码不该跟着日志进文件、进聊天窗口。
+fn masked_uri(uri: &str) -> String {
+    let Some((scheme, rest)) = uri.split_once("://") else {
+        return uri.to_owned();
+    };
+    let Some((userinfo, host)) = rest.rsplit_once('@') else {
+        return uri.to_owned();
+    };
+    let user = userinfo.split(':').next().unwrap_or(userinfo);
+    format!("{scheme}://{user}:***@{host}")
 }
 
 fuyubot_abi::define_plugin!(MongoPlugin, "fuyubot.mongo");
@@ -172,34 +211,22 @@ pub mod api {
         }
     }
 
-    /// 从插件配置 + 环境变量拼出连接参数。
+    /// 从插件配置拼出连接参数（`[plugin.fuyubot.mongo]` 段）。
     ///
-    /// 优先级：显式配置 > 环境变量 > 默认值。云端部署时把连接串放环境变量更常见
-    /// （不写进配置文件、方便轮换），所以两条路都支持。
+    /// 只认配置，不读环境变量：优先级 = 显式配置 > 内置默认值。
     pub fn options_from(raw: &Value) -> Options {
-        let env = |key: &str| {
-            std::env::var(key)
-                .ok()
-                .filter(|value| !value.trim().is_empty())
-        };
         let defaults = Options::default();
         Options {
             uri: opt_str(raw, "uri")
                 .map(str::to_owned)
-                .or_else(|| env("MONGO_URI"))
                 .unwrap_or(defaults.uri),
-            db: opt_str(raw, "db")
-                .map(str::to_owned)
-                .or_else(|| env("MONGO_DB"))
-                .unwrap_or(defaults.db),
+            db: opt_str(raw, "db").map(str::to_owned).unwrap_or(defaults.db),
             timeout_ms: raw
                 .get("timeout_ms")
                 .and_then(Value::as_u64)
-                .or_else(|| env("MONGO_TIMEOUT_MS").and_then(|text| text.parse().ok()))
                 .unwrap_or(defaults.timeout_ms),
             app_name: opt_str(raw, "app_name")
                 .map(str::to_owned)
-                .or_else(|| env("MONGO_APP_NAME"))
                 .unwrap_or(defaults.app_name),
         }
     }

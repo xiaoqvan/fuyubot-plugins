@@ -12,23 +12,33 @@ use fuyubot_plugin_mongo::api::{call, configure};
 use serde_json::{Value, json};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.len() < 2 {
-        eprintln!("用法：cleanup <collection> <filter-json> [--apply]");
+    // 用法：cleanup <collection> <filter-json> [--apply] [--uri U] [--db D]
+    let mut positional: Vec<String> = Vec::new();
+    let mut uri = "mongodb://127.0.0.1:27017".to_owned();
+    let mut db = "demo".to_owned();
+    let mut apply = false;
+    let mut iter = std::env::args().skip(1);
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--apply" => apply = true,
+            "--uri" => uri = iter.next().unwrap_or(uri),
+            "--db" => db = iter.next().unwrap_or(db),
+            other => positional.push(other.to_owned()),
+        }
+    }
+    if positional.len() < 2 {
+        eprintln!("用法：cleanup <collection> <filter-json> [--apply] [--uri U] [--db D]");
         std::process::exit(2);
     }
-    let collection = args[0].clone();
-    let filter: Value = match serde_json::from_str(&args[1]) {
+    let collection = positional[0].clone();
+    let filter: Value = match serde_json::from_str(&positional[1]) {
         Ok(value) => value,
         Err(error) => {
             eprintln!("filter 不是合法 JSON：{error}");
             std::process::exit(2);
         }
     };
-    let apply = args.iter().any(|arg| arg == "--apply");
 
-    let uri = std::env::var("MONGO_URI").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_owned());
-    let db = std::env::var("MONGO_DB").unwrap_or_else(|_| "demo".to_owned());
     if let Err(error) = configure(&uri, &db) {
         eprintln!("连接失败：{error}");
         std::process::exit(1);

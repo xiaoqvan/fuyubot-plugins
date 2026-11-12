@@ -1,0 +1,1192 @@
+{
+ "encode_pairs": [
+  {
+   "label": "basic",
+   "pairs": [
+    [
+     "k0",
+     "plain"
+    ],
+    [
+     "k1",
+     "has space"
+    ],
+    [
+     "k2",
+     "a+b"
+    ],
+    [
+     "k3",
+     "star*kept"
+    ],
+    [
+     "k4",
+     "tilde~x"
+    ],
+    [
+     "k5",
+     "bang!"
+    ],
+    [
+     "k6",
+     "quote'"
+    ],
+    [
+     "k7",
+     "paren()"
+    ],
+    [
+     "k8",
+     "slash/colon:"
+    ],
+    [
+     "k9",
+     "eq=amp&"
+    ],
+    [
+     "k10",
+     "pct%20"
+    ],
+    [
+     "k11",
+     "hash#"
+    ],
+    [
+     "k12",
+     "中文字符"
+    ],
+    [
+     "k13",
+     "emoji🎬"
+    ],
+    [
+     "k14",
+     ""
+    ]
+   ],
+   "want": "k0=plain&k1=has%20space&k2=a%2Bb&k3=star*kept&k4=tilde~x&k5=bang%21&k6=quote%27&k7=paren%28%29&k8=slash%2Fcolon%3A&k9=eq%3Damp%26&k10=pct%2520&k11=hash%23&k12=%E4%B8%AD%E6%96%87%E5%AD%97%E7%AC%A6&k13=emoji%F0%9F%8E%AC&k14="
+  },
+  {
+   "label": "detail",
+   "pairs": [
+    [
+     "device_platform",
+     "webapp"
+    ],
+    [
+     "aid",
+     "6383"
+    ],
+    [
+     "channel",
+     "channel_pc_web"
+    ],
+    [
+     "pc_client_type",
+     "1"
+    ],
+    [
+     "version_code",
+     "290100"
+    ],
+    [
+     "version_name",
+     "29.1.0"
+    ],
+    [
+     "cookie_enabled",
+     "true"
+    ],
+    [
+     "screen_width",
+     "1920"
+    ],
+    [
+     "screen_height",
+     "1080"
+    ],
+    [
+     "browser_language",
+     "zh-CN"
+    ],
+    [
+     "browser_platform",
+     "Win32"
+    ],
+    [
+     "browser_name",
+     "Chrome"
+    ],
+    [
+     "browser_version",
+     "130.0.0.0"
+    ],
+    [
+     "browser_online",
+     "true"
+    ],
+    [
+     "engine_name",
+     "Blink"
+    ],
+    [
+     "engine_version",
+     "130.0.0.0"
+    ],
+    [
+     "os_name",
+     "Windows"
+    ],
+    [
+     "os_version",
+     "10"
+    ],
+    [
+     "cpu_core_num",
+     "12"
+    ],
+    [
+     "device_memory",
+     "8"
+    ],
+    [
+     "platform",
+     "PC"
+    ],
+    [
+     "downlink",
+     "10"
+    ],
+    [
+     "effective_type",
+     "4g"
+    ],
+    [
+     "round_trip_time",
+     "0"
+    ],
+    [
+     "update_version_code",
+     "170400"
+    ],
+    [
+     "aweme_id",
+     "7345492945006595379"
+    ],
+    [
+     "msToken",
+     "AbCdEf0123456789+-=="
+    ]
+   ],
+   "want": "device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=290100&version_name=29.1.0&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=130.0.0.0&browser_online=true&engine_name=Blink&engine_version=130.0.0.0&os_name=Windows&os_version=10&cpu_core_num=12&device_memory=8&platform=PC&downlink=10&effective_type=4g&round_trip_time=0&update_version_code=170400&aweme_id=7345492945006595379&msToken=AbCdEf0123456789%2B-%3D%3D"
+  }
+ ],
+ "urlencode": [
+  {
+   "label": "basic",
+   "pairs": [
+    [
+     "k0",
+     "plain"
+    ],
+    [
+     "k1",
+     "has space"
+    ],
+    [
+     "k2",
+     "a+b"
+    ],
+    [
+     "k3",
+     "star*kept"
+    ],
+    [
+     "k4",
+     "tilde~x"
+    ],
+    [
+     "k5",
+     "bang!"
+    ],
+    [
+     "k6",
+     "quote'"
+    ],
+    [
+     "k7",
+     "paren()"
+    ],
+    [
+     "k8",
+     "slash/colon:"
+    ],
+    [
+     "k9",
+     "eq=amp&"
+    ],
+    [
+     "k10",
+     "pct%20"
+    ],
+    [
+     "k11",
+     "hash#"
+    ],
+    [
+     "k12",
+     "中文字符"
+    ],
+    [
+     "k13",
+     "emoji🎬"
+    ],
+    [
+     "k14",
+     ""
+    ]
+   ],
+   "want": "k0=plain&k1=has+space&k2=a%2Bb&k3=star%2Akept&k4=tilde~x&k5=bang%21&k6=quote%27&k7=paren%28%29&k8=slash%2Fcolon%3A&k9=eq%3Damp%26&k10=pct%2520&k11=hash%23&k12=%E4%B8%AD%E6%96%87%E5%AD%97%E7%AC%A6&k13=emoji%F0%9F%8E%AC&k14="
+  },
+  {
+   "label": "detail",
+   "pairs": [
+    [
+     "device_platform",
+     "webapp"
+    ],
+    [
+     "aid",
+     "6383"
+    ],
+    [
+     "channel",
+     "channel_pc_web"
+    ],
+    [
+     "pc_client_type",
+     "1"
+    ],
+    [
+     "version_code",
+     "290100"
+    ],
+    [
+     "version_name",
+     "29.1.0"
+    ],
+    [
+     "cookie_enabled",
+     "true"
+    ],
+    [
+     "screen_width",
+     "1920"
+    ],
+    [
+     "screen_height",
+     "1080"
+    ],
+    [
+     "browser_language",
+     "zh-CN"
+    ],
+    [
+     "browser_platform",
+     "Win32"
+    ],
+    [
+     "browser_name",
+     "Chrome"
+    ],
+    [
+     "browser_version",
+     "130.0.0.0"
+    ],
+    [
+     "browser_online",
+     "true"
+    ],
+    [
+     "engine_name",
+     "Blink"
+    ],
+    [
+     "engine_version",
+     "130.0.0.0"
+    ],
+    [
+     "os_name",
+     "Windows"
+    ],
+    [
+     "os_version",
+     "10"
+    ],
+    [
+     "cpu_core_num",
+     "12"
+    ],
+    [
+     "device_memory",
+     "8"
+    ],
+    [
+     "platform",
+     "PC"
+    ],
+    [
+     "downlink",
+     "10"
+    ],
+    [
+     "effective_type",
+     "4g"
+    ],
+    [
+     "round_trip_time",
+     "0"
+    ],
+    [
+     "update_version_code",
+     "170400"
+    ],
+    [
+     "aweme_id",
+     "7345492945006595379"
+    ],
+    [
+     "msToken",
+     "AbCdEf0123456789+-=="
+    ]
+   ],
+   "want": "device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=290100&version_name=29.1.0&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=130.0.0.0&browser_online=true&engine_name=Blink&engine_version=130.0.0.0&os_name=Windows&os_version=10&cpu_core_num=12&device_memory=8&platform=PC&downlink=10&effective_type=4g&round_trip_time=0&update_version_code=170400&aweme_id=7345492945006595379&msToken=AbCdEf0123456789%2B-%3D%3D"
+  }
+ ],
+ "websign": [
+  {
+   "label": "basic",
+   "timestamp": 1762600000,
+   "pairs": [
+    [
+     "k0",
+     "plain"
+    ],
+    [
+     "k1",
+     "has space"
+    ],
+    [
+     "k2",
+     "a+b"
+    ],
+    [
+     "k3",
+     "star*kept"
+    ],
+    [
+     "k4",
+     "tilde~x"
+    ],
+    [
+     "k5",
+     "bang!"
+    ],
+    [
+     "k6",
+     "quote'"
+    ],
+    [
+     "k7",
+     "paren()"
+    ],
+    [
+     "k8",
+     "slash/colon:"
+    ],
+    [
+     "k9",
+     "eq=amp&"
+    ],
+    [
+     "k10",
+     "pct%20"
+    ],
+    [
+     "k11",
+     "hash#"
+    ],
+    [
+     "k12",
+     "中文字符"
+    ],
+    [
+     "k13",
+     "emoji🎬"
+    ],
+    [
+     "k14",
+     ""
+    ]
+   ],
+   "uifid": "UIFID_TEST_VALUE_32CHARS________",
+   "want_query": "k0=plain&k1=has%20space&k2=a%2Bb&k3=star*kept&k4=tilde~x&k5=bang%21&k6=quote%27&k7=paren%28%29&k8=slash%2Fcolon%3A&k9=eq%3Damp%26&k10=pct%2520&k11=hash%23&k12=%E4%B8%AD%E6%96%87%E5%AD%97%E7%AC%A6&k13=emoji%F0%9F%8E%AC&k14=&uifid=UIFID_TEST_VALUE_32CHARS________&timestamp=1762600000&x-secsdk-web-signature=e8f37fdecffc60227ae6e899b243e242",
+   "want_signature": "e8f37fdecffc60227ae6e899b243e242",
+   "want_headers": {
+    "uifid": "UIFID_TEST_VALUE_32CHARS________",
+    "x-secsdk-web-signature": "e8f37fdecffc60227ae6e899b243e242",
+    "x-secsdk-web-expire": "1762600000"
+   }
+  },
+  {
+   "label": "detail",
+   "timestamp": 1762600000,
+   "pairs": [
+    [
+     "device_platform",
+     "webapp"
+    ],
+    [
+     "aid",
+     "6383"
+    ],
+    [
+     "channel",
+     "channel_pc_web"
+    ],
+    [
+     "pc_client_type",
+     "1"
+    ],
+    [
+     "version_code",
+     "290100"
+    ],
+    [
+     "version_name",
+     "29.1.0"
+    ],
+    [
+     "cookie_enabled",
+     "true"
+    ],
+    [
+     "screen_width",
+     "1920"
+    ],
+    [
+     "screen_height",
+     "1080"
+    ],
+    [
+     "browser_language",
+     "zh-CN"
+    ],
+    [
+     "browser_platform",
+     "Win32"
+    ],
+    [
+     "browser_name",
+     "Chrome"
+    ],
+    [
+     "browser_version",
+     "130.0.0.0"
+    ],
+    [
+     "browser_online",
+     "true"
+    ],
+    [
+     "engine_name",
+     "Blink"
+    ],
+    [
+     "engine_version",
+     "130.0.0.0"
+    ],
+    [
+     "os_name",
+     "Windows"
+    ],
+    [
+     "os_version",
+     "10"
+    ],
+    [
+     "cpu_core_num",
+     "12"
+    ],
+    [
+     "device_memory",
+     "8"
+    ],
+    [
+     "platform",
+     "PC"
+    ],
+    [
+     "downlink",
+     "10"
+    ],
+    [
+     "effective_type",
+     "4g"
+    ],
+    [
+     "round_trip_time",
+     "0"
+    ],
+    [
+     "update_version_code",
+     "170400"
+    ],
+    [
+     "aweme_id",
+     "7345492945006595379"
+    ],
+    [
+     "msToken",
+     "AbCdEf0123456789+-=="
+    ]
+   ],
+   "uifid": "UIFID_TEST_VALUE_32CHARS________",
+   "want_query": "device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=290100&version_name=29.1.0&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=130.0.0.0&browser_online=true&engine_name=Blink&engine_version=130.0.0.0&os_name=Windows&os_version=10&cpu_core_num=12&device_memory=8&platform=PC&downlink=10&effective_type=4g&round_trip_time=0&update_version_code=170400&aweme_id=7345492945006595379&msToken=AbCdEf0123456789%2B-%3D%3D&uifid=UIFID_TEST_VALUE_32CHARS________&timestamp=1762600000&x-secsdk-web-signature=f745fe706b1398bf84df932b490c3471",
+   "want_signature": "f745fe706b1398bf84df932b490c3471",
+   "want_headers": {
+    "uifid": "UIFID_TEST_VALUE_32CHARS________",
+    "x-secsdk-web-signature": "f745fe706b1398bf84df932b490c3471",
+    "x-secsdk-web-expire": "1762600000"
+   }
+  },
+  {
+   "label": "basic",
+   "timestamp": 1,
+   "pairs": [
+    [
+     "k0",
+     "plain"
+    ],
+    [
+     "k1",
+     "has space"
+    ],
+    [
+     "k2",
+     "a+b"
+    ],
+    [
+     "k3",
+     "star*kept"
+    ],
+    [
+     "k4",
+     "tilde~x"
+    ],
+    [
+     "k5",
+     "bang!"
+    ],
+    [
+     "k6",
+     "quote'"
+    ],
+    [
+     "k7",
+     "paren()"
+    ],
+    [
+     "k8",
+     "slash/colon:"
+    ],
+    [
+     "k9",
+     "eq=amp&"
+    ],
+    [
+     "k10",
+     "pct%20"
+    ],
+    [
+     "k11",
+     "hash#"
+    ],
+    [
+     "k12",
+     "中文字符"
+    ],
+    [
+     "k13",
+     "emoji🎬"
+    ],
+    [
+     "k14",
+     ""
+    ]
+   ],
+   "uifid": "UIFID_TEST_VALUE_32CHARS________",
+   "want_query": "k0=plain&k1=has%20space&k2=a%2Bb&k3=star*kept&k4=tilde~x&k5=bang%21&k6=quote%27&k7=paren%28%29&k8=slash%2Fcolon%3A&k9=eq%3Damp%26&k10=pct%2520&k11=hash%23&k12=%E4%B8%AD%E6%96%87%E5%AD%97%E7%AC%A6&k13=emoji%F0%9F%8E%AC&k14=&uifid=UIFID_TEST_VALUE_32CHARS________&timestamp=1&x-secsdk-web-signature=64b61acfc50a1bacfb0118b5b139a777",
+   "want_signature": "64b61acfc50a1bacfb0118b5b139a777",
+   "want_headers": {
+    "uifid": "UIFID_TEST_VALUE_32CHARS________",
+    "x-secsdk-web-signature": "64b61acfc50a1bacfb0118b5b139a777",
+    "x-secsdk-web-expire": "1"
+   }
+  },
+  {
+   "label": "detail",
+   "timestamp": 1,
+   "pairs": [
+    [
+     "device_platform",
+     "webapp"
+    ],
+    [
+     "aid",
+     "6383"
+    ],
+    [
+     "channel",
+     "channel_pc_web"
+    ],
+    [
+     "pc_client_type",
+     "1"
+    ],
+    [
+     "version_code",
+     "290100"
+    ],
+    [
+     "version_name",
+     "29.1.0"
+    ],
+    [
+     "cookie_enabled",
+     "true"
+    ],
+    [
+     "screen_width",
+     "1920"
+    ],
+    [
+     "screen_height",
+     "1080"
+    ],
+    [
+     "browser_language",
+     "zh-CN"
+    ],
+    [
+     "browser_platform",
+     "Win32"
+    ],
+    [
+     "browser_name",
+     "Chrome"
+    ],
+    [
+     "browser_version",
+     "130.0.0.0"
+    ],
+    [
+     "browser_online",
+     "true"
+    ],
+    [
+     "engine_name",
+     "Blink"
+    ],
+    [
+     "engine_version",
+     "130.0.0.0"
+    ],
+    [
+     "os_name",
+     "Windows"
+    ],
+    [
+     "os_version",
+     "10"
+    ],
+    [
+     "cpu_core_num",
+     "12"
+    ],
+    [
+     "device_memory",
+     "8"
+    ],
+    [
+     "platform",
+     "PC"
+    ],
+    [
+     "downlink",
+     "10"
+    ],
+    [
+     "effective_type",
+     "4g"
+    ],
+    [
+     "round_trip_time",
+     "0"
+    ],
+    [
+     "update_version_code",
+     "170400"
+    ],
+    [
+     "aweme_id",
+     "7345492945006595379"
+    ],
+    [
+     "msToken",
+     "AbCdEf0123456789+-=="
+    ]
+   ],
+   "uifid": "UIFID_TEST_VALUE_32CHARS________",
+   "want_query": "device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=290100&version_name=29.1.0&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=130.0.0.0&browser_online=true&engine_name=Blink&engine_version=130.0.0.0&os_name=Windows&os_version=10&cpu_core_num=12&device_memory=8&platform=PC&downlink=10&effective_type=4g&round_trip_time=0&update_version_code=170400&aweme_id=7345492945006595379&msToken=AbCdEf0123456789%2B-%3D%3D&uifid=UIFID_TEST_VALUE_32CHARS________&timestamp=1&x-secsdk-web-signature=9eef31fd5320034c08681a1c077caeca",
+   "want_signature": "9eef31fd5320034c08681a1c077caeca",
+   "want_headers": {
+    "uifid": "UIFID_TEST_VALUE_32CHARS________",
+    "x-secsdk-web-signature": "9eef31fd5320034c08681a1c077caeca",
+    "x-secsdk-web-expire": "1"
+   }
+  }
+ ],
+ "sm3": [
+  {
+   "msg_hex": "616263",
+   "want": "66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0"
+  },
+  {
+   "msg_hex": "61626364616263646162636461626364616263646162636461626364616263646162636461626364616263646162636461626364616263646162636461626364",
+   "want": "debe9ff92275b8a138604889c18e5a4d6fdb70e5387e5765293dcba39c0c5732"
+  },
+  {
+   "msg_hex": "",
+   "want": "1ab21d8355cfa17f8e61194831e81a8f22bec8c728fefb747ed035eb5082aa2b"
+  },
+  {
+   "msg_hex": "78",
+   "want": "b9e036c07be7c1df36f69e63504da93b25f477601dc566253c0af43663583f84"
+  },
+  {
+   "msg_hex": "78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "ff8f8d58b95a1f90e39d96f739fa873eee33c0a80e59c7bbbf184eb7d9b1f112"
+  },
+  {
+   "msg_hex": "7878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "c4c1c6206d36c325e66ae5432948b26f04acff8dfc0ea2606a79d59b83a16d61"
+  },
+  {
+   "msg_hex": "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "6ea239cae3a9660ef7db6a72345e04b9bb572d0269bc3c6528faa6af3821397e"
+  },
+  {
+   "msg_hex": "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "b3ada6bc4838430afe100fb8b39ea65e13a556fb9a5f3699a7c541f8e3a07a93"
+  },
+  {
+   "msg_hex": "78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "ad6af8cbe6a5a10beac0ecd1df9fa779228553fd7ead00313765349b32bd81ce"
+  },
+  {
+   "msg_hex": "7878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "063cfef4083326d61866e4bc3283fca4823f4f771d82a95b76a668454bfb0d24"
+  },
+  {
+   "msg_hex": "7878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "ebeb591c289fe14873d297f6d2fc8c70e6ed03a2ff6e2240600eede2e8197bbf"
+  },
+  {
+   "msg_hex": "787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "f86deedb441db075511ff2ae5ace229719f7d0e754af15391be725e4e553cc4a"
+  },
+  {
+   "msg_hex": "7878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878",
+   "want": "96f6390c8b42e871f8001e3aa1856ff360c3668e4fcd5f6c2d74adc457847349"
+  },
+  {
+   "msg_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+   "want": "59d171dbfd251d5a4cd77d6ba2b7109b7d64a4cd7fa8182beb100a016fa3ac44"
+  }
+ ],
+ "abogus": [
+  {
+   "label": "detail",
+   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+   "browser_info": "1920|947|1920|1032|1920|1032|1920|1080|Win32",
+   "seed": 42,
+   "query": "device_platform=webapp&aid=6383&aweme_id=7345492945006595379&msToken=AbCdEf0123456789+-==",
+   "body": "",
+   "content_type": "",
+   "now_ms": 1762600000000,
+   "rng_stream": [
+    0.6394267984578837,
+    0.025010755222666936,
+    0.27502931836911926,
+    0.22321073814882275,
+    0.7364712141640124,
+    0.6766994874229113,
+    0.8921795677048454,
+    0.08693883262941615,
+    0.4219218196852704,
+    0.029797219438070344,
+    0.21863797480360336,
+    0.5053552881033624,
+    0.026535969683863625,
+    0.1988376506866485,
+    0.6498844377795232,
+    0.5449414806032167,
+    0.2204406220406967,
+    0.5892656838759087,
+    0.8094304566778266,
+    0.006498759678061017,
+    0.8058192518328079,
+    0.6981393949882269,
+    0.3402505165179919,
+    0.15547949981178155,
+    0.9572130722067812,
+    0.33659454511262676,
+    0.09274584338014791,
+    0.09671637683346401,
+    0.8474943663474598,
+    0.6037260313668911,
+    0.8071282732743802,
+    0.7297317866938179,
+    0.5362280914547007,
+    0.9731157639793706,
+    0.3785343772083535,
+    0.552040631273227,
+    0.8294046642529949,
+    0.6185197523642461
+   ],
+   "want": "QJ0RhtyjEoRcPVFG8KjDStPlJCnANPSyVtT/bY1PHNTWOZ0aeRPTBPGgGoqX4xfsoWBswF3HpDlAbdncstU0ZHHkomkvSOhWDU5CIWXLhqwRGMJQLrbTezXFuwMn054qe55UiARI8Urq6VxAkrQD/B59SKLFQbSBMpxbk2YcT9sg1MyAE1cHPBtpqh5V"
+  },
+  {
+   "label": "empty_query",
+   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+   "browser_info": "1920|947|1920|1032|1920|1032|1920|1080|Win32",
+   "seed": 43,
+   "query": "",
+   "body": "",
+   "content_type": "",
+   "now_ms": 1762600000000,
+   "rng_stream": [
+    0.038551839337380045,
+    0.6962243226370528,
+    0.14393322139536102,
+    0.46253225482908755,
+    0.671646764117767,
+    0.7929512716552943,
+    0.45318922846621235,
+    0.4982722297980512,
+    0.01915710802434778,
+    0.4323888389514402,
+    0.3723746808209262,
+    0.852288633190853,
+    0.5469839042910056,
+    0.755316838254966,
+    0.43406813885223416,
+    0.17618810428468956,
+    0.8508752517946389,
+    0.8202199870687111,
+    0.37585828567644886,
+    0.09574311346274311,
+    0.512430346269225,
+    0.4959772387795468,
+    0.7723009913180158,
+    0.5972169189021029,
+    0.5066760128135681,
+    0.5751589252191758,
+    0.376925185796109,
+    0.04891974165490165,
+    0.061210678418125,
+    0.9419036139652794,
+    0.839098201436744,
+    0.29615978356658945,
+    0.8887522747892508,
+    0.5222527282202396,
+    0.10304071000390813,
+    0.8556880042968472,
+    0.5843770627229475,
+    0.9327872592937306
+   ],
+   "want": "O745gFUyQ25fOdKGYCjYS7PlbCj/NsuyjzTxW9MTSPP7OhePaRPkBOtgjoqg4DjsdWBswq37DDlMYDVc0GXkZ9nkLmkfSYXWgs5cIU6LhqqRTFkQLqjzezfzqwMn0RsqaA5Uil46gUJHgjnAkHQE/dl9yKLF5cSBF1OSkZucO9sXZzgALpc3PpSkLh4C"
+  },
+  {
+   "label": "body_json",
+   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+   "browser_info": "1920|947|1920|1032|1920|1032|1920|1080|Win32",
+   "seed": 44,
+   "query": "aweme_id=1",
+   "body": "{\"k\":\"v\"}",
+   "content_type": "application/json",
+   "now_ms": 1762600000000,
+   "rng_stream": [
+    0.40853587925449375,
+    0.5419720091045962,
+    0.8620366164792732,
+    0.17666564419544384,
+    0.2251595205781467,
+    0.02909725326811108,
+    0.1166505334428638,
+    0.008805625887066904,
+    0.15669033508336383,
+    0.5137132085026757,
+    0.989492910377551,
+    0.6935102614314381,
+    0.37842657112328093,
+    0.4050477353192561,
+    0.6913096284123793,
+    0.32611987261685993,
+    0.07355343057826824,
+    0.8415228969062091,
+    0.6172199559140832,
+    0.11200982712964758,
+    0.07006668737991728,
+    0.09462754629553505,
+    0.9589232453363274,
+    0.10771686541376935,
+    0.6253169687228409,
+    0.9695674798615804,
+    0.035003329400353556,
+    0.38587884676317075,
+    0.47728097048481155,
+    0.9168894603146662,
+    0.18859316505523482,
+    0.2583468686574417,
+    0.2479646412771982,
+    0.04920473727170238,
+    0.6737168204826979,
+    0.8167054405798101,
+    0.4363650508959722,
+    0.03783352478299151
+   ],
+   "want": "m7sRDey7ddAcOdMS8KjmSSOUnCnMNTWy/UTdSCrT9PTbcZePeWPsBYL2GKNh4DjsoRpzwo1HdDlnbdxOsGlU099pFmkfumhWE455I66oMqqmT0JQgHbweLvFKwMNUbTql/5ti1R68UJognVAwNdm/dlyCKoK558BPZx6kMzbP9s61M6ADZcePBbkLh-b"
+  },
+  {
+   "label": "tricky_query",
+   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+   "browser_info": "1920|947|1920|1032|1920|1032|1920|1080|Win32",
+   "seed": 45,
+   "query": "k0=plain&k1=has+space&k2=a%2Bb&k3=star%2Akept&k4=tilde~x&k5=bang%21&k6=quote%27&k7=paren%28%29&k8=slash%2Fcolon%3A&k9=eq%3Damp%26&k10=pct%2520&k11=hash%23&k12=%E4%B8%AD%E6%96%87%E5%AD%97%E7%AC%A6&k13=emoji%F0%9F%8E%AC&k14=",
+   "body": "",
+   "content_type": "",
+   "now_ms": 1762600000000,
+   "rng_stream": [
+    0.2718754143840908,
+    0.48802820785090784,
+    0.08187934237116656,
+    0.33873348699206973,
+    0.07233360770535402,
+    0.011036367079899967,
+    0.28385029589876865,
+    0.11770636555802805,
+    0.3110382248120007,
+    0.7434707928397064,
+    0.0357557155126923,
+    0.6249375571804716,
+    0.13501116090704035,
+    0.7950712434655829,
+    0.7369676243821022,
+    0.21101029956774453,
+    0.8480765801722641,
+    0.7173017220824032,
+    0.07495132545320449,
+    0.4081313844234159,
+    0.7004510913580178,
+    0.9229582476032371,
+    0.17221119493742953,
+    0.2518629905323574,
+    0.7750929946094214,
+    0.9626723030210862,
+    0.09375460752394849,
+    0.08982827530229975,
+    0.7511793846525663,
+    0.3169893159261734,
+    0.38677647485720235,
+    0.87633207391825,
+    0.7457995156246497,
+    0.6607159863179267,
+    0.8676520260577261,
+    0.7320438297162596,
+    0.8102488868102232,
+    0.6432507057061979
+   ],
+   "want": "E70VDF6Jmdm5edKG8cbLStFUGCj/NBSyy4ioRwnPtxK1OZFP-mPwBxSgcoq6sEjsdmpTwq3HDDUAbdncsTXzZCHpwmpDSOwWDU5AIX6LMqwRT0JQDrjkeLXzuwMr054qaQ57iIRIgUrogjnAiNQL/dA97KoC5cSBB1xjkZucP9B6Z0LALZnrPpbpzh4w"
+  }
+ ],
+ "flow": [
+  {
+   "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+   "seed": 7,
+   "params": [
+    [
+     "device_platform",
+     "webapp"
+    ],
+    [
+     "aid",
+     "6383"
+    ],
+    [
+     "channel",
+     "channel_pc_web"
+    ],
+    [
+     "pc_client_type",
+     "1"
+    ],
+    [
+     "version_code",
+     "290100"
+    ],
+    [
+     "version_name",
+     "29.1.0"
+    ],
+    [
+     "cookie_enabled",
+     "true"
+    ],
+    [
+     "screen_width",
+     "1920"
+    ],
+    [
+     "screen_height",
+     "1080"
+    ],
+    [
+     "browser_language",
+     "zh-CN"
+    ],
+    [
+     "browser_platform",
+     "Win32"
+    ],
+    [
+     "browser_name",
+     "Chrome"
+    ],
+    [
+     "browser_version",
+     "130.0.0.0"
+    ],
+    [
+     "browser_online",
+     "true"
+    ],
+    [
+     "engine_name",
+     "Blink"
+    ],
+    [
+     "engine_version",
+     "130.0.0.0"
+    ],
+    [
+     "os_name",
+     "Windows"
+    ],
+    [
+     "os_version",
+     "10"
+    ],
+    [
+     "cpu_core_num",
+     "12"
+    ],
+    [
+     "device_memory",
+     "8"
+    ],
+    [
+     "platform",
+     "PC"
+    ],
+    [
+     "downlink",
+     "10"
+    ],
+    [
+     "effective_type",
+     "4g"
+    ],
+    [
+     "round_trip_time",
+     "0"
+    ],
+    [
+     "update_version_code",
+     "170400"
+    ],
+    [
+     "aweme_id",
+     "7345492945006595379"
+    ],
+    [
+     "msToken",
+     "AbCdEf0123456789+-=="
+    ]
+   ],
+   "verify_fp": "verify_mftfb1_A1B2C3D4E5F6G7H8I9J0K1L2M3N4_O5P6",
+   "uifid": "UIFID_TEST_VALUE_32CHARS________",
+   "timestamp": 1762600000,
+   "now_ms": 1762600000000,
+   "rng_stream": [
+    0.32383276483316237,
+    0.15084917392450192,
+    0.6509344730398537,
+    0.07243628666754276,
+    0.5358820043066892,
+    0.36568891691258554,
+    0.057998924774706806,
+    0.5074357331894203,
+    0.03749565844198488,
+    0.4336456836623859,
+    0.06985542357461894,
+    0.09071301334386506,
+    0.42451918914251396,
+    0.8268521246720381,
+    0.12380196114964559,
+    0.22323896460701453,
+    0.6274332224055893,
+    0.9477089424570057,
+    0.5771029486174987,
+    0.39668047465078016,
+    0.9762551055929201,
+    0.04658268061775628,
+    0.8584684590486795,
+    0.28960928633167626,
+    0.14425508335743753,
+    0.11779223807836836,
+    0.30848182410193437,
+    0.8161263591200314,
+    0.18072637992393747,
+    0.5816001636624663,
+    0.6389134689261841,
+    0.3723975427257312,
+    0.5477444657095578,
+    0.06278897497332314,
+    0.05960116996623266,
+    0.20595871281932654,
+    0.6803999731817859,
+    0.4275923056694029
+   ],
+   "want_a_bogus": "xvUfhttLmNWRPVKb8cjgS7FlcCjANPSyEtTxRirTyxKJOw0c-RNsBxbgnowhsDfsdmpwwq17mDU/YEdcsGUwZeHpLmpDuYXWLU5cIWXo2qqmGzvQLNbhezvFwwMnURGqaA5Ui1U62UrH6nVAhqQm/pA9HKLCQ5WBP1ORk2zcT9BhZ0LAgZcrPpbpqh-O",
+   "want_query": "device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=290100&version_name=29.1.0&cookie_enabled=true&screen_width=1920&screen_height=1080&browser_language=zh-CN&browser_platform=Win32&browser_name=Chrome&browser_version=130.0.0.0&browser_online=true&engine_name=Blink&engine_version=130.0.0.0&os_name=Windows&os_version=10&cpu_core_num=12&device_memory=8&platform=PC&downlink=10&effective_type=4g&round_trip_time=0&update_version_code=170400&aweme_id=7345492945006595379&msToken=AbCdEf0123456789%2B-%3D%3D&a_bogus=xvUfhttLmNWRPVKb8cjgS7FlcCjANPSyEtTxRirTyxKJOw0c-RNsBxbgnowhsDfsdmpwwq17mDU%2FYEdcsGUwZeHpLmpDuYXWLU5cIWXo2qqmGzvQLNbhezvFwwMnURGqaA5Ui1U62UrH6nVAhqQm%2FpA9HKLCQ5WBP1ORk2zcT9BhZ0LAgZcrPpbpqh-O&verifyFp=verify_mftfb1_A1B2C3D4E5F6G7H8I9J0K1L2M3N4_O5P6&fp=verify_mftfb1_A1B2C3D4E5F6G7H8I9J0K1L2M3N4_O5P6&uifid=UIFID_TEST_VALUE_32CHARS________&timestamp=1762600000&x-secsdk-web-signature=fc85938a8c5e64da7ed03243c4a144c4",
+   "want_signature": "fc85938a8c5e64da7ed03243c4a144c4",
+   "want_headers": {
+    "uifid": "UIFID_TEST_VALUE_32CHARS________",
+    "x-secsdk-web-signature": "fc85938a8c5e64da7ed03243c4a144c4",
+    "x-secsdk-web-expire": "1762600000"
+   }
+  }
+ ]
+}

@@ -24,7 +24,8 @@ FuyuBot 的广告拦截插件：一条消息进来，按「关键词 / 文件 / 
 
 - **`storage.mongo`（硬依赖）**：数据全部通过宿主里的 MongoDB 插件服务读写。插件在加载时声明了它——mongo 插件不在时本插件**不会激活**（停在 Pending），而不是静默地「不拦截」。
 - **FuyuBot 运行时**（ABI v6），发布包覆盖 Windows / Linux / macOS / Android，具体平台见 `plugin.json`。
-- **可选 `fuyubot.help.commands`**：装了宿主 help 插件时 `/help` 会列出下文的命令；没装也能正常使用。
+- **命令表由宿主提供**（`fuyubot.host.commands`）：本插件登记的命令带 `role` / `scopes`，宿主在分发前做角色闸门，`/help` 也按同一份能力过滤；宿主服务启动时就在，不需要等 help 插件。
+- **主人 / 管理员名单也归宿主**（`fuyubot.toml` 的 `[roles].owners` / `[roles].admins`）：插件不再自带 `owner_ids` / `admin_ids`。宿主闸门和 handler 内的复核读的是同一份角色，不会出现两套名单不一致。
 
 > mongo 插件就在本仓库的 [`crates/fuyubot-plugin-mongo`](../fuyubot-plugin-mongo/)；本插件只认服务名 `storage.mongo` 与它的 JSON 方法约定，两个插件各自独立发布。
 >
@@ -51,15 +52,10 @@ plugins/
 
 ## 配置
 
-全部在 `fuyubot.toml` 的 `[plugin.fuyubot.adblock]` 下，**只有这一个段、全部平铺**，所有项都可选：
+插件自己的配置全部在 `fuyubot.toml` 的 `[plugin.fuyubot.adblock]` 下，**只有这一个段、全部平铺**，所有项都可选：
 
 ```toml
 [plugin.fuyubot.adblock]
-# 能执行「仅 Bot 主人」命令的 TGID（/adkew /admatch /adaiadd /adaiset …）
-owner_ids = [123456789]
-# 「Bot 管理员」：可执行下面命令表里标了「主人/管理员」的那 6 条
-# （/qadid /delad /addkw /editkw /addfwdbl /rmfwdbl）；主人天然也算管理员
-admin_ids = [987654321]
 # 覆盖 mongo 插件的默认库（不写就用 mongo 插件的 db）
 db = "fuyubot"
 # 全局封禁审计频道（可选；默认关闭）
@@ -89,12 +85,19 @@ ai_db_topic = 3034
 
 > 密钥不要提交进版本库。本插件只从配置读密钥，仓库里没有任何密钥。
 
-各键的含义与默认值：
+主人 / 管理员**不在这个段里**：它们是宿主全局角色，写在根配置的 `[roles]`
+（插件经 `fuyubot.host.commands` 的 `role` 方法读）：
+
+```toml
+[roles]
+owners = [123456789]     # 主人：/adkew /admatch /adaiadd /adaiset …
+admins = [987654321]     # 全局管理员：/qadid /delad /addkw /editkw /addfwdbl /rmfwdbl
+```
+
+`[plugin.fuyubot.adblock]` 里各键的含义与默认值：
 
 | 键 | 不配置时 | 说明 |
 | --- | --- | --- |
-| `owner_ids` | 空 | Bot 主人；`/adkew` `/admatch` `/adaiadd` `/adaiset` 等主人命令只认这里 |
-| `admin_ids` | 空 | Bot 管理员；可执行 `/qadid` `/delad` `/addkw` `/editkw` `/addfwdbl` `/rmfwdbl` |
 | `db` | mongo 插件的 db | 覆盖本插件用的库名；多个 bot 共用一套 MongoDB 时用它隔离 |
 | `log_channel` / `log_topic` | 不发送 | 全局封禁审计频道及其话题 |
 | `ai_api_key` / `ai_base_url` / `ai_model` | 未配置 | 内置默认 AI 接口；没有它时只有「群自定义了接口」的群启用 AI |
@@ -106,7 +109,7 @@ ai_db_topic = 3034
 ## 快速开始
 
 1. 装好 mongo 插件，把 `[plugin.fuyubot.mongo]` 指到你的 MongoDB；
-2. 装本插件，在 `[plugin.fuyubot.adblock]` 里填 `owner_ids`（你自己的 TGID，不是 `@username`）；
+2. 装本插件，在 `fuyubot.toml` 的 `[roles].owners` 填你自己的 TGID（不是 `@username`）；
 3. 把 Bot 拉进群并设为管理员，在群里发 `/adconfig`：开关、处置方式、日志频道都在这里；
 4. 要用 AI：在 `/adconfig` 里给本群配接口，或由主人 `/adaiset add <chat_id>` 授权内置接口；
 5. 补规则：私聊 `/addkw ads 关键词`（同一组关键词按 AND 匹配，需同时出现），用 `/admatch 一段文本` 验证命中结果。

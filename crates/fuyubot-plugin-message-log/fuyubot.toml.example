@@ -1,0 +1,16 @@
+# FuyuBot 消息日志插件 —— 配置样例
+#
+# 把这一段并进项目的 fuyubot.toml。所有项都可选：不配也能启动。
+# 日志门槛在 [plugins].log_level（默认 info）；调成 warn 后本插件也会被挡掉。
+
+[plugin.fuyubot.message-log]
+# 总开关。false = 插件照常加载，但不订阅、什么都不打。
+enabled = true
+
+# 是否跳过本账号自己发出的消息（is_outgoing = true）。
+# 默认 false：与 TS 版 plugins/message_log.ts 一致，发出去的也记。
+ignore_outgoing = false
+
+# 单条正文最多保留多少个字符（按字符，不按字节）。
+# 0 = 不截断；默认 4096，正常 Telegram 文本消息不会触发。
+max_text_chars = 4096

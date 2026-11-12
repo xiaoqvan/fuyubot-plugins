@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "fuyubot.sqlite",
   "name": "SQLite Storage",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "kind": "native",
   "entry": "bin/fuyubot_plugin_sqlite.dll",
   "abi": 6,
@@ -15,7 +15,9 @@
     "android-aarch64",
     "android-x86_64"
   ],
-  "provides": ["fuyubot.sqlite"],
+  "provides": [
+    "fuyubot.sqlite"
+  ],
   "description": "注册 fuyubot.sqlite：参数化查询、表结构模板、事务批量写入，按插件隔离库文件。",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins"

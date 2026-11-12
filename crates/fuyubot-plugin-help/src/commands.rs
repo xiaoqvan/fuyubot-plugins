@@ -1,7 +1,10 @@
-//! `/help` 的整条链路：命令解析 → 取命令表 → 分组 → 出图 / 出文字 → 回复命令。
+//! `/help` 的整条链路：命令解析 → 取宿主命令表 → 权限过滤 → 分组 →
+//! 出图 / 出文字 → 回复命令。
 //!
-//! 命令按**登记它的插件**分组（`plugin` 由宿主判定，插件伪造不了）：图片里一个
-//! 插件一张卡片，组标题优先用宿主报告的展示名；没有归属的收在最后的「其它」里。
+//! 命令表归宿主（`fuyubot.host.commands`），本插件只读；`role` / `scopes` /
+//! `hidden` 决定谁能看见哪条命令。命令按**登记它的插件**分组（`plugin` 由宿主判定，
+//! 插件伪造不了）：图片里一个插件一张卡片，组标题优先用宿主报告的展示名；
+//! 没有归属的收在最后的「其它」里。
 //! `/help t` / `/help text` 走同一份分组数据的**文字版**，不渲染。
 //!
 //! 回复走**宿主的命令回复服务**（`fuyubot.host.command`，方法 `reply`）：普通的发
@@ -40,7 +43,21 @@ pub const IDENTITY_SERVICE: &str = "fuyubot.host.identity";
 /// 找到命令上下文，决定发新消息、编辑原命令还是发 ephemeral。
 pub const COMMAND_SERVICE: &str = "fuyubot.host.command";
 
-/// 回退文字版的长度上限：Telegram 单条消息 4096 字符，留一点余量。
+/// 宿主预置的**命令能力表**（方法 `register` / `list` / `role`）。
+///
+/// 从 FuyuBot 0.1.5 起命令表归宿主：插件在 `start()` 里登记，宿主按 owner 管
+/// 生命周期，`/help` 只读。旧的 `fuyubot.help.commands` 只是宿主提供的兼容别名，
+/// 本插件不再自己维护注册表。
+pub const HOST_COMMANDS: &str = "fuyubot.host.commands";
+
+/// 宿主的 TDLib 对象缓存（方法 `get`）。会话类型 / 成员身份优先读它，
+/// 未命中再问一次 TDLib——与内置 `/help` 的两级判断一致。
+const HOST_CACHE: &str = "fuyubot.host.cache";
+
+/// 权限判断时等 TDLib 的上限。跑在 `/help` 工作线程上，阻塞不影响接收循环。
+const LOOKUP_TIMEOUT_MS: u64 = 1_500;
+
+/// 回退文字版的长度上限：Telegram 单条消息 4096 个 **UTF-16 码元**，留一点余量。
 const FALLBACK_TEXT_LIMIT: usize = 3_800;
 
 /// 同时在跑的 `/help` 上限。渲染很吃 CPU，超出的请求直接丢弃（只记日志），
@@ -60,6 +77,8 @@ pub struct Command {
     pub args: String,
     /// `/help@SomeBot` 里点名的那个 bot；裸命令是 `None`。
     pub addressed_to: Option<String>,
+    /// 发送者 user id（频道帖子的发送者是频道身份，这里就是 `None`）。
+    pub sender_user_id: Option<i64>,
     /// 整条消息文本。
     pub text: String,
 }
@@ -121,6 +140,9 @@ pub fn command_of(update: &Value) -> Option<Command> {
         addressed_to: addressed_to
             .filter(|target| !target.is_empty())
             .map(str::to_owned),
+        sender_user_id: message
+            .pointer("/sender_id/user_id")
+            .and_then(Value::as_i64),
         text: text.to_owned(),
     })
 }
@@ -249,6 +271,280 @@ pub fn plugin_display_names(host: &HostApi) -> BTreeMap<String, String> {
         }
     }
     names
+}
+
+// ── 宿主命令表 + 权限过滤（FuyuBot 0.1.5） ────────────────────────
+//
+// 命令表的主人从 `/help` 插件换成了宿主：插件把命令登记进
+// `fuyubot.host.commands`，条目带 `role` / `scopes` / `hidden`；`/help` 只读
+// `list`，再按「当前用户的全局角色 × 当前会话类型 × 本会话管理权」过滤。
+//
+// 过滤必须在回复线程里做：群管理员要问 `getChatMember`，不能在接收循环上等
+// TDLib。会话类型与成员身份先读宿主缓存（`fuyubot.host.cache`），未命中再发一次
+// TDLib 请求，未命中且离线就按保守值处理。
+
+/// 会话类型（命令表 `scopes` 里的三种）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChatKind {
+    Private,
+    Group,
+    Channel,
+}
+
+/// 命令要求的最低角色（命令表 `role` 字段）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Role {
+    User,
+    ChatAdmin,
+    Admin,
+    Owner,
+}
+
+impl Role {
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "user" => Some(Self::User),
+            "chat_admin" | "chat-admin" | "chatadmin" => Some(Self::ChatAdmin),
+            "admin" => Some(Self::Admin),
+            "owner" => Some(Self::Owner),
+            _ => None,
+        }
+    }
+
+    /// 这个人能不能看到 / 使用要求该角色的命令。
+    fn allows(self, global: GlobalRole, chat_admin: bool) -> bool {
+        match self {
+            Self::User => true,
+            Self::ChatAdmin => chat_admin,
+            Self::Admin => matches!(global, GlobalRole::Admin | GlobalRole::Owner),
+            Self::Owner => global == GlobalRole::Owner,
+        }
+    }
+}
+
+/// 配置算出的全局角色（宿主 `role` 方法的 `global` 字段）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalRole {
+    User,
+    Admin,
+    Owner,
+}
+
+impl GlobalRole {
+    fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "owner" => Self::Owner,
+            "admin" => Self::Admin,
+            _ => Self::User,
+        }
+    }
+}
+
+/// `/help` 实际要显示的命令：宿主表 → 角色 / 会话 / `hidden` 过滤。
+/// 图片、文字版、统计数字都吃这同一份结果。
+fn visible_commands(host: &HostApi, chat_id: i64, sender_user_id: Option<i64>) -> Vec<Value> {
+    let kind = chat_kind(host, chat_id);
+    let global = global_role(host, sender_user_id);
+    let chat_admin = is_chat_admin(host, kind, chat_id, sender_user_id);
+    registered_commands(host)
+        .into_iter()
+        .filter(|entry| entry_visible(entry, global, kind, chat_admin))
+        .collect()
+}
+
+/// 从宿主读整张命令表。读不到 / 形状不对就空表——`/help` 回一句「没有可用命令」，
+/// 而不是把插件搞崩。
+fn registered_commands(host: &HostApi) -> Vec<Value> {
+    let Ok(raw) = host.call_service(HOST_COMMANDS, "list", "{}") else {
+        return Vec::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// 一条命令对当前用户 / 会话是否可见。
+///
+/// 缺字段按宿主默认值处理：`role = user`、`scopes = private + group`、
+/// `hidden = false`（老宿主 / 兼容别名登记的命令没有这几个字段）。
+fn entry_visible(entry: &Value, global: GlobalRole, kind: ChatKind, chat_admin: bool) -> bool {
+    if entry
+        .get("hidden")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    let role = entry
+        .get("role")
+        .and_then(Value::as_str)
+        .and_then(Role::parse)
+        .unwrap_or(Role::User);
+    if !role.allows(global, chat_admin) {
+        return false;
+    }
+    match entry.get("scopes").and_then(Value::as_array) {
+        Some(scopes) => scopes
+            .iter()
+            .filter_map(Value::as_str)
+            .any(|scope| scope_allows(scope, kind)),
+        None => kind != ChatKind::Channel,
+    }
+}
+
+fn scope_allows(raw: &str, kind: ChatKind) -> bool {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "private" | "pm" | "dm" => kind == ChatKind::Private,
+        "group" | "supergroup" => kind == ChatKind::Group,
+        "channel" => kind == ChatKind::Channel,
+        _ => false,
+    }
+}
+
+/// 问宿主「这个人的全局角色」：纯内存，不碰 TDLib。
+fn global_role(host: &HostApi, user_id: Option<i64>) -> GlobalRole {
+    let Some(user_id) = user_id else {
+        return GlobalRole::User;
+    };
+    let input = json!({ "user_id": user_id });
+    let Ok(raw) = host.call_service(HOST_COMMANDS, "role", &input.to_string()) else {
+        return GlobalRole::User;
+    };
+    let value: Value = serde_json::from_str(&raw).unwrap_or(Value::Null);
+    GlobalRole::parse(value.get("global").and_then(Value::as_str).unwrap_or(""))
+}
+
+/// 会话类型：先看缓存 / `getChat`，拿不到再退回 id 符号。
+fn chat_kind(host: &HostApi, chat_id: i64) -> ChatKind {
+    if chat_id > 0 {
+        return ChatKind::Private;
+    }
+    if let Some(kind) = cached_object(host, "chat", chat_id, None)
+        .as_ref()
+        .and_then(kind_of_chat)
+    {
+        return kind;
+    }
+    if let Some(kind) = td_call(host, json!({ "@type": "getChat", "chat_id": chat_id }))
+        .as_ref()
+        .and_then(kind_of_chat)
+    {
+        return kind;
+    }
+    // 负 id 是群 / 频道；分不清时按群处理（默认 scopes 就含 group）。
+    ChatKind::Group
+}
+
+/// `getChat` 的 `type`：`chatTypePrivate` / `chatTypeBasicGroup` /
+/// `chatTypeSupergroup`（再看 `is_channel`）。
+fn kind_of_chat(chat: &Value) -> Option<ChatKind> {
+    match chat.pointer("/type/@type")?.as_str()? {
+        "chatTypePrivate" => Some(ChatKind::Private),
+        "chatTypeBasicGroup" => Some(ChatKind::Group),
+        "chatTypeSupergroup" => {
+            let is_channel = chat
+                .pointer("/type/is_channel")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            Some(if is_channel {
+                ChatKind::Channel
+            } else {
+                ChatKind::Group
+            })
+        }
+        _ => None,
+    }
+}
+
+/// 群管理权。私聊恒 `false`；频道帖子的发送者本来就是频道身份，恒 `true`。
+///
+/// 群聊先读宿主缓存（`chat_member` 带 30 秒 TTL），未命中再问 TDLib；
+/// 查不到一律 `false`——不确定时说「没有」比说「有」安全。
+fn is_chat_admin(
+    host: &HostApi,
+    kind: ChatKind,
+    chat_id: i64,
+    sender_user_id: Option<i64>,
+) -> bool {
+    match kind {
+        ChatKind::Private => false,
+        ChatKind::Channel => true,
+        ChatKind::Group => {
+            let Some(user_id) = sender_user_id else {
+                return false;
+            };
+            let member = cached_object(host, "chat_member", chat_id, Some(user_id)).or_else(|| {
+                td_call(
+                    host,
+                    json!({
+                        "@type": "getChatMember",
+                        "chat_id": chat_id,
+                        "member_id": { "@type": "messageSenderUser", "user_id": user_id },
+                    }),
+                )
+            });
+            member.as_ref().is_some_and(member_is_admin)
+        }
+    }
+}
+
+fn member_is_admin(member: &Value) -> bool {
+    matches!(
+        member.pointer("/status/@type").and_then(Value::as_str),
+        Some("chatMemberStatusCreator" | "chatMemberStatusAdministrator")
+    )
+}
+
+/// 读宿主对象缓存：命中返回原始 TDLib 对象，未命中 / 离线返回 `None`。
+fn cached_object(host: &HostApi, kind: &str, id: i64, user_id: Option<i64>) -> Option<Value> {
+    let mut input = json!({ "kind": kind, "id": id });
+    if let Some(user_id) = user_id {
+        input["user_id"] = json!(user_id);
+    }
+    let raw = host
+        .call_service(HOST_CACHE, "get", &input.to_string())
+        .ok()?;
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    value.get("value").filter(|value| !value.is_null()).cloned()
+}
+
+/// 同步问一次 TDLib（`simplify_invoke` 的 `invoke` op，返回值直接拿）。
+///
+/// 只在 `/help` 工作线程上调用；超时 [`LOOKUP_TIMEOUT_MS`]，失败返回 `None`。
+fn td_call(host: &HostApi, request: Value) -> Option<Value> {
+    let op = json!({
+        "op": "invoke",
+        "args": { "request": request, "timeout_ms": LOOKUP_TIMEOUT_MS },
+    });
+    let raw = host.simplify_invoke_result(&op.to_string());
+    if raw.is_empty() {
+        return None;
+    }
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    (value.get("ok").and_then(Value::as_bool) == Some(true))
+        .then(|| value.get("result").cloned())
+        .flatten()
+}
+
+/// 把 `/help` 登记进宿主命令表。失败只记日志：`/help` 本身仍然能用，
+/// 只是它不出现在自己的列表里、也不受命令闸门保护。
+pub fn register_help(host: &HostApi) {
+    let input = json!({
+        "name": "help",
+        "description": "这条帮助（/help text 出文字版）",
+        "role": "user",
+        "scopes": ["private", "group", "channel"],
+    });
+    match host.call_service(HOST_COMMANDS, "register", &input.to_string()) {
+        Ok(reply) => {
+            let ok = serde_json::from_str::<Value>(&reply)
+                .ok()
+                .and_then(|value| value.get("ok").and_then(Value::as_bool))
+                .unwrap_or(false);
+            if !ok {
+                crate::log::warn(host, format!("help 登记进宿主命令表被拒：{reply}"));
+            }
+        }
+        Err(error) => crate::log::warn(host, format!("help 登记进宿主命令表失败：{error}")),
+    }
 }
 
 /// 按**登记它的插件**分组：组按插件名排序，「其它」永远在最后。
@@ -460,10 +756,18 @@ pub fn photo_content(path: &str) -> Value {
 }
 
 /// 一条纯文本的 `input_message_content`（关掉链接预览）。
+///
+/// `inputMessageText.text` 在 TDLib 里是 **`formattedText` 对象**，不是字符串。
+/// 直接塞字符串会被 TDLib 以 400 拒绝：
+/// `Failed to parse JSON object as TDLib request: Expected Object, but receive String`。
 pub fn text_content(text: &str) -> Value {
     json!({
         "@type": "inputMessageText",
-        "text": text,
+        "text": {
+            "@type": "formattedText",
+            "text": text,
+            "entities": [],
+        },
         "link_preview_options": {
             "@type": "linkPreviewOptions",
             "is_disabled": true,
@@ -549,11 +853,14 @@ pub fn run_help(
     config: Config,
     chat_id: i64,
     message_id: i64,
+    sender_user_id: Option<i64>,
     render_lock: Arc<Mutex<()>>,
     mode: HelpMode,
 ) {
-    let commands = crate::service::collect_commands();
     let names = plugin_display_names(&host);
+    // 宿主表 → 角色 / 会话 / hidden 过滤，在**分组之前**一次算完：图片卡片、
+    // 文字版、统计数字看到的是同一份结果，不会出现「图里没有、文字里有」。
+    let commands = visible_commands(&host, chat_id, sender_user_id);
 
     // `/help text`：直接出文字，不渲染、不占渲染锁。
     if mode == HelpMode::Text {
@@ -603,6 +910,7 @@ pub fn spawn_help(
     config: Config,
     chat_id: i64,
     message_id: i64,
+    sender_user_id: Option<i64>,
     render_lock: Arc<Mutex<()>>,
     workers: Arc<Mutex<Vec<JoinHandle<()>>>>,
     pending: Arc<AtomicUsize>,
@@ -628,7 +936,15 @@ pub fn spawn_help(
         .name("fuyubot-help".to_owned())
         .spawn(move || {
             let _guard = guard;
-            run_help(host, config, chat_id, message_id, render_lock, mode);
+            run_help(
+                host,
+                config,
+                chat_id,
+                message_id,
+                sender_user_id,
+                render_lock,
+                mode,
+            );
         });
     match spawned {
         Ok(handle) => handles.push(handle),
@@ -701,15 +1017,25 @@ pub fn help_text(commands: &[Value], names: &BTreeMap<String, String>) -> String
         }
         text.push('\n');
     }
-    truncate_chars(text, FALLBACK_TEXT_LIMIT)
+    truncate_utf16(text, FALLBACK_TEXT_LIMIT)
 }
 
-/// 按字符数截断（不能按字节切，中文会切坏）。
-fn truncate_chars(text: String, limit: usize) -> String {
-    if text.chars().count() <= limit {
+/// 按 UTF-16 码元截断：Telegram 的 4096 上限按 UTF-16 计（emoji 占 2 个），
+/// 按 `chars()` 算会被 emoji 多的说明撑爆。仍按字符边界切，不会切坏中文。
+fn truncate_utf16(text: String, limit: usize) -> String {
+    if text.encode_utf16().count() <= limit {
         return text;
     }
-    let mut out: String = text.chars().take(limit).collect();
+    let mut units = 0usize;
+    let mut out = String::new();
+    for character in text.chars() {
+        let width = character.len_utf16();
+        if units + width > limit {
+            break;
+        }
+        out.push(character);
+        units += width;
+    }
     out.push_str("\n…（已截断）");
     out
 }
@@ -733,6 +1059,7 @@ mod tests {
                 "@type": "message",
                 "id": 101,
                 "chat_id": 777,
+                "sender_id": { "@type": "messageSenderUser", "user_id": 888 },
                 "is_outgoing": false,
                 "content": {
                     "@type": "messageText",
@@ -746,6 +1073,7 @@ mod tests {
         assert_eq!(command.message_id, 101);
         assert_eq!(command.args, "参数");
         assert_eq!(command.addressed_to.as_deref(), Some("SomeBot"));
+        assert_eq!(command.sender_user_id, Some(888));
         // 传成 `update["message"]` 就一条命令都收不到。
         assert!(command_of(&update["message"]).is_none());
     }
@@ -777,6 +1105,7 @@ mod tests {
             name: "help".to_owned(),
             args: String::new(),
             addressed_to: Some("SomeBot".to_owned()),
+            sender_user_id: Some(42),
             text: "/help@SomeBot".to_owned(),
         };
         assert!(command.is_for(&["somebot".to_owned()]));
@@ -884,6 +1213,19 @@ mod tests {
         assert_eq!(content["photo"]["photo"]["path"], "/tmp/help.jpg");
     }
 
+    /// 文字版的 `text` 必须是 `formattedText` 对象；直接塞字符串会被 TDLib 以
+    /// `Expected Object, but receive String` 拒绝（历史上 `/help text` 就挂在这）。
+    #[test]
+    fn text_content_wraps_the_text_in_formatted_text() {
+        let content = text_content("/help — 这条帮助");
+        assert_eq!(content["@type"], "inputMessageText");
+        assert_eq!(content["text"]["@type"], "formattedText");
+        assert_eq!(content["text"]["text"], "/help — 这条帮助");
+        assert_eq!(content["text"]["entities"], json!([]));
+        assert!(content["text"].is_object(), "text 不能是字符串：{content}");
+        assert_eq!(content["link_preview_options"]["is_disabled"], true);
+    }
+
     /// 回复入参的形状是跨仓契约：`chat_id` / `message_id` 指命令消息，`payload` 装内容。
     #[test]
     fn reply_input_carries_command_ids() {
@@ -913,16 +1255,158 @@ mod tests {
     }
 
     #[test]
-    fn fallback_text_is_truncated_by_chars() {
+    fn fallback_text_is_truncated_by_utf16_units() {
         let long: Vec<Value> = (0..500)
-            .map(|index| json!({ "name": format!("cmd{index}"), "description": "很长的说明" }))
+            .map(|index| json!({ "name": format!("cmd{index}"), "description": "很长的说明 🚀" }))
             .collect();
         let text = help_text(&long, &BTreeMap::new());
-        assert!(text.chars().count() <= FALLBACK_TEXT_LIMIT + 10);
+        assert!(text.encode_utf16().count() <= FALLBACK_TEXT_LIMIT + 10);
         assert!(
             text.ends_with("（已截断）"),
             "{}",
             &text[text.len().saturating_sub(20)..]
         );
+    }
+
+    /// 权限过滤按宿主命令表的三个字段走；缺字段时按宿主默认值
+    /// （`user` / `private + group` / `hidden = false`）。
+    #[test]
+    fn visibility_follows_role_scopes_and_hidden() {
+        let user_command = json!({ "name": "x", "role": "user", "scopes": ["private", "group"] });
+        assert!(entry_visible(
+            &user_command,
+            GlobalRole::User,
+            ChatKind::Private,
+            false
+        ));
+        assert!(entry_visible(
+            &user_command,
+            GlobalRole::User,
+            ChatKind::Group,
+            false
+        ));
+        assert!(!entry_visible(
+            &user_command,
+            GlobalRole::User,
+            ChatKind::Channel,
+            false
+        ));
+
+        // 老登记没有 role / scopes / hidden：按默认值。
+        let legacy = json!({ "name": "legacy" });
+        assert!(entry_visible(
+            &legacy,
+            GlobalRole::User,
+            ChatKind::Group,
+            false
+        ));
+        assert!(!entry_visible(
+            &legacy,
+            GlobalRole::User,
+            ChatKind::Channel,
+            false
+        ));
+
+        // chat_admin 是「本会话管理员」，不是全局 admin。
+        let chat_admin = json!({ "name": "a", "role": "chat_admin", "scopes": ["group"] });
+        assert!(entry_visible(
+            &chat_admin,
+            GlobalRole::User,
+            ChatKind::Group,
+            true
+        ));
+        assert!(!entry_visible(
+            &chat_admin,
+            GlobalRole::User,
+            ChatKind::Group,
+            false
+        ));
+
+        // admin 要全局管理员 / 主人；owner 只要主人。
+        let admin = json!({ "name": "g", "role": "admin", "scopes": ["private"] });
+        assert!(entry_visible(
+            &admin,
+            GlobalRole::Admin,
+            ChatKind::Private,
+            false
+        ));
+        assert!(!entry_visible(
+            &admin,
+            GlobalRole::User,
+            ChatKind::Private,
+            false
+        ));
+        let owner = json!({ "name": "o", "role": "owner", "scopes": ["private"] });
+        assert!(entry_visible(
+            &owner,
+            GlobalRole::Owner,
+            ChatKind::Private,
+            false
+        ));
+        assert!(!entry_visible(
+            &owner,
+            GlobalRole::Admin,
+            ChatKind::Private,
+            false
+        ));
+
+        // hidden 只是不进列表，与角色无关。
+        let hidden = json!({ "name": "h", "hidden": true, "scopes": ["private"] });
+        assert!(!entry_visible(
+            &hidden,
+            GlobalRole::Owner,
+            ChatKind::Private,
+            true
+        ));
+
+        // 兼容写法与未知值：认不出就当 user / 不匹配。
+        assert_eq!(Role::parse("chat-admin"), Some(Role::ChatAdmin));
+        assert_eq!(Role::parse("chatadmin"), Some(Role::ChatAdmin));
+        assert_eq!(Role::parse("nope"), None);
+        assert!(scope_allows("supergroup", ChatKind::Group));
+        assert!(!scope_allows("channel", ChatKind::Group));
+    }
+
+    /// `getChat` 的三种类型映射；supergroup 再看 `is_channel`。
+    #[test]
+    fn chat_kind_is_read_from_the_chat_object() {
+        assert_eq!(
+            kind_of_chat(&json!({ "type": { "@type": "chatTypePrivate" } })),
+            Some(ChatKind::Private)
+        );
+        assert_eq!(
+            kind_of_chat(&json!({ "type": { "@type": "chatTypeBasicGroup" } })),
+            Some(ChatKind::Group)
+        );
+        assert_eq!(
+            kind_of_chat(&json!({
+                "type": { "@type": "chatTypeSupergroup", "is_channel": false }
+            })),
+            Some(ChatKind::Group)
+        );
+        assert_eq!(
+            kind_of_chat(&json!({
+                "type": { "@type": "chatTypeSupergroup", "is_channel": true }
+            })),
+            Some(ChatKind::Channel)
+        );
+        assert_eq!(kind_of_chat(&json!({})), None);
+    }
+
+    /// 成员状态只认群主 / 管理员；其它（成员、受限、离开）都不算。
+    #[test]
+    fn only_creator_or_administrator_counts_as_chat_admin() {
+        for status in ["chatMemberStatusCreator", "chatMemberStatusAdministrator"] {
+            assert!(member_is_admin(&json!({ "status": { "@type": status } })));
+        }
+        for status in [
+            "chatMemberStatusMember",
+            "chatMemberStatusRestricted",
+            "chatMemberStatusLeft",
+            "chatMemberStatusBanned",
+        ] {
+            assert!(!member_is_admin(&json!({ "status": { "@type": status } })));
+        }
+        assert!(!member_is_admin(&json!({})));
     }
 }

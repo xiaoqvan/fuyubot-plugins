@@ -16,18 +16,26 @@ macOS 用 `libfuyubot_plugin_mongo.dylib`。装好后重启机器人即可。
 
 ## 配置
 
-启动配置是一段 JSON（优先级：显式配置 > 环境变量 > 默认值）：
+配置写在宿主 `fuyubot.toml` 的 `[plugin.fuyubot.mongo]` 段里：
 
-```json
-{ "uri": "mongodb://127.0.0.1:27017", "db": "appdata", "timeout_ms": 10000, "app_name": "fuyubot" }
+```toml
+[plugin.fuyubot.mongo]
+uri = "mongodb://user:pass@127.0.0.1:27017/?authSource=admin"
+db = "anime"
+timeout_ms = 10000
 ```
 
-| 键 | 默认 | 环境变量 | 说明 |
-| --- | --- | --- | --- |
-| `uri` | `mongodb://127.0.0.1:27017` | `MONGO_URI` | 标准连接串，含副本集、SRV、账号密码；`mongodb+srv://` 由驱动自己解析 DNS |
-| `db` | `appdata` | `MONGO_DB` | 默认库名，调用时可用 `db` 覆盖 |
-| `timeout_ms` | `10000` | `MONGO_TIMEOUT_MS` | server selection + connect 超时（驱动默认 30 秒会把调用线程按住） |
-| `app_name` | `fuyubot` | `MONGO_APP_NAME` | 连接串没带 `appName` 时补上，云控制台按它区分客户端 |
+宿主 0.1.4 传给 `start()` 的是固定 JSON（`plugins_dir` / `scripts_dir` / `spawn`），
+**不会**带插件配置段，所以插件在 `start()` 里用 `host.get_config("fuyubot.mongo", "")`
+自己读一次；段里的键覆盖启动参数。**只认配置，不读环境变量。**
+日志里的连接串会把密码打码（`mongodb://user:***@host`）。
+
+| 键 | 默认 | 说明 |
+| --- | --- | --- |
+| `uri` | `mongodb://127.0.0.1:27017` | 标准连接串，含副本集、SRV、账号密码；`mongodb+srv://` 由驱动自己解析 DNS |
+| `db` | `appdata` | 库名，调用时可用 `db` 覆盖 |
+| `timeout_ms` | `10000` | server selection + connect 超时（驱动默认 30 秒会把调用线程按住） |
+| `app_name` | `fuyubot` | 连接串没带 `appName` 时补上，云控制台按它区分客户端 |
 
 `start()` 会真连一次，配错了在启动日志里就能看到，不用等第一条业务查询。**连不上不拦启动**：
 预热最多等 2 秒，超时就打一行

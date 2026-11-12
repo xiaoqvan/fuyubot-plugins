@@ -3,9 +3,9 @@
 FuyuBot 的 **`/help` 图片版**：把命令表渲染成一张图片发回聊天，替代框架内置的
 `/help` 文本回复。
 
-它不是「另一个 help」：**插件 id 与内置 help 相同（`fuyubot.help`）**，并且继续
-提供同一个进程级共享服务 `fuyubot.help.commands`（`register` / `list`）。所以
-`/start`、`/plugins`、adblock 等已经会向 `/help` 登记命令的插件**不用改一行代码**。
+它不是「另一个 help」：**插件 id 与内置 help 相同（`fuyubot.help`）**。从
+FuyuBot 0.1.5 起命令表归宿主（`fuyubot.host.commands`）：`/start`、`/plugins`、
+adblock 等插件各自登记，本插件只读 `list` 并按命令的能力过滤、渲染。
 
 [![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
 
@@ -13,7 +13,7 @@ FuyuBot 的 **`/help` 图片版**：把命令表渲染成一张图片发回聊�
 
 ## 它做什么
 
-- 订阅 `/help`（含 `/help@本Bot`），取当前命令注册表，交给
+- 订阅 `/help`（含 `/help@本Bot`），问宿主要当前命令表（`fuyubot.host.commands` 的 `list`），交给
   [`fuyubot.html2img`](../fuyubot-plugin-html2img/) 渲染成 JPEG / PNG，再按
   `reply_to_message_id` 发回原消息。
 - `/help t` / `/help text` 回**文字版**：同一份分组数据，不渲染、不吃 CPU，图片太大或
@@ -24,10 +24,12 @@ FuyuBot 的 **`/help` 图片版**：把命令表渲染成一张图片发回聊�
 - **命令按插件分组**：一个登记命令的插件一张卡片，组标题优先用宿主报告的展示名
   （`广告拦截（adblock）`），没有归属的收在最后的「其它」里。归属由宿主判定
   （ABI v6 的调用者栈）——登记方在自己的线程上调进来也认得，插件自报的名字不算数。
-  `list` 服务仍回扁平数组，与内置 help 一致。
 - 图片生成 / 发送失败时，按配置补发一条**纯文本命令表**（`fallback_text = true`），
   保证 `/help` 不会什么都不回。
-- 静态兜底 `start` / `help` / `plugins` 三条与内置一致：对应插件没动态登记时补位。
+- **按宿主命令表的权限过滤**：`hidden` 不进列表；`role`（user / chat_admin / admin /
+  owner）和 `scopes`（private / group / channel）按当前用户与会话裁剪。图片版、
+  文字版、统计数字吃同一份过滤结果。
+- 不再维护静态兜底：`start` / `help` / `plugins` 都由各自插件登记，没登记就不显示。
 
 ## 硬依赖：`fuyubot.html2img`
 
@@ -100,6 +102,21 @@ fallback_text = true
 | `send_timeout_ms` | `30000` | 等 TDLib 发送结果的预算 |
 | `fallback_text` | `true` | 出图 / 发送失败时补发文字版 |
 
+### 权限与可见性
+
+「谁能在哪看见哪条命令」不再由 help 自己的白 / 黑名单决定，而是**由命令表里的
+`role` / `scopes` / `hidden` 决定**——登记命令的插件写什么，`/help` 就按什么过滤：
+
+| 字段 | 默认 | `/help` 行为 |
+| --- | --- | --- |
+| `hidden` | `false` | `true` 时不进列表 |
+| `role` | `user` | `user` / `chat_admin`（本群管理）/ `admin` / `owner` 逐级过滤 |
+| `scopes` | `private + group` | 只显示与当前会话类型（私聊 / 群 / 频道）匹配的命令 |
+
+过滤在 `/help` 的工作线程里做：全局角色问宿主 `role` 方法（纯内存），会话类型与
+群管理权先读宿主对象缓存（`fuyubot.host.cache`，`chat_member` 30 秒 TTL），
+未命中再问一次 TDLib。因此群管理员能看到 `chat_admin` 命令，普通群员看不到。
+
 > `image` 走 html2img 的远程资源能力（仅公网 `http(s)` 与 `data:`；不要填
 > `file://` 或局域网地址）。头图拉取失败不会让整张图失败，只是没有头图。
 > 完全不想联网就写 `image = ""`。`data:` 会算进 html2img 的 `max_html_bytes`
@@ -107,11 +124,12 @@ fallback_text = true
 
 ## 和其它插件的关系
 
-- **本插件提供** `fuyubot.help.commands`：`register` / `list` 与内置 help 同契约。
+- **命令表由宿主提供**：其它插件在 `start()` 里
+  `call_service("fuyubot.host.commands", "register", ...)`，登记时带上
+  `role` / `scopes` / `hidden`；旧的 `fuyubot.help.commands` 是宿主的兼容别名，
+  新代码不要再用，也不需要 `soft_inject` 等 help。
 - **本插件硬依赖** `fuyubot.html2img`：图片渲染服务。
-- 其它插件照旧 `soft_inject(["fuyubot.help.commands"])`，在 `start()` 里
-  `call_service("fuyubot.help.commands", "register", ...)` 即可；图片版与文字版
-  对它们没有区别。
+- 命令表在宿主里，所以 help 没装、被禁用或卸载都不影响其它插件登记命令。
 
 ## 开发
 
@@ -121,7 +139,7 @@ cargo test -p fuyubot-plugin-help
 
 # 打 bundle（与其它插件同一套脚本）
 python scripts/package.py --plugin fuyubot-plugin-help \
-    --platform windows-x86_64 --version 0.1.0
+    --platform windows-x86_64 --version 0.1.3
 ```
 
 模板在 [`assets/help.html`](assets/help.html)：布局参照 `help.vue`（Tailwind 版），

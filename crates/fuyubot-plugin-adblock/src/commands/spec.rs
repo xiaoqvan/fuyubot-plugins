@@ -4,11 +4,11 @@
 //!
 //! ## 为什么需要这张表
 //!
-//! TS 的插件框架替插件做 scope 与 permission 校验（`PluginValidator.ts`）；
-//! FuyuBot **没有这一层**——[`crate::simplify::command_of`] 只解析
-//! `/cmd@bot args` 并过滤「点名给别人的」，`Command` 结构里连 sender 都没有。
-//! 所以那一层只能由插件补，而补法必须是「一张表 + 一个入口」，散在 17 个 handler
-//! 里必然漏（本插件此前就漏了 private scope 与 `admin` 档）。
+//! TS 的插件框架替插件做 scope 与 permission 校验（`PluginValidator.ts`）。
+//! FuyuBot 0.1.5 起宿主命令表也能按 `role` / `scopes` 在**分发前**拦，但
+//! 「本群管理员」这类判断要查群成员，仍由插件在自己的入口里做。两层叠加，
+//! 所以表里的 scope / permission 仍是唯一真相——散在 17 个 handler 里必然漏
+//! （本插件此前就漏了 private scope 与 `admin` 档）。
 //!
 //! ## 三条约定
 //!
@@ -20,7 +20,7 @@
 //! 3. **scope 先于 permission**：私聊命令在群里连「仅限主人」都不该说。
 //!
 //! `/help` 由宿主内置 help 插件统一渲染，本插件在 `start()` 里把 [`COMMANDS`]
-//! 登记进 `fuyubot.help.commands`（软依赖，见 [`super::HELP_SERVICE`]）。
+//! 登记进宿主命令表 `fuyubot.host.commands`（见 [`super::HOST_COMMANDS`]）。
 
 use std::future::Future;
 use std::pin::Pin;
@@ -46,17 +46,44 @@ pub enum Scope {
     Group,
 }
 
+impl Scope {
+    /// 命令表 `scopes` 字段。`All` 就是默认的「私聊 + 群」，不含频道。
+    pub fn scopes(self) -> &'static [&'static str] {
+        match self {
+            Self::All => &["private", "group"],
+            Self::Private => &["private"],
+            Self::Group => &["group"],
+        }
+    }
+}
+
 /// 谁能执行（对应 TS `cmdHandlers[*].permission`）。
 ///
 /// TS 的 `all` / `admin` / `owner` 三档：
 /// - `all`：任何人（群命令通常还会在 handler 里再查一次群管理员）；
-/// - `admin`：Bot 主人 **或** `admin_ids` 里的人（TS 的 `super_admin` / `admin[]`）；
-/// - `owner`：仅 Bot 主人（`owner_ids`）。
+/// - `admin`：宿主全局管理员 **或** 主人（`[roles].admins` / `[roles].owners`）；
+/// - `owner`：仅主人（`[roles].owners`）。
+///
+/// 名单归宿主，插件不再自带 `owner_ids` / `admin_ids`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Permission {
     All,
     Admin,
     Owner,
+}
+
+impl Permission {
+    /// 命令表 `role` 字段：宿主在分发前按它做角色闸门，`/help` 也按它过滤。
+    ///
+    /// `Administrator` / `Owner` 是**全局**角色（`[roles]`），与群里 Telegram
+    /// 管理员的 `chat_admin` 不是一回事；`All` 命令自己仍会在 handler 里查群管。
+    pub fn role(self) -> &'static str {
+        match self {
+            Self::All => "user",
+            Self::Admin => "admin",
+            Self::Owner => "owner",
+        }
+    }
 }
 
 /// 一条命令的声明。
@@ -84,8 +111,13 @@ impl CommandSpec {
     pub fn allows_permission(&self, rt: &Runtime, sender: Sender) -> bool {
         match self.permission {
             Permission::All => true,
-            Permission::Owner => sender.user_id().is_some_and(|id| rt.cfg.is_owner(id)),
-            Permission::Admin => sender.user_id().is_some_and(|id| rt.cfg.is_bot_admin(id)),
+            // 主人 / 管理员是**宿主全局角色**（`[roles]`），插件不再自己存名单。
+            Permission::Owner => sender
+                .user_id()
+                .is_some_and(|id| crate::roles::global_role(&rt.host, id).is_owner()),
+            Permission::Admin => sender
+                .user_id()
+                .is_some_and(|id| crate::roles::global_role(&rt.host, id).is_admin()),
         }
     }
 }

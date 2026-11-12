@@ -6,25 +6,24 @@
 //! | --- | --- | --- |
 //! | `/adconfig` `/setlogchannel` `/whitelist` `/rmwhitelist` `/spam` | 群 | 所有人（handler 里再查群管理员） |
 //! | `/qban` | 任意 | 所有人 |
-//! | `/qadid` `/delad` `/addkw` `/editkw` `/addfwdbl` `/rmfwdbl` | 私聊 | Bot 主人 或 `admin_ids` |
-//! | `/adkew` `/admatch` `/adaiadd` `/adaiset` | 私聊 | Bot 主人 |
+//! | `/qadid` `/delad` `/addkw` `/editkw` `/addfwdbl` `/rmfwdbl` | 私聊 | 宿主 `[roles].admins` 或主人 |
+//! | `/adkew` `/admatch` `/adaiadd` `/adaiset` | 私聊 | 宿主 `[roles].owners`（主人） |
 //! | `/start aiConfig_<chat_id>` | 私聊 | 所有人（handler 里查目标群管理员） |
 //!
-//! ## 为什么权限在这里，而不是在封装里
+//! ## 权限
 //!
-//! [`command_of`] 只解析 `/cmd@bot args`，「点名给别人的」靠 [`Command::is_for`] 过滤，
-//! `Command` 里没有 sender；宿主也没有命令权限层。TS 的框架有（`PluginValidator`），
-//! 所以这一层由本插件用 [`spec`] 补上——**一张表 + 一个入口**，而不是散在 17 个
-//! handler 里（散着必然漏：`private` 作用域与 `admin` 档此前就漏了）。
+//! ABI v6 起宿主有了命令能力表：`role` / `scopes` 在分发前就能拦。本插件仍保留
+//! [`spec`] 里的 scope / permission 检查——群管、主人这些判断要查本群成员，
+//! handler 自己最清楚；两层是**叠加**的，不改 TS 版的语义。
 //!
 //! 拒绝是**静默**的：TS 的 `validateCommandAccess` 不通过就 `continue`，
 //! 群里可能还装着别的 bot，回一句「你没权限」只会暴露命令存在。
 //!
 //! ## `/help`
 //!
-//! 宿主内置 help 插件通过服务 [`HELP_SERVICE`] 收集命令；[`register_to_help`] 在
-//! `start()` 里登记 [`spec::COMMANDS`]。它是**软依赖**（`soft_inject`）：help 缺席时
-//! 插件照常启动，只是 `/help` 里少本插件这几行。
+//! 命令表归宿主（[`HOST_COMMANDS`]）；[`register_commands`] 在 `start()` 里登记
+//! [`spec::COMMANDS`] 并带上 `role` / `scopes`。宿主服务启动时就在，登记失败不是
+//! 启动失败：`/help` 里少本插件几行而已。
 
 pub mod ai_config;
 pub mod ai_keywords;
@@ -46,10 +45,10 @@ use crate::api::Sender;
 use crate::log;
 use crate::runtime::Runtime;
 
-/// 宿主内置 `/help` 插件的命令注册服务（进程级共享，方法名 `register`）。
+/// 宿主预置的命令能力表（方法 `register`）。
 ///
 /// 跨仓契约：名字写错不会报错，只会让登记静默失败、`/help` 里看不到本插件的命令。
-pub const HELP_SERVICE: &str = "fuyubot.help.commands";
+pub use crate::roles::HOST_COMMANDS;
 
 /// 命令入口：查表 → scope → permission → handler。
 ///
@@ -103,39 +102,42 @@ pub fn words(command: &crate::simplify::Command) -> Vec<String> {
     command.args.split_whitespace().map(str::to_owned).collect()
 }
 
-/// help 插件的登记入参：`{"name":"…","description":"…"}`。
-fn help_payload(spec: &spec::CommandSpec) -> String {
-    serde_json::json!({ "name": spec.name, "description": spec.summary }).to_string()
+/// 命令表的登记入参：`{"name","description","role","scopes"}`。
+///
+/// `role` 由 [`spec::Permission`] 决定，`scopes` 由 [`spec::Scope`] 决定；`hidden`
+/// 不写（默认 `false`），本插件的命令都要在 `/help` 里露面。
+fn command_payload(spec: &spec::CommandSpec) -> String {
+    serde_json::json!({
+        "name": spec.name,
+        "description": spec.summary,
+        "role": spec.permission.role(),
+        "scopes": spec.scope.scopes(),
+    })
+    .to_string()
 }
 
-/// help 插件成功时回 `{"ok":true}`，入参不合法回 `{"error":"…"}`。
+/// 宿主成功时回 `{"ok":true,…}`，入参不合法回 `{"error":"…"}`。
 ///
 /// ABI v6 起 `call_service` 的 `Err` 是**真失败**（服务不存在 / 没这个方法 / 入参非法，
 /// 原因由宿主经 `last_error` 带回）；`Ok` 只表示调用回来了，所以还要看回包——
-/// `{"error":…}` 表示 help 拒了这条命令，不能算登记成功。
-fn help_accepted(reply: &str) -> bool {
+/// `{"error":…}` 表示宿主拒了这条命令（比如同名冲突），不能算登记成功。
+fn registration_accepted(reply: &str) -> bool {
     serde_json::from_str::<Value>(reply)
         .ok()
         .and_then(|value| value.get("ok").and_then(Value::as_bool))
         == Some(true)
 }
 
-/// 把 [`spec::COMMANDS`] 全部登记进宿主 `/help`，返回 `(成功条数, 第一条错误)`。
+/// 把 [`spec::COMMANDS`] 全部登记进宿主命令表，返回 `(成功条数, 第一条错误)`。
 ///
-/// **登记失败不是启动失败**：help 只是入口，缺了它 `/help` 少几行，
-/// 不该让整个插件停在 Pending——所以调用方只 warn，不 `?`。
-pub fn register_to_help(host: &HostApi) -> (usize, Option<String>) {
-    if host.get_service(HELP_SERVICE).is_null() {
-        return (
-            0,
-            Some(format!("宿主没有 {HELP_SERVICE}（没装 help 插件）")),
-        );
-    }
+/// **登记失败不是启动失败**：命令表只是 `/help` 与闸门的入口，缺了它命令本身
+/// 仍然能用，不该让整个插件停在 Pending——所以调用方只 warn，不 `?`。
+pub fn register_commands(host: &HostApi) -> (usize, Option<String>) {
     let mut registered = 0;
     let mut first_error = None;
     for spec in spec::COMMANDS {
-        let outcome = match host.call_service(HELP_SERVICE, "register", &help_payload(spec)) {
-            Ok(reply) if help_accepted(&reply) => Ok(()),
+        let outcome = match host.call_service(HOST_COMMANDS, "register", &command_payload(spec)) {
+            Ok(reply) if registration_accepted(&reply) => Ok(()),
             Ok(reply) => Err(format!("/{} 被拒：{reply}", spec.name)),
             Err(error) => Err(format!("/{} 登记失败：{error}", spec.name)),
         };
@@ -202,5 +204,30 @@ mod tests {
     fn only_registered_names_are_commands() {
         assert!(spec::find("adconfig").is_some());
         assert!(spec::find("接单").is_none());
+    }
+
+    /// 登记到宿主命令表时，scope / permission 必须翻译成 `scopes` / `role`——
+    /// 少了它们，宿主闸门与 `/help` 都只能按最宽松的默认值处理。
+    #[test]
+    fn registration_payload_carries_role_and_scopes() {
+        let payload = |name: &str| -> Value {
+            serde_json::from_str(&command_payload(spec::find(name).expect("命令存在")))
+                .expect("登记入参是 JSON")
+        };
+
+        let addkw = payload("addkw");
+        assert_eq!(addkw["name"], "addkw");
+        assert_eq!(addkw["role"], "admin");
+        assert_eq!(addkw["scopes"], serde_json::json!(["private"]));
+
+        let adkew = payload("adkew");
+        assert_eq!(adkew["role"], "owner");
+
+        let adconfig = payload("adconfig");
+        assert_eq!(adconfig["role"], "user");
+        assert_eq!(adconfig["scopes"], serde_json::json!(["group"]));
+
+        let qban = payload("qban");
+        assert_eq!(qban["scopes"], serde_json::json!(["private", "group"]));
     }
 }

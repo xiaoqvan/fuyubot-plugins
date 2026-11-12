@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "fuyubot.message-log",
+  "name": "Message Log",
+  "version": "0.1.1",
+  "kind": "native",
+  "entry": "bin/fuyubot_plugin_message_log.dll",
+  "abi": 6,
+  "platforms": [
+    "windows-x86_64",
+    "windows-aarch64",
+    "linux-x86_64",
+    "linux-aarch64",
+    "macos-aarch64",
+    "android-aarch64",
+    "android-x86_64"
+  ],
+  "description": "把收到的新消息（文本 / 图片 / 视频 / 文件 / 音频 / 贴纸 / 回复 / 转发 / 话题…）拼成一行，按 FuyuBot 的插件日志格式打印到控制台、TUI 日志页和 logs/fuyubot.log。",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins"
+}

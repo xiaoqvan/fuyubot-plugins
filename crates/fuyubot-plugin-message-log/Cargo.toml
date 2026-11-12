@@ -1,0 +1,20 @@
+[package]
+name = "fuyubot-plugin-message-log"
+description = "FuyuBot 消息日志插件：把收到的新消息按框架日志格式打印到控制台 / 日志页 / logs/fuyubot.log"
+version = "0.1.1"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主 dlopen；rlib 让单测直接测渲染与配置解析。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# 只用 current_thread runtime：TDLib 的 getChat / getUser 要 await，
+# 但一次只处理一条消息，不需要多线程执行器。
+tokio.workspace = true

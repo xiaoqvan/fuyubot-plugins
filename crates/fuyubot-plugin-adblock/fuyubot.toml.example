@@ -1,17 +1,14 @@
 # FuyuBot 广告拦截插件 —— 配置样例
 #
 # 把这一段并进项目的 fuyubot.toml。所有项都可选：不配也能启动，
-# 只是「仅 Bot 主人」命令与内置 AI 接口不可用。
+# 只是内置 AI 接口不可用。
+#
+# 主人 / 管理员名单不在这里：它们是宿主全局角色，写在根配置的 [roles] 段。
+#   [roles]
+#   owners = [123456789]   # 主人：/adkew /admatch /adaiadd /adaiset …
+#   admins = [987654321]   # 全局管理员：/qadid /delad /addkw /editkw /addfwdbl /rmfwdbl
 
 [plugin.fuyubot.adblock]
-# 能执行「仅 Bot 主人」命令的 TGID（不是 @username）。
-owner_ids = [123456789]
-
-# 「Bot 管理员」：可执行 TS 里 permission=admin 的 6 条命令
-# （/qadid /delad /addkw /editkw /addfwdbl /rmfwdbl）；主人天然也算管理员。
-# 不配时这 6 条只有 owner_ids 能用。
-admin_ids = [987654321]
-
 # 覆盖 mongo 插件的默认库。留空 / 删掉 = 用 mongo 插件的 db。
 # 想接 TS 版的老库，把这里指到 TS 版用的库名即可。
 db = "fuyubot"

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "id": "fuyubot.music",
+  "name": "Music Parser",
+  "version": "0.1.2",
+  "kind": "native",
+  "entry": "bin/fuyubot_plugin_music.dll",
+  "abi": 6,
+  "platforms": [
+    "windows-x86_64",
+    "windows-aarch64",
+    "linux-x86_64",
+    "linux-aarch64",
+    "macos-aarch64",
+    "android-aarch64",
+    "android-x86_64"
+  ],
+  "optional_depends": [
+    "fuyubot.sqlite"
+  ],
+  "description": "网易云音乐 / 汽水音乐：搜索、分享链接或 ID 解析、指定音质发音频，汽水 UGC 音乐视频发视频；装了 SQLite 时按「音乐 id + 音质」缓存文件 id。",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins"
+}

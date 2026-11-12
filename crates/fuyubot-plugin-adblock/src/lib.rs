@@ -33,7 +33,7 @@
 //!
 //! 1. **密钥不硬编码**：原代码里的 API Key 已提交进仓库，这里只从配置读；
 //! 2. **总日志频道可配**（默认不开）：原代码写死某个频道的固定话题；
-//! 3. **「Bot 主人」= `owner_ids`**：FuyuBot 没有框架级的 owner 概念；
+//! 3. **「Bot 主人 / 管理员」用宿主 `[roles]`**：插件不再自带 `owner_ids` / `admin_ids`；
 //! 4. **数据库换成 `storage.mongo`**：不再自带连接池，也不再依赖宿主私有的 db API；
 //! 5. **链接预览自己抓**：不拖 `link-preview-js`，只取 `<title>` 与 description。
 
@@ -49,6 +49,7 @@ mod config;
 mod detect;
 mod flow;
 mod log;
+mod roles;
 mod runtime;
 /// 本地化的 simplify 层（上游 `fuyubot-simplify` 的裁剪版，不依赖该 crate）。
 pub mod simplify;
@@ -106,24 +107,18 @@ impl Plugin for AdblockPlugin {
             ),
         );
 
-        // 命令表登记进宿主的 `/help`。失败只 warn：help 是入口不是业务，
-        // 缺了它也没理由把插件拖成 Pending。
-        let (registered, help_error) = commands::register_to_help(&self.host);
-        match help_error {
+        // 命令登记进宿主命令表（`/help` 与命令闸门都读它）。失败只 warn：
+        // 命令表是入口不是业务，缺了它也没理由把插件拖成 Pending。
+        let (registered, registration_error) = commands::register_commands(&self.host);
+        match registration_error {
             Some(error) => log::warn(
                 &self.host,
                 format!(
-                    "向 /help 登记命令只成功 {registered}/{} 条：{error}",
+                    "向宿主命令表登记只成功 {registered}/{} 条：{error}",
                     commands::spec::COMMANDS.len()
                 ),
             ),
-            None => log::info(&self.host, format!("已向 /help 登记 {registered} 条命令")),
-        }
-        if runtime.cfg.owner_ids.is_empty() && runtime.cfg.admin_ids.is_empty() {
-            log::warn(
-                &self.host,
-                "owner_ids / admin_ids 都没配：管理员命令（/qadid /addkw …）无人可用",
-            );
+            None => log::info(&self.host, format!("已向宿主登记 {registered} 条命令")),
         }
 
         // 建索引 + 连通性探测都是幂等的慢操作，丢给 tokio 任务。
@@ -216,13 +211,9 @@ impl Plugin for AdblockPlugin {
         vec![store::SERVICE.to_owned()]
     }
 
-    /// **软依赖**：宿主内置 help 插件的命令注册服务。
-    ///
-    /// 声明它只是让宿主先把 help 插件就绪，`start()` 里的
-    /// [`commands::register_to_help`] 才不会扑空；没装 help 时本插件照常启动，
-    /// 只是 `/help` 里看不到这 17 条命令。
+    /// 没有软依赖：命令表服务由宿主预置，启动时就在。
     fn soft_inject() -> Vec<String> {
-        vec![commands::HELP_SERVICE.to_owned()]
+        Vec::new()
     }
 }
 

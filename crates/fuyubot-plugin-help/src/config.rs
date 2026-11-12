@@ -18,6 +18,10 @@
 //! send_timeout_ms = 30000
 //! fallback_text = true
 //! ```
+//!
+//! 「谁能在哪看见哪条命令」不再由本插件配置：命令的 `role` / `scopes` /
+//! `hidden` 由登记它的插件写进宿主命令表（`fuyubot.host.commands`），
+//! `/help` 只按宿主给的能力过滤。
 
 use fuyubot_abi::HostApi;
 use serde::Deserialize;
@@ -68,7 +72,7 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// 展示用版本号：`v0.1.0`。
+/// 展示用版本号：`v0.1.3`。
 pub fn version_label() -> String {
     format!("v{}", version())
 }

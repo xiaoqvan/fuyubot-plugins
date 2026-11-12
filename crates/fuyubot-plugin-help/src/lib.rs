@@ -1,16 +1,16 @@
 //! FuyuBot `/help` 图片版插件（`fuyubot.help`）。
 //!
-//! 它**替代框架内置 help 插件**：id 相同（`fuyubot.help`），并且继续提供同一个
-//! 进程级共享服务 `fuyubot.help.commands`（`register` / `list`），所以 `/start`、
-//! `/plugins`、adblock 等插件不用改一行代码就能把命令登记进来。
+//! 它**替代框架内置 help 插件**：id 相同（`fuyubot.help`）。从 FuyuBot 0.1.5 起，
+//! 命令表归宿主（`fuyubot.host.commands`）：其它插件在 `start()` 里登记，宿主按
+//! owner 管生命周期，本插件只读 `list` 并渲染。
 //!
 //! ## 与内置 help 的差异
 //!
 //! | | 内置 help | 本插件 |
 //! | --- | --- | --- |
 //! | `/help` 回复 | Markdown 文本 | **图片**（命令表渲染） |
-//! | 命令注册服务 | `fuyubot.help.commands` | 同名同方法，兼容 |
-//! | 命令分组 | 按插件标归属 | **一张平表**（不分组） |
+//! | 命令表 | 宿主 `fuyubot.host.commands` | 同一张表（只读） |
+//! | 命令分组 | 按插件标归属 | 按插件分组出卡片 |
 //! | 依赖 | 无 | **硬依赖** `fuyubot.html2img` |
 //!
 //! ## 硬依赖
@@ -42,7 +42,6 @@
 mod commands;
 mod config;
 mod log;
-mod service;
 mod template;
 
 use std::sync::atomic::AtomicUsize;
@@ -58,8 +57,6 @@ pub struct HelpPlugin {
     host: HostApi,
     /// `/help` 命令订阅：drop 就退订。
     subscription: Option<commands::EventSubscription>,
-    /// `fuyubot.help.commands` 的服务表；`stop()` 放下即释放。
-    service: Option<Box<service::HelpService>>,
     /// 启动时读到的配置快照。
     config: Config,
     /// 渲染是同步且吃 CPU 的：同一时刻只让一张图在渲染。
@@ -79,7 +76,6 @@ impl Plugin for HelpPlugin {
         Ok(Self {
             host,
             subscription: None,
-            service: None,
             config: Config::default(),
             render_lock: Arc::new(Mutex::new(())),
             workers: Arc::new(Mutex::new(Vec::new())),
@@ -104,29 +100,10 @@ impl Plugin for HelpPlugin {
             ));
         }
 
-        // 1) 把命令注册表暴露成进程级共享服务——与内置 help 的服务名、方法完全一致。
-        let service = service::HelpService::new(host);
-        let handle = host.provide_service_shared(service::SERVICE_NAME, service.vtable());
-        if handle.is_valid() {
-            self.service = Some(service);
-        } else {
-            log::error(
-                &host,
-                format!(
-                    "注册共享服务 {} 失败：其它插件将无法向 /help 登记命令",
-                    service::SERVICE_NAME
-                ),
-            );
-        }
+        // 1) 把 /help 自己登记进宿主命令表（其它命令由各插件各自登记）。
+        commands::register_help(&host);
 
-        // 2) 登记 /help 自己（其它命令由各插件经上面的服务登记）。
-        service::register_command(
-            "help",
-            "这条帮助（/help text 出文字版）",
-            Some(config::PLUGIN_NAME),
-        );
-
-        // 3) 订阅 /help；回调里只解析命令 + 起线程。
+        // 2) 订阅 /help；回调里只解析命令 + 起线程。
         let config_for_handler = config.clone();
         let render_lock = Arc::clone(&self.render_lock);
         let workers = Arc::clone(&self.workers);
@@ -141,6 +118,7 @@ impl Plugin for HelpPlugin {
                 config_for_handler.clone(),
                 command.chat_id,
                 command.message_id,
+                command.sender_user_id,
                 Arc::clone(&render_lock),
                 Arc::clone(&workers),
                 Arc::clone(&pending),
@@ -154,13 +132,13 @@ impl Plugin for HelpPlugin {
         log::info(
             &host,
             format!(
-                "help 已就绪（图片版）：{}×{} @{} → {}，依赖 {}，注册服务 {}",
+                "help 已就绪（图片版）：{}×{} @{} → {}，依赖 {}，命令表 {}",
                 self.config.width,
                 self.config.height,
                 self.config.scale,
                 self.config.format,
                 config::HTML2IMG_SERVICE,
-                service::SERVICE_NAME
+                commands::HOST_COMMANDS
             ),
         );
         if self.config.image.is_empty() {
@@ -174,7 +152,6 @@ impl Plugin for HelpPlugin {
         // 先断输入，再等等在飞的工作线程：反过来会留下「线程在跑、新命令又进来」的窗口。
         let started = std::mem::replace(&mut self.started, false);
         self.subscription = None;
-        self.service = None;
 
         let mut workers = self
             .workers
@@ -206,7 +183,7 @@ impl Plugin for HelpPlugin {
     }
 
     fn description() -> &'static str {
-        "把 /help 渲染成图片（/help text 出文字版），按插件分组"
+        "读取宿主命令表并渲染 /help 图片（/help text 出文字版），按插件分组"
     }
 }
 
@@ -224,8 +201,8 @@ mod tests {
     }
 
     #[test]
-    fn service_name_matches_the_builtin_contract() {
-        // 跨仓契约：名字写错不会报错，只会让所有插件静默登记失败。
-        assert_eq!(service::SERVICE_NAME, "fuyubot.help.commands");
+    fn host_command_table_name_matches_the_contract() {
+        // 跨仓契约：名字写错不会报错，只会让 /help 读到空表。
+        assert_eq!(commands::HOST_COMMANDS, "fuyubot.host.commands");
     }
 }

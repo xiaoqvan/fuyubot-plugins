@@ -1,0 +1,22 @@
+[package]
+name = "fuyubot-plugin-douyin"
+description = "FuyuBot 抖音解析插件：/dy 命令 + 聊天里自动识别抖音链接，回复去水印视频或图集"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主 dlopen；rlib 让单测能直接测内部函数。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+md-5.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true

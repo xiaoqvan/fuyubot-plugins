@@ -1,0 +1,24 @@
+[package]
+name = "fuyubot-plugin-music"
+description = "FuyuBot 音乐解析插件：网易云音乐 / 汽水音乐，搜索、分享链接解析、指定音质，发音频"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主 dlopen；rlib 让单测能直接测内部函数。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+aes.workspace = true
+md-5.workspace = true
+base64.workspace = true

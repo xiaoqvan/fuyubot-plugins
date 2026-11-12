@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "fuyubot.help",
   "name": "Help (Image)",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "kind": "native",
   "entry": "bin/fuyubot_plugin_help.dll",
   "abi": 6,
@@ -15,9 +15,10 @@
     "android-aarch64",
     "android-x86_64"
   ],
-  "description": "替代框架内置 /help：命令表按插件分组渲染成图片发送，/help text 出文字版；仍提供 fuyubot.help.commands 注册服务，其它插件不用改。硬依赖 fuyubot.html2img。",
+  "description": "替代框架内置 /help：读取宿主命令表并按插件分组渲染成图片发送，/help text 出文字版；按宿主命令表的 role / scopes / hidden 过滤。硬依赖 fuyubot.html2img。",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins",
-  "depends": ["fuyubot.html2img"],
-  "provides": ["fuyubot.help.commands"]
+  "depends": [
+    "fuyubot.html2img"
+  ]
 }

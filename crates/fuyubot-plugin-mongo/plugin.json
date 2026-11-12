@@ -2,7 +2,7 @@
   "schema": 1,
   "id": "fuyubot.mongo",
   "name": "MongoDB Storage",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "kind": "native",
   "entry": "bin/fuyubot_plugin_mongo.dll",
   "abi": 6,
@@ -15,7 +15,9 @@
     "android-aarch64",
     "android-x86_64"
   ],
-  "provides": ["storage.mongo"],
+  "provides": [
+    "storage.mongo"
+  ],
   "description": "注册 storage.mongo：集合级 CRUD、聚合、索引管理、distinct，JSON 进 JSON 出，语义与 Mongo Shell 一致。",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins"

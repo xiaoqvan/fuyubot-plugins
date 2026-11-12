@@ -204,19 +204,24 @@ pub async fn ensure_owner(
         send_tip(rt, chat_id, "该命令仅限 Bot 主人使用。", reply_to, 10).await;
         return false;
     };
-    if rt.cfg.is_owner(user_id) {
+    if crate::roles::global_role(&rt.host, user_id).is_owner() {
         return true;
     }
-    let hint = if rt.cfg.owner_ids.is_empty() {
-        "该命令仅限 Bot 主人使用（`owner_ids` 还没配置）。"
-    } else {
-        "该命令仅限 Bot 主人使用。"
-    };
-    send_tip(rt, chat_id, hint, reply_to, 10).await;
+    send_tip(
+        rt,
+        chat_id,
+        "该命令仅限 Bot 主人使用（在 fuyubot.toml 的 [roles].owners 里配置）。",
+        reply_to,
+        10,
+    )
+    .await;
     false
 }
 
-/// 「Bot 主人 **或** Bot 管理员」检查（对应 TS 的 `permission:"admin"` 档）。
+/// 「Bot 主人 **或** 全局管理员」检查（对应 TS 的 `permission:"admin"` 档）。
+///
+/// 名单来自宿主 `[roles].owners` / `[roles].admins`（`fuyubot.host.commands` 的
+/// `role` 方法），插件不再自带 `owner_ids` / `admin_ids`。
 ///
 /// 注册表（[`crate::commands::spec`]）已经先判过一次；这里保留是给「直接调 handler」
 /// 的路径兜底，也保证权限语义只写在一处判断里。
@@ -237,15 +242,17 @@ pub async fn ensure_bot_admin(
         .await;
         return false;
     };
-    if rt.cfg.is_bot_admin(user_id) {
+    if crate::roles::global_role(&rt.host, user_id).is_admin() {
         return true;
     }
-    let hint = if rt.cfg.owner_ids.is_empty() && rt.cfg.admin_ids.is_empty() {
-        "该命令仅限 Bot 主人或管理员使用（`owner_ids` / `admin_ids` 都还没配置）。"
-    } else {
-        "该命令仅限 Bot 主人或管理员使用。"
-    };
-    send_tip(rt, chat_id, hint, reply_to, 10).await;
+    send_tip(
+        rt,
+        chat_id,
+        "该命令仅限 Bot 主人或管理员使用（在 fuyubot.toml 的 [roles] 里配置）。",
+        reply_to,
+        10,
+    )
+    .await;
     false
 }
 

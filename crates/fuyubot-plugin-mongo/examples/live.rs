@@ -2,8 +2,8 @@
 //!
 //! ```bash
 //! cargo run -p fuyubot-plugin-mongo --example live
-//! # 自定义连接串：
-//! MONGO_URI=mongodb://127.0.0.1:27017 cargo run -p fuyubot-plugin-mongo --example live
+//! # 自定义连接串 / 测试库：
+//! cargo run -p fuyubot-plugin-mongo --example live -- 'mongodb://127.0.0.1:27017' demo_it
 //! ```
 //!
 //! **只在独立的测试库里跑**（默认 `demo_it`），跑完把文档清空，
@@ -13,8 +13,12 @@ use fuyubot_plugin_mongo::api::{call, configure};
 use serde_json::{Value, json};
 
 fn main() {
-    let uri = std::env::var("MONGO_URI").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".to_owned());
-    let db = std::env::var("MONGO_TEST_DB").unwrap_or_else(|_| "demo_it".to_owned());
+    // 用法：cargo run -p fuyubot-plugin-mongo --example live -- [uri] [db]
+    let mut args = std::env::args().skip(1);
+    let uri = args
+        .next()
+        .unwrap_or_else(|| "mongodb://127.0.0.1:27017".to_owned());
+    let db = args.next().unwrap_or_else(|| "demo_it".to_owned());
     let collection = "smoke";
 
     println!("连接 {uri} / 测试库 {db}");
