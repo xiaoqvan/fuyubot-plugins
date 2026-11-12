@@ -41,7 +41,7 @@
 #                覆盖这次产出的同名 zip，Release 上的其它资产与说明不动。
 #   targets      只建这些平台，逗号分隔，可写精确平台名（`linux-x86_64`）或前缀
 #                （`linux` / `windows` / `macos` / `android` / `desktop`）。留空 = 全部。
-#   fuyubot_ref  FuyuBot（运行时仓库）checkout 的 ref，留空 = `main`。重建老 ABI 的旧版本
+#   fuyubot_ref  FuyuBot（运行时仓库）checkout 的 ref，留空 = `master`（它的默认分支）。重建老 ABI 的旧版本
 #                时要给对应 tag，否则旧插件源码编不到新 ABI 上。
 #
 # 例（把某插件 Release 上的 Linux zip 用 Ubuntu 24.04 重编并覆盖）：
@@ -64,7 +64,7 @@ on:
         type: string
         default: ""
       fuyubot_ref:
-        description: "FuyuBot checkout 的 ref。留空 = main；重建老 ABI 的旧版本要给对应 tag（v0.1.0 用 v0.1.2）"
+        description: "FuyuBot checkout 的 ref。留空 = master；重建老 ABI 的旧版本要给对应 tag（v0.1.0 用 v0.1.2）"
         required: false
         type: string
         default: ""
@@ -201,7 +201,7 @@ jobs:
         with:
           repository: CatMoeCircle/Fuyu-Bot
           path: FuyuBot
-          ref: ${{ inputs.fuyubot_ref || 'main' }}
+          ref: ${{ inputs.fuyubot_ref || 'master' }}
       - uses: dtolnay/rust-toolchain@stable
         if: matrix.platform != 'none'
       - uses: actions/setup-python@v5
@@ -257,7 +257,7 @@ jobs:
         with:
           repository: CatMoeCircle/Fuyu-Bot
           path: FuyuBot
-          ref: ${{ inputs.fuyubot_ref || 'main' }}
+          ref: ${{ inputs.fuyubot_ref || 'master' }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android,x86_64-linux-android
