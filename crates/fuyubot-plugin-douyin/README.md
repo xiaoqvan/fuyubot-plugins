@@ -11,8 +11,9 @@ FuyuBot 的抖音解析插件（Rust，cdylib）。从 TypeScript 宿主 `plugin
 ```
 
 - 插件 id：`fuyubot.douyin`，**ABI v6**（`fuyubot-abi` 0.1.3+ / FuyuBot 0.1.4+）
-- 命令：`/dy <链接>`
-- 自动识别：消息里含 `douyin.com` / `iesdouyin.com` 链接就解析（`/` 开头的不抢）
+- 命令：`/dy <链接>`（私聊 / 群 / 频道）
+- 自动识别：消息里含 `douyin.com` / `iesdouyin.com` 链接就解析（`/` 开头的不抢）；
+  群里**发送人是频道身份且这条是转发消息**时跳过（见下）
 - 产出：`fuyubot_plugin_douyin.{dll,so,dylib}`
 
 ## 依赖
@@ -21,7 +22,7 @@ FuyuBot 的抖音解析插件（Rust，cdylib）。从 TypeScript 宿主 `plugin
   `version = "0.1.3"` 守卫（0.1.2 是 ABI v5，硬不兼容）。
 - **运行期软依赖**：只有 `fuyubot.sqlite`（文件 id 缓存）。没装时插件照常工作，
   只是没有缓存加速；命令表由宿主预置（`fuyubot.host.commands`），`/dy` 登记时带
-  `role = user`、`scopes = private + group`。
+  `role = user`、`scopes = private + group + channel`。
 - 刻意**不依赖** `fuyubot-simplify`（`publish = false`，外部插件只能 path）：
   「人话参数 → TDLib 请求体」的构造器内联在 `src/simplify.rs`，发送走 ABI 的
   `ResponseRouter::invoke_op`（simplify op 表从 v5 起就有，v6 没改）。
@@ -58,7 +59,32 @@ FuyuBot 的抖音解析插件（Rust，cdylib）。从 TypeScript 宿主 `plugin
 一次解析只剩「短链 GET（可选）→ detail API 或分享页 GET → 发送」这几次请求。
 
 唯一的例外是**频道帖子**：机器人在频道里通常没有发言权、只有编辑权，
-所以仍走 `editMessageMedia` 编辑自己那条——那是**编辑**，不是引用。
+所以按 TS 版 `parse/douyin/index.ts` + `utils/videomsg.ts` 的**编辑模式**处理：
+
+1. 解析前 `editMessageText` 把原帖改成「原文 + 分隔线 + 正在解析抖音视频...」；
+2. 单条视频 / 单条图集视频 → `editMessageMedia` 编辑原帖；
+3. 图集（多图 / 多视频）→ 先 `deleteMessages` 删原帖，再 `sendMessageAlbum` 发相册；
+4. 解析失败 → 编辑原帖写 `❌ …`，不往频道另发错误消息；
+5. `/dy` 在频道里同样走这套（命令消息就是原帖）。
+
+**编辑前先验证权限**：用 TDLib `getMessageProperties` 查 `can_edit_media` /
+`can_be_edited`。没有编辑媒体权限 → **整段跳过**（不解析、不写占位、不编辑、不新发）；
+没有文本编辑权限 → 不写占位/报错，真的解析失败只写日志。避免在频道里反复做
+必然失败的编辑尝试。
+
+频道帖**不受 `is_outgoing` 限制**：在自己频道里发链接 / 敲 `/dy` 也要生效——
+编辑不会产生新的 `updateNewMessage`，不存在「解析自己发的消息」的套娃；
+群聊 / 私聊里自己发的消息仍然跳过。
+
+频道判定用 TDLib 的 `message.is_channel_post`（“All messages to channels are channel
+posts, all other messages are not channel posts”）：群里匿名频道马甲（发送者也是
+`messageSenderChat`）不算频道帖，避免去编辑一条不属于自己的群消息。
+
+## 自动识别的过滤
+
+群里**发送人是频道身份（`messageSenderChat`）且这条消息是转发**时，自动识别直接
+跳过——那不是群友自己发的链接，解析它等于替别人的转发链自动产出内容。普通群成员
+的转发、频道身份但非转发的消息、以及频道帖子本身都照常解析。
 
 ## SQL 缓存（软依赖）
 
@@ -84,8 +110,8 @@ FuyuBot 的抖音解析插件（Rust，cdylib）。从 TypeScript 宿主 `plugin
 ```bash
 cargo build -p fuyubot-plugin-douyin --release
 python scripts/package.py --plugin fuyubot-plugin-douyin \
-    --platform windows-x86_64 --version 0.1.2
-# 解压 dist/fuyubot.douyin-0.1.2-windows-x86_64.zip 到 plugins/fuyubot.douyin/
+    --platform windows-x86_64 --version 0.1.3
+# 解压 dist/fuyubot.douyin-0.1.3-windows-x86_64.zip 到 plugins/fuyubot.douyin/
 ```
 
 也可以直接装裸动态库：`fuyubot plugin install target/release/fuyubot_plugin_douyin.dll`。

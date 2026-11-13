@@ -696,6 +696,9 @@ pub struct Command {
     pub addressed_to: Option<String>,
     /// 整条消息文本（命令 + 参数）。
     pub text: String,
+    /// 这条命令是不是**频道帖子**（见 [`channel_post_of`]）——频道里要编辑原帖，
+    /// 不能新发一条。
+    pub is_channel_post: bool,
 }
 
 impl Command {
@@ -719,16 +722,32 @@ impl Command {
     }
 }
 
+/// 消息是不是**频道帖子**。
+///
+/// 用 TDLib 自己的 `message.is_channel_post`（「All messages to channels are channel
+/// posts, all other messages are not channel posts」），不要只看 `sender_id` 的类型：
+/// 群里「匿名频道马甲」的发送者也是 `messageSenderChat`，甚至可能就是这个群本身；
+/// 靠发送者猜会把群消息误判成频道帖，接着去编辑一条不属于自己的消息（TDLib 直接报错）。
+pub fn channel_post_of(message: &Value) -> bool {
+    message
+        .get("is_channel_post")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// 从 `updateNewMessage` 的负载里认出一条命令；不是命令就 `None`。
 ///
 /// 字段路径照真 `td_api.tl`：`updateNewMessage.message` →
 /// `content:messageText` → `text:formattedText` → `text:string`。
 pub fn command_of(update: &Value) -> Option<Command> {
     let message = update.get("message")?;
+    // 自己发的不当命令：除非它是频道帖（在自家频道里敲 `/music163` 要能编辑原帖）。
+    let is_channel_post = channel_post_of(message);
     if message
         .get("is_outgoing")
         .and_then(Value::as_bool)
         .unwrap_or(false)
+        && !is_channel_post
     {
         return None;
     }
@@ -759,6 +778,7 @@ pub fn command_of(update: &Value) -> Option<Command> {
             .filter(|target| !target.is_empty())
             .map(str::to_owned),
         text: text.to_owned(),
+        is_channel_post,
     })
 }
 
@@ -1053,6 +1073,34 @@ mod tests {
             }
         });
         assert!(command_of(&outgoing).is_none());
+
+        // 频道帖例外：自家频道里发的 `/soda` 是命令，解析后要编辑这条原帖。
+        let channel_command = json!({
+            "message": {
+                "id": 10,
+                "chat_id": -100777_i64,
+                "is_outgoing": true,
+                "is_channel_post": true,
+                "content": { "@type": "messageText", "text": { "text": "/soda 1" } }
+            }
+        });
+        assert!(
+            command_of(&channel_command).is_some_and(|command| command.is_channel_post),
+            "自家频道的命令不能因为 is_outgoing 被吞掉"
+        );
+
+        // 群里匿名频道马甲（is_channel_post=false）不是频道帖。
+        let group_persona = json!({
+            "message": {
+                "id": 11,
+                "chat_id": -100888_i64,
+                "is_channel_post": false,
+                "sender_id": { "@type": "messageSenderChat", "chat_id": -100999_i64 },
+                "content": { "@type": "messageText", "text": { "text": "/soda 1" } }
+            }
+        });
+        assert!(!command_of(&group_persona).unwrap().is_channel_post);
+
         assert!(
             command_of(&json!({"message": {"id": 1, "content": {"@type": "messagePhoto"}}}))
                 .is_none()

@@ -55,6 +55,9 @@ static EXECUTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static MIGRATED: AtomicBool = AtomicBool::new(false);
 /// 假 SQLite 的 `migrate` 人为延迟（毫秒）。用来复现「init 还没跑完，第一条命令就到了」。
 static MIGRATE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+/// 假 `getMessageProperties` 返回的频道帖编辑权限。
+static CAN_EDIT_TEXT: AtomicBool = AtomicBool::new(true);
+static CAN_EDIT_MEDIA: AtomicBool = AtomicBool::new(true);
 /// 假请求号。
 static NEXT_ID: AtomicU64 = AtomicU64::new(7001);
 /// 假订阅号。
@@ -310,21 +313,33 @@ unsafe extern "C" fn fake_simplify_invoke(_host: *mut c_void, op_json: *const c_
     let op = unsafe { CStr::from_ptr(op_json) }
         .to_string_lossy()
         .into_owned();
+    let request: Value = serde_json::from_str(&op).unwrap_or(Value::Null);
     lock(&OPS).push(op);
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-    let message = json!({
-        "@type": "message",
-        "id": 900 + id,
-        "chat_id": -100123,
-        "content": { "@type": "messageText" },
-    });
+    // 频道权限探测走通用 `invoke` op；其余 op 一律回一条「消息」占位结果。
+    let result = if request["op"] == "invoke"
+        && request["args"]["request"]["@type"] == "getMessageProperties"
+    {
+        json!({
+            "@type": "messageProperties",
+            "can_be_edited": CAN_EDIT_TEXT.load(Ordering::SeqCst),
+            "can_edit_media": CAN_EDIT_MEDIA.load(Ordering::SeqCst),
+        })
+    } else {
+        json!({
+            "@type": "message",
+            "id": 900 + id,
+            "chat_id": -100123,
+            "content": { "@type": "messageText" },
+        })
+    };
     fire(
         RESPONSE_EVENT,
         &json!({
             "@type": "simplifyResult",
             "op": "send_message",
             "ok": true,
-            "result": message,
+            "result": result,
             "request_id": id,
         }),
     );
@@ -503,6 +518,8 @@ fn reset_globals() {
     lock(rows()).clear();
     MIGRATED.store(false, Ordering::SeqCst);
     MIGRATE_DELAY_MS.store(0, Ordering::SeqCst);
+    CAN_EDIT_TEXT.store(true, Ordering::SeqCst);
+    CAN_EDIT_MEDIA.store(true, Ordering::SeqCst);
 }
 
 /// 轮询等一个条件；超时 panic（测试里比 sleep 稳）。
@@ -556,26 +573,66 @@ fn start_plugin(dir: &Path) -> DouyinPlugin {
 
 /// 投一条文本消息（非 `/` 开头走自动识别，`/` 开头走命令路径）。
 fn fire_text(chat_id: i64, message_id: i64, text: &str) {
+    fire_message(
+        chat_id,
+        message_id,
+        text,
+        json!({ "@type": "messageSenderUser", "user_id": 42 }),
+        None,
+    );
+}
+
+/// 投一条可控发送者 / 转发信息的文本消息。
+fn fire_message(
+    chat_id: i64,
+    message_id: i64,
+    text: &str,
+    sender: Value,
+    forward_info: Option<Value>,
+) {
+    fire_message_with_outgoing(
+        chat_id,
+        message_id,
+        text,
+        sender,
+        forward_info,
+        false,
+        false,
+    );
+}
+
+/// 同 [`fire_message`]，但可以指定 `is_outgoing` / `is_channel_post`。
+fn fire_message_with_outgoing(
+    chat_id: i64,
+    message_id: i64,
+    text: &str,
+    sender: Value,
+    forward_info: Option<Value>,
+    is_outgoing: bool,
+    is_channel_post: bool,
+) {
+    let mut message = json!({
+        "@type": "message",
+        "id": message_id,
+        "chat_id": chat_id,
+        "is_outgoing": is_outgoing,
+        "is_channel_post": is_channel_post,
+        "sender_id": sender,
+        "content": {
+            "@type": "messageText",
+            "text": {
+                "@type": "formattedText",
+                "text": text,
+                "entities": [],
+            },
+        },
+    });
+    if let Some(forward_info) = forward_info {
+        message["forward_info"] = forward_info;
+    }
     fire(
         "updateNewMessage",
-        &json!({
-            "@type": "updateNewMessage",
-            "message": {
-                "@type": "message",
-                "id": message_id,
-                "chat_id": chat_id,
-                "is_outgoing": false,
-                "sender_id": { "@type": "messageSenderUser", "user_id": 42 },
-                "content": {
-                    "@type": "messageText",
-                    "text": {
-                        "@type": "formattedText",
-                        "text": text,
-                        "entities": [],
-                    },
-                },
-            },
-        }),
+        &json!({ "@type": "updateNewMessage", "message": message }),
     );
 }
 
@@ -686,6 +743,238 @@ fn cache_hit_sends_by_file_id_without_parsing_or_downloading() {
         started.elapsed()
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 频道里与 TS 对齐的**编辑模式**：先 `edit_message_text` 写占位，命中缓存后
+/// `edit_message_media` 编辑同一条帖子；全程没有 `send_message`。
+#[test]
+fn channel_posts_are_edited_in_place_like_ts() {
+    let _serial = serial();
+    reset_globals();
+    preset_cache_row();
+
+    let dir = plugin_dir("channel");
+    let mut plugin = start_plugin(&dir);
+    wait_until("SQL 缓存 migrate", Duration::from_secs(5), || {
+        MIGRATED.load(Ordering::SeqCst)
+    });
+
+    let chat_id: i64 = -1001234567890;
+    // 自家频道里自己发的链接：`is_outgoing = true`，仍然要被解析并编辑成视频。
+    fire_message_with_outgoing(
+        chat_id,
+        77,
+        LINK,
+        json!({ "@type": "messageSenderChat", "chat_id": chat_id }),
+        None,
+        true,
+        true,
+    );
+
+    wait_until(
+        "频道里的权限探测 + 两条编辑 op",
+        Duration::from_secs(5),
+        || lock(&OPS).len() >= 3,
+    );
+    std::thread::sleep(Duration::from_millis(100));
+
+    let ops: Vec<Value> = lock(&OPS)
+        .iter()
+        .map(|op| serde_json::from_str(op).expect("op JSON 必须合法"))
+        .collect();
+    assert_eq!(
+        ops.len(),
+        3,
+        "频道里应当是「权限探测 + 占位 + 编辑媒体」三条：{ops:#?}"
+    );
+
+    // ① 先问 TDLib 有没有编辑权限；假宿主默认允许。
+    let rights = &ops[0];
+    assert_eq!(rights["op"], "invoke", "{rights}");
+    assert_eq!(
+        rights["args"]["request"]["@type"], "getMessageProperties",
+        "编辑前必须先查频道帖权限：{rights}"
+    );
+    assert_eq!(rights["args"]["request"]["message_id"], 77);
+
+    // ② 有权限才写占位提示。
+    let placeholder = &ops[1];
+    assert_eq!(placeholder["op"], "edit_message_text", "{placeholder}");
+    assert_eq!(placeholder["args"]["chat_id"], chat_id);
+    assert_eq!(placeholder["args"]["message_id"], 77);
+    let text = placeholder["args"]["input_message_content"]["text"]["text"]
+        .as_str()
+        .expect("占位提示必须是文本");
+    assert!(text.contains("正在解析抖音视频..."), "占位文案：{text}");
+
+    // ③ 最后编辑成媒体。
+    let media = &ops[2];
+    assert_eq!(media["op"], "edit_message_media", "{media}");
+    assert_eq!(media["args"]["message_id"], 77, "必须编辑同一条频道帖");
+    assert_eq!(media["args"]["chat_id"], chat_id);
+    assert!(
+        media["args"]["input_message_content"]["video"]["video"]
+            == json!({ "@type": "inputFileId", "id": 4242 }),
+        "缓存命中后应当直接编辑成文件 id：{media}"
+    );
+    assert!(
+        ops.iter().all(|op| op["op"] != "send_message"),
+        "频道里不该新发消息：{ops:#?}"
+    );
+
+    plugin.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 频道帖没有编辑媒体权限时：只探测权限，不写占位、不解析、不编辑、也不新发。
+#[test]
+fn channel_posts_without_edit_permission_are_left_alone() {
+    let _serial = serial();
+    reset_globals();
+    preset_cache_row();
+    CAN_EDIT_TEXT.store(false, Ordering::SeqCst);
+    CAN_EDIT_MEDIA.store(false, Ordering::SeqCst);
+
+    let dir = plugin_dir("channel-no-rights");
+    let mut plugin = start_plugin(&dir);
+    wait_until("SQL 缓存 migrate", Duration::from_secs(5), || {
+        MIGRATED.load(Ordering::SeqCst)
+    });
+
+    let chat_id: i64 = -1001234567890;
+    fire_message_with_outgoing(
+        chat_id,
+        80,
+        LINK,
+        json!({ "@type": "messageSenderChat", "chat_id": chat_id }),
+        None,
+        true,
+        true,
+    );
+
+    wait_until("频道帖权限探测", Duration::from_secs(5), || {
+        !lock(&OPS).is_empty()
+    });
+    std::thread::sleep(Duration::from_millis(300));
+
+    let ops: Vec<Value> = lock(&OPS)
+        .iter()
+        .map(|op| serde_json::from_str(op).expect("op JSON 必须合法"))
+        .collect();
+    assert_eq!(ops.len(), 1, "没权限时只该探测一次，不能编辑：{ops:#?}");
+    assert_eq!(ops[0]["op"], "invoke", "{ops:#?}");
+    assert_eq!(
+        ops[0]["args"]["request"]["@type"], "getMessageProperties",
+        "必须先查权限：{ops:#?}"
+    );
+    assert!(
+        ops.iter().all(|op| op["op"] != "edit_message_text"
+            && op["op"] != "edit_message_media"
+            && op["op"] != "send_message"),
+        "没有编辑权限时不该占位 / 编辑 / 新发：{ops:#?}"
+    );
+
+    plugin.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `/dy` 在频道里也走编辑：命令消息就是原帖，不新发一条。
+#[test]
+fn dy_command_in_a_channel_edits_the_command_post() {
+    let _serial = serial();
+    reset_globals();
+    preset_cache_row();
+
+    let dir = plugin_dir("channel-command");
+    let mut plugin = start_plugin(&dir);
+    wait_until("SQL 缓存 migrate", Duration::from_secs(5), || {
+        MIGRATED.load(Ordering::SeqCst)
+    });
+
+    let chat_id: i64 = -1001234567890;
+    // 自家频道里自己敲的 `/dy`：`is_outgoing = true` 也要响应并编辑原帖。
+    fire_message_with_outgoing(
+        chat_id,
+        79,
+        &format!("/dy {LINK}"),
+        json!({ "@type": "messageSenderChat", "chat_id": chat_id }),
+        None,
+        true,
+        true,
+    );
+
+    wait_until(
+        "频道 /dy 的权限探测 + 两条编辑 op",
+        Duration::from_secs(5),
+        || lock(&OPS).len() >= 3,
+    );
+    std::thread::sleep(Duration::from_millis(100));
+
+    let ops: Vec<Value> = lock(&OPS)
+        .iter()
+        .map(|op| serde_json::from_str(op).expect("op JSON 必须合法"))
+        .collect();
+    assert_eq!(
+        ops.len(),
+        3,
+        "频道 /dy 应当是「权限探测 + 占位 + 编辑媒体」三条：{ops:#?}"
+    );
+    assert_eq!(
+        ops[0]["args"]["request"]["@type"], "getMessageProperties",
+        "/dy 也要先查频道帖权限：{}",
+        ops[0]
+    );
+    assert_eq!(ops[1]["op"], "edit_message_text");
+    assert!(
+        ops[1]["args"]["input_message_content"]["text"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("/dy")),
+        "占位提示要保留原命令文本：{}",
+        ops[1]
+    );
+    assert_eq!(ops[2]["op"], "edit_message_media");
+    assert_eq!(ops[2]["args"]["message_id"], 79);
+    assert!(
+        ops.iter().all(|op| op["op"] != "send_message"),
+        "频道 /dy 不该新发消息：{ops:#?}"
+    );
+
+    plugin.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 群里「频道身份 + 转发」的消息在自动识别入口就被跳过：连缓存查询都不该发生。
+#[test]
+fn channel_identity_forwards_are_ignored_end_to_end() {
+    let _serial = serial();
+    reset_globals();
+    preset_cache_row();
+
+    let dir = plugin_dir("channel-forward");
+    let mut plugin = start_plugin(&dir);
+    wait_until("SQL 缓存 migrate", Duration::from_secs(5), || {
+        MIGRATED.load(Ordering::SeqCst)
+    });
+
+    fire_message(
+        -100888,
+        78,
+        LINK,
+        json!({ "@type": "messageSenderChat", "chat_id": -100999 }),
+        Some(json!({
+            "origin": { "@type": "messageOriginChannel", "chat_id": -100999, "message_id": 1 }
+        })),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert!(
+        lock(&OPS).is_empty(),
+        "群里频道身份发出的转发消息不该触发解析：{:?}",
+        lock(&OPS)
+    );
+
+    plugin.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }
 

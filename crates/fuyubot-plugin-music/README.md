@@ -29,8 +29,9 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
   vtable），调用一律 `host.call_service(...)`——提供方（sqlite / help）因此能拿到
   真实调用者身份；请求里仍显式带自己的插件名，sqlite 会拿它和调用者比对。
 - **命令回复不引用原消息**：本插件刻意**不用** `fuyubot.host.command` 的 `reply`
-  （它会按账号类型给 Bot 账户加 `reply_to`）。所有发送仍走 simplify 的
-  `send_message`，文案与第一次逐字一致。
+  （它会按账号类型给 Bot 账户加 `reply_to`）。普通会话的发送走 simplify 的
+  `send_message`，文案与第一次逐字一致；**频道帖例外**，走 `editMessageText` /
+  `editMessageMedia` 编辑原帖（见下）。
 
 ## 执行模型
 
@@ -49,6 +50,23 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
   下载 / 解密循环每一步都看取消标志，所以卸载动态库前不会有残线程。
 - 网络与 TDLib 等待全是 `.await`；没有固定 worker 线程、没有任务队列。
 - 旧的同步 `ureq` + 固定 worker 线程 + `ResponseHub`（Condvar 等待）已经全部删除。
+
+## 频道编辑 / 群聊过滤
+
+与抖音插件同一套口径：
+
+- **普通会话**照旧新发一条、不引用原帖。
+- **频道帖**（TDLib `message.is_channel_post`）编辑原帖：解析媒体前先
+  `editMessageText` 写「正在获取音乐...」，解析完 `editMessageMedia` 把原帖换成
+  音频 / 视频；搜索结果、用法、错误也都 `editMessageText` 写回原帖。
+- **编辑前先验证权限**：用 `getMessageProperties` 查 `can_edit_media` /
+  `can_be_edited`；没有编辑媒体权限 → 整段跳过（不解析、不占位、不编辑、不新发）；
+  没有文本权限 → 不写占位 / 报错。命令表 `scopes` 含 `channel`，`/music163`、
+  `/soda` 在频道里同样走这套。
+- **群聊过滤**：发送人是频道身份（`messageSenderChat`）**且**这条是转发消息时，
+  自动识别直接跳过；普通成员转发、频道身份非转发、以及频道帖本身都照常解析。
+- 频道帖不受 `is_outgoing` 限制（自家频道里发链接 / 敲命令也要生效）；群聊和私聊
+  里自己发的消息仍然跳过。
 
 ## SQL 缓存（软依赖）
 
@@ -110,8 +128,8 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 ```bash
 cargo build -p fuyubot-plugin-music --release
 python scripts/package.py --plugin fuyubot-plugin-music \
-    --platform windows-x86_64 --version 0.1.2
-# 解压 dist/fuyubot.music-0.1.2-windows-x86_64.zip 到 plugins/fuyubot.music/
+    --platform windows-x86_64 --version 0.1.3
+# 解压 dist/fuyubot.music-0.1.3-windows-x86_64.zip 到 plugins/fuyubot.music/
 ```
 
 也可以直接装裸动态库：`fuyubot plugin install target/release/fuyubot_plugin_music.dll`。
@@ -122,7 +140,7 @@ python scripts/package.py --plugin fuyubot-plugin-music \
   `version = "0.1.3"` 守卫（0.1.2 是 ABI v5，硬不兼容）。
 - **运行期软依赖**：只有 `fuyubot.sqlite`（文件 id 缓存）；没装时插件照常工作。
   命令表由宿主预置（`fuyubot.host.commands`），两个命令按 `role = user`、
-  `scopes = private + group` 登记。
+  `scopes = private + group + channel` 登记。
 
 **刻意不依赖 `fuyubot-simplify`**（它 `publish = false`，外部插件只能走 path）：
 「人话参数 → TDLib 请求体」的构造器（`Text` / `Media` / `InputFile` / `Thumbnail` /
@@ -270,8 +288,10 @@ plugins/
   标题 / 歌手 / 时长 / 专辑封面，文案里带「音质 · 码率 · 大小 · 原曲链接」。
 - 汽水 UGC 视频：落盘 mp4 + 封面缩略图 → `inputMessageVideo`：
   标题 / 作者 / 时长 / 宽高 / `supports_streaming`，文案为「标题 + `By @作者`」。
-- **不引用 / 不回复原消息**：`sendMessage` 不带 `reply_to`，也不再为判断群聊发
-  TDLib 方法请求（旧版的 `getChat` 已删除）。
+- 普通会话**不引用 / 不回复原消息**：`sendMessage` 不带 `reply_to`，也不再为判断
+  群聊发 TDLib 方法请求（旧版的 `getChat` 已删除）。**频道帖例外**：命令 / 链接
+  消息本身就是要替换的那条帖子，走 `editMessageText` / `editMessageMedia` 编辑
+  原帖（编辑前先 `getMessageProperties` 验权限）。
 
 临时文件在发送结束后删除（Windows 上句柄未释放会重试几次）。封面下载失败只记日志。
 

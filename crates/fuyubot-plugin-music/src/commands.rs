@@ -19,10 +19,15 @@
 //!
 //! 停机顺序见 [`crate::runtime`]：退订 → 置取消标志 → 关闸并等在飞归零 → 关 runtime。
 //!
-//! ## 不引用原消息
+//! ## 落点：不引用原消息 / 频道编辑原帖
 //!
-//! 所有发送都**不引用 / 不回复原消息**（`sendMessage` 不带 `reply_to`）。因此也不
-//! 再为「判断群聊」发 TDLib 方法请求：命令消息的 id 已经不需要了。
+//! 普通会话的发送都**不引用 / 不回复原消息**（`sendMessage` 不带 `reply_to`）。
+//! **频道帖**（TDLib `is_channel_post`）例外：命令 / 链接消息本身就是那条帖子，
+//! 所以编辑它——先查 `getMessageProperties` 的编辑权限，再写占位 / 换媒体；
+//! 没有权限就整段跳过（不解析、不编辑、不新发）。
+//!
+//! 群聊里「发送人是频道身份（`messageSenderChat`）且这条是转发」的消息在自动识别
+//! 入口直接跳过；频道帖不看 `is_outgoing`（自家频道里发链接 / 命令也要生效）。
 //!
 //! ## SQL 缓存（软依赖）
 //!
@@ -43,8 +48,10 @@ use crate::cache;
 use crate::http;
 use crate::netease;
 use crate::runtime::Runtime;
-use crate::send::{self, AudioMeta, VideoMeta};
-use crate::simplify::{Command, CommandSubscription, InputFile, SentMedia, on_command, sent_media};
+use crate::send::{self, AudioMeta, Target, VideoMeta};
+use crate::simplify::{
+    Command, CommandSubscription, InputFile, SentMedia, channel_post_of, on_command, sent_media,
+};
 use crate::soda;
 use crate::soda_crypto;
 use crate::soda_video;
@@ -149,7 +156,7 @@ impl Plugin for MusicPlugin {
             let (query, quality) = split_args(platform, &command.args);
             let job = Job {
                 platform,
-                chat_id: command.chat_id,
+                target: Target::of(command),
                 query,
                 quality,
             };
@@ -196,24 +203,55 @@ impl Plugin for MusicPlugin {
 
 /// 一条待处理的任务。
 ///
-/// 不带消息 id：本插件**不引用原消息**（用户要求），所以发送不需要知道是哪条命令。
+/// `target` 决定发到哪儿：普通会话新发（不引用原消息），频道帖编辑原帖。
 struct Job {
     platform: Platform,
-    chat_id: i64,
+    target: Target,
     query: String,
     quality: Option<&'static str>,
 }
 
-/// 一个任务的全部处理：先判断是不是「只给用法」，再按平台跑。
+impl Job {
+    /// 这个任务最终要发媒体（音频 / 视频），还是只回文本（搜索结果 / 用法 / 报错）。
+    fn needs_media(&self) -> bool {
+        !self.query.trim().is_empty() && looks_like_reference(self.platform, &self.query)
+    }
+}
+
+/// 一个任务的全部处理：先验频道权限，再判断是不是「只给用法」，最后按平台跑。
 ///
-/// 这里是 tokio 任务体，**不在宿主回调线程上**。发送一律不引用原消息。
-async fn process(runtime: Arc<Runtime>, job: Job) {
+/// 这里是 tokio 任务体，**不在宿主回调线程上**。普通会话发送不引用原消息；
+/// 频道帖编辑原帖（没有权限就整段跳过）。
+async fn process(runtime: Arc<Runtime>, mut job: Job) {
     if runtime.stopping() {
         return;
     }
+
+    // 频道：先验权限。没有编辑媒体权限就整段跳过（不解析、不编辑、不新发）。
+    if job.target.is_edit() {
+        match send::channel_rights(&runtime, &job.target).await {
+            Ok(rights) => {
+                let needs_media = job.needs_media();
+                if needs_media && !rights.can_edit_media {
+                    crate::log::info("频道帖没有编辑媒体的权限，跳过");
+                    return;
+                }
+                if !needs_media && !rights.can_edit_text {
+                    crate::log::info("频道帖没有编辑文本的权限，跳过");
+                    return;
+                }
+                job.target = job.target.with_rights(rights);
+            }
+            Err(error) => {
+                crate::log::warn(&format!("查频道帖编辑权限失败，跳过：{error}"));
+                return;
+            }
+        }
+    }
+
     // 只给了命令名：直接回用法（不碰任何接口）。
     if job.query.trim().is_empty() {
-        let _ = send::send_text(&runtime, job.chat_id, &usage(job.platform)).await;
+        send_text_logged(&runtime, &job.target, &usage(job.platform)).await;
         return;
     }
     crate::log::debug(&format!(
@@ -222,9 +260,20 @@ async fn process(runtime: Arc<Runtime>, job: Job) {
         crate::log::shorten(&job.query, 80),
         job.quality
     ));
+    // 频道里解析媒体前先占位（只有文本编辑权限时才会真的改原帖）。
+    if job.target.is_edit() && job.needs_media() {
+        send::announce_parsing(&runtime, &job.target).await;
+    }
     if let Err(error) = run(&runtime, &job).await {
         crate::log::error(&format!("{}处理失败：{error}", job.platform.name()));
-        let _ = send::send_text(&runtime, job.chat_id, &format!("❌ {error}")).await;
+        send_text_logged(&runtime, &job.target, &format!("❌ {error}")).await;
+    }
+}
+
+/// 回一段文本；失败只记日志（频道里没文本权限时不该让任务整体报错）。
+async fn send_text_logged(runtime: &Runtime, target: &Target, text: &str) {
+    if let Err(error) = send::send_text(runtime, target, text).await {
+        crate::log::warn(&format!("发送文本失败：{error}"));
     }
 }
 
@@ -240,7 +289,7 @@ async fn run_netease(runtime: &Runtime, job: &Job) -> Result<(), String> {
     if netease::song_id_of(&job.query).is_some() || netease::first_link(&job.query).is_some() {
         let id = netease::resolve_id(&runtime.http, &job.query).await?;
         let quality = job.quality.unwrap_or(netease::DEFAULT_QUALITY);
-        return send_netease(runtime, &auth, job.chat_id, id, quality).await;
+        return send_netease(runtime, &auth, &job.target, id, quality).await;
     }
 
     let tracks = netease::search(&runtime.http, &auth, &job.query, SEARCH_LIMIT).await?;
@@ -265,7 +314,7 @@ async fn run_netease(runtime: &Runtime, job: &Job) -> Result<(), String> {
         netease::quality_help(),
         netease::DEFAULT_QUALITY
     ));
-    send::send_text(runtime, job.chat_id, &lines.join("\n")).await
+    send::send_text(runtime, &job.target, &lines.join("\n")).await
 }
 
 async fn run_soda(runtime: &Runtime, job: &Job) -> Result<(), String> {
@@ -274,10 +323,10 @@ async fn run_soda(runtime: &Runtime, job: &Job) -> Result<(), String> {
         match soda::classify_share(&runtime.http, &auth, &job.query).await? {
             soda::Share::Track(id) => {
                 let quality = job.quality.unwrap_or(soda::DEFAULT_QUALITY);
-                return send_soda(runtime, &auth, job.chat_id, &id, quality).await;
+                return send_soda(runtime, &auth, &job.target, &id, quality).await;
             }
             soda::Share::Video(id) => {
-                return send_soda_video(runtime, &auth, job.chat_id, &id).await;
+                return send_soda_video(runtime, &auth, &job.target, &id).await;
             }
         }
     }
@@ -304,7 +353,7 @@ async fn run_soda(runtime: &Runtime, job: &Job) -> Result<(), String> {
         soda::quality_help(),
         soda::DEFAULT_QUALITY
     ));
-    send::send_text(runtime, job.chat_id, &lines.join("\n")).await
+    send::send_text(runtime, &job.target, &lines.join("\n")).await
 }
 
 // ── 网易云：缓存命中 / 完整流程 ─────────────────────────────────────
@@ -312,14 +361,14 @@ async fn run_soda(runtime: &Runtime, job: &Job) -> Result<(), String> {
 async fn send_netease(
     runtime: &Runtime,
     auth: &auth::NeteaseAuth,
-    chat_id: i64,
+    target: &Target,
     id: u64,
     quality: &str,
 ) -> Result<(), String> {
     // 缓存键用**用户请求的档位**，不是接口返回的实际档位（降级后仍要能命中同一键）。
     let key = cache::key(&["netease", &id.to_string(), quality]);
     if let Some(doc) = runtime.cache_get(&key).await {
-        match send_cached_audio(runtime, chat_id, &doc).await {
+        match send_cached_audio(runtime, target, &doc).await {
             Ok(()) => {
                 crate::log::debug(&format!(
                     "网易云 {id} 缓存命中（{quality}，跳过解析与下载）"
@@ -381,7 +430,7 @@ async fn send_netease(
     };
     let result = send::send_audio(
         runtime,
-        chat_id,
+        target,
         InputFile::local(file.to_string_lossy()),
         cover.map(|cover| InputFile::local(cover.to_string_lossy())),
         &meta,
@@ -396,13 +445,13 @@ async fn send_netease(
 async fn send_soda(
     runtime: &Runtime,
     auth: &auth::SodaAuth,
-    chat_id: i64,
+    target: &Target,
     id: &str,
     quality: &str,
 ) -> Result<(), String> {
     let key = cache::key(&["soda", id, quality]);
     if let Some(doc) = runtime.cache_get(&key).await {
-        match send_cached_audio(runtime, chat_id, &doc).await {
+        match send_cached_audio(runtime, target, &doc).await {
             Ok(()) => {
                 crate::log::debug(&format!("汽水 {id} 缓存命中（{quality}，跳过解析与下载）"));
                 return Ok(());
@@ -490,7 +539,7 @@ async fn send_soda(
     };
     let result = send::send_audio(
         runtime,
-        chat_id,
+        target,
         InputFile::local(file.to_string_lossy()),
         cover.map(|cover| InputFile::local(cover.to_string_lossy())),
         &meta,
@@ -504,12 +553,12 @@ async fn send_soda(
 async fn send_soda_video(
     runtime: &Runtime,
     auth: &auth::SodaAuth,
-    chat_id: i64,
+    target: &Target,
     id: &str,
 ) -> Result<(), String> {
     let key = cache::key(&["soda-video", id]);
     if let Some(doc) = runtime.cache_get(&key).await {
-        match send_cached_video(runtime, chat_id, &doc).await {
+        match send_cached_video(runtime, target, &doc).await {
             Ok(()) => {
                 crate::log::debug(&format!("汽水视频 {id} 缓存命中（跳过解析与下载）"));
                 return Ok(());
@@ -566,7 +615,7 @@ async fn send_soda_video(
     };
     let result = send::send_video(
         runtime,
-        chat_id,
+        target,
         InputFile::local(file.to_string_lossy()),
         cover.map(|cover| InputFile::local(cover.to_string_lossy())),
         &meta,
@@ -629,7 +678,7 @@ fn video_doc(meta: &VideoMeta, sent: &SentMedia) -> Value {
 }
 
 /// 命中音频缓存：直接用 `inputFileId` 发送（零网络、零下载）。
-async fn send_cached_audio(runtime: &Runtime, chat_id: i64, doc: &Value) -> Result<(), String> {
+async fn send_cached_audio(runtime: &Runtime, target: &Target, doc: &Value) -> Result<(), String> {
     let file_id = doc
         .get("file_id")
         .and_then(Value::as_i64)
@@ -648,7 +697,7 @@ async fn send_cached_audio(runtime: &Runtime, chat_id: i64, doc: &Value) -> Resu
     };
     send::send_audio(
         runtime,
-        chat_id,
+        target,
         InputFile::id(file_id),
         cover_id.map(InputFile::id),
         &meta,
@@ -658,7 +707,7 @@ async fn send_cached_audio(runtime: &Runtime, chat_id: i64, doc: &Value) -> Resu
 }
 
 /// 命中视频缓存：直接用 `inputFileId` 发送（零网络、零下载）。
-async fn send_cached_video(runtime: &Runtime, chat_id: i64, doc: &Value) -> Result<(), String> {
+async fn send_cached_video(runtime: &Runtime, target: &Target, doc: &Value) -> Result<(), String> {
     let file_id = doc
         .get("file_id")
         .and_then(Value::as_i64)
@@ -674,7 +723,7 @@ async fn send_cached_video(runtime: &Runtime, chat_id: i64, doc: &Value) -> Resu
     };
     send::send_video(
         runtime,
-        chat_id,
+        target,
         InputFile::id(file_id),
         cover_id.map(InputFile::id),
         &meta,
@@ -795,14 +844,14 @@ fn usage(platform: Platform) -> String {
 
 /// 一条命令在宿主命令表里的登记入参。
 ///
-/// 两个命令都是普通用户命令、私聊和群都能用；频道里没有音频解析场景，不声明
-/// `channel`。
+/// 两个命令都是普通用户命令，私聊 / 群 / 频道都能用；频道里命令消息本身就是原帖，
+/// 解析结果用编辑接口写回去。
 fn registration_payload(name: &str, description: &str) -> serde_json::Value {
     serde_json::json!({
         "name": name,
         "description": description,
         "role": "user",
-        "scopes": ["private", "group"],
+        "scopes": ["private", "group", "channel"],
     })
 }
 
@@ -887,8 +936,50 @@ type MessageFn = dyn Fn(&Message) + Send + Sync;
 #[derive(Debug, Clone)]
 struct Message {
     chat_id: i64,
+    message_id: i64,
     text: String,
     is_outgoing: bool,
+    /// 发送者是频道（`messageSenderChat`）——群里匿名频道马甲也满足这一点。
+    sender_is_chat: bool,
+    /// 这条消息是转发的（`forward_info` 存在，来源可能被隐藏）。
+    is_forwarded: bool,
+    /// 真正的频道帖：TDLib `is_channel_post` 为真（见 [`channel_post_of`]）。
+    is_channel_post: bool,
+}
+
+/// 自动识别要不要处理这条消息；返回「发到哪儿 + 链接」。
+///
+/// 过滤顺序：
+/// 1. 自己发的不解析；频道帖例外（自家频道里发链接就是要插件编辑原帖）；
+/// 2. `/…` 开头的是命令，交给命令入口，不抢；
+/// 3. **群里由频道身份发出、而且是转发的消息**：发送人是 `messageSenderChat`
+///    且 `forward_info` 存在——不是在群里正常发链接，不替别人的转发链产出内容。
+fn auto_job(message: &Message) -> Option<Job> {
+    if message.is_outgoing && !message.is_channel_post {
+        return None;
+    }
+    if message.text.trim_start().starts_with('/') {
+        return None;
+    }
+    if !message.is_channel_post && message.sender_is_chat && message.is_forwarded {
+        return None;
+    }
+    let (platform, link) = if let Some(link) = netease::first_link(&message.text) {
+        (Platform::Netease, link)
+    } else {
+        (Platform::Soda, soda::first_link(&message.text)?)
+    };
+    let target = if message.is_channel_post {
+        Target::edit(message.chat_id, message.message_id)
+    } else {
+        Target::send(message.chat_id)
+    };
+    Some(Job {
+        platform,
+        target,
+        query: link,
+        quality: None,
+    })
 }
 
 /// 订阅 `updateNewMessage`，把含分享链接的**非命令**消息交给处理链。
@@ -901,29 +992,7 @@ struct Message {
 fn scan_links(host: HostApi, runtime: Arc<Runtime>) -> ScanSubscription {
     let weak = Arc::downgrade(&runtime);
     let mut handler: Box<Box<MessageFn>> = Box::new(Box::new(move |message: &Message| {
-        // 自己发的不解析（否则会把机器人自己贴的链接再解析一遍）。
-        if message.is_outgoing {
-            return;
-        }
-        // `/…` 开头的是命令，交给命令入口，不抢。
-        if message.text.trim_start().starts_with('/') {
-            return;
-        }
-        let job = if let Some(link) = netease::first_link(&message.text) {
-            Job {
-                platform: Platform::Netease,
-                chat_id: message.chat_id,
-                query: link,
-                quality: None,
-            }
-        } else if let Some(link) = soda::first_link(&message.text) {
-            Job {
-                platform: Platform::Soda,
-                chat_id: message.chat_id,
-                query: link,
-                quality: None,
-            }
-        } else {
+        let Some(job) = auto_job(message) else {
             return;
         };
         let Some(runtime) = weak.upgrade() else {
@@ -971,13 +1040,26 @@ fn message_of(update: &serde_json::Value) -> Option<Message> {
         return None;
     }
     let text = content.get("text")?.get("text")?.as_str()?;
+    let sender_is_chat = value
+        .get("sender_id")
+        .and_then(|sender| sender.get("@type"))
+        .and_then(|kind| kind.as_str())
+        == Some("messageSenderChat");
+    // 转发消息：`forward_info` 存在即可（来源被隐藏时 `origin` 可能为 null）。
+    let is_forwarded = value
+        .get("forward_info")
+        .is_some_and(|info| !info.is_null());
     Some(Message {
         chat_id: value.get("chat_id")?.as_i64()?,
+        message_id: value.get("id")?.as_i64()?,
         text: text.to_owned(),
         is_outgoing: value
             .get("is_outgoing")
             .and_then(|flag| flag.as_bool())
             .unwrap_or(false),
+        sender_is_chat,
+        is_forwarded,
+        is_channel_post: channel_post_of(value),
     })
 }
 
@@ -1081,6 +1163,93 @@ mod tests {
         let message = message_of(&update).expect("文本消息应当解得出");
         assert_eq!(message.chat_id, chat_id);
         assert!(!message.is_outgoing);
+        assert!(!message.is_channel_post);
+        assert!(!message.sender_is_chat);
+        assert!(!message.is_forwarded);
+    }
+
+    /// 自动识别的过滤与频道落点：与抖音插件同一套口径。
+    #[test]
+    fn channel_posts_and_channel_identity_forwards_are_classified() {
+        let update = |chat_id: i64,
+                      outgoing: bool,
+                      is_channel_post: bool,
+                      sender: serde_json::Value,
+                      forward: Option<serde_json::Value>| {
+            let mut message = serde_json::json!({
+                "@type": "message",
+                "id": 9,
+                "chat_id": chat_id,
+                "is_outgoing": outgoing,
+                "is_channel_post": is_channel_post,
+                "sender_id": sender,
+                "content": {
+                    "@type": "messageText",
+                    "text": { "@type": "formattedText", "text": "https://music.163.com/song?id=1", "entities": [] },
+                },
+            });
+            if let Some(forward) = forward {
+                message["forward_info"] = forward;
+            }
+            serde_json::json!({ "@type": "updateNewMessage", "message": message })
+        };
+
+        let channel_persona = serde_json::json!({
+            "@type": "messageSenderChat",
+            "chat_id": -100999_i64
+        });
+        let forwarded = serde_json::json!({
+            "origin": { "@type": "messageOriginChannel", "chat_id": -100999_i64, "message_id": 1 }
+        });
+        let user = serde_json::json!({ "@type": "messageSenderUser", "user_id": 42 });
+
+        // 群 + 频道身份 + 转发 → 跳过
+        let group_forward = message_of(&update(
+            -100888,
+            false,
+            false,
+            channel_persona.clone(),
+            Some(forwarded.clone()),
+        ))
+        .unwrap();
+        assert!(
+            auto_job(&group_forward).is_none(),
+            "群里频道身份发出的转发消息不该自动解析"
+        );
+
+        // 群 + 频道身份但非转发 → 照常
+        let group_plain = message_of(&update(
+            -100888,
+            false,
+            false,
+            channel_persona.clone(),
+            None,
+        ))
+        .unwrap();
+        assert!(auto_job(&group_plain).is_some());
+
+        // 普通成员转发 → 照常
+        let user_forward = message_of(&update(
+            -100888,
+            false,
+            false,
+            user,
+            Some(forwarded.clone()),
+        ))
+        .unwrap();
+        assert!(auto_job(&user_forward).is_some());
+
+        // 自家频道自己发的帖子：outgoing 也要解析，并走编辑
+        let channel_post = message_of(&update(
+            -100777,
+            true,
+            true,
+            serde_json::json!({ "@type": "messageSenderChat", "chat_id": -100777_i64 }),
+            Some(forwarded),
+        ))
+        .unwrap();
+        let job = auto_job(&channel_post).expect("频道帖要解析");
+        assert!(job.target.is_edit(), "频道帖走编辑");
     }
 
     #[test]
@@ -1115,7 +1284,11 @@ mod tests {
         let input = registration_payload(NETEASE_COMMAND, NETEASE_DESCRIPTION);
         assert_eq!(input["name"], "music163");
         assert_eq!(input["role"], "user");
-        assert_eq!(input["scopes"], serde_json::json!(["private", "group"]));
+        assert_eq!(
+            input["scopes"],
+            serde_json::json!(["private", "group", "channel"]),
+            "频道里命令要能编辑原帖"
+        );
     }
 
     #[test]
@@ -1142,8 +1315,12 @@ mod tests {
         let handler = unsafe { &*back };
         handler(&Message {
             chat_id: 1,
+            message_id: 1,
             text: "x".to_owned(),
             is_outgoing: false,
+            sender_is_chat: false,
+            is_forwarded: false,
+            is_channel_post: false,
         });
         assert_eq!(CALLS.load(Ordering::SeqCst), 1, "回调必须真的调到闭包");
     }

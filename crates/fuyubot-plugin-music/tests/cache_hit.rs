@@ -19,7 +19,7 @@
 
 use std::cell::RefCell;
 use std::ffi::{CStr, CString, c_char, c_void};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -60,6 +60,9 @@ static TD_METHOD_CALLS: AtomicU64 = AtomicU64::new(0);
 static MIGRATED: Mutex<bool> = Mutex::new(false);
 /// 让假 `migrate` 慢多少毫秒（模拟启动期异步 init 还没跑完的竞态窗口）。
 static MIGRATE_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+/// 假 `getMessageProperties` 返回的频道帖编辑权限。
+static CAN_EDIT_TEXT: AtomicBool = AtomicBool::new(true);
+static CAN_EDIT_MEDIA: AtomicBool = AtomicBool::new(true);
 /// 同一测试二进制里的用例共享全局静态状态（假宿主 / 假 sqlite / 日志），必须串行。
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -77,6 +80,8 @@ fn reset_state() {
     *MIGRATED.lock().unwrap() = false;
     TD_METHOD_CALLS.store(0, Ordering::SeqCst);
     MIGRATE_DELAY_MS.store(0, Ordering::SeqCst);
+    CAN_EDIT_TEXT.store(true, Ordering::SeqCst);
+    CAN_EDIT_MEDIA.store(true, Ordering::SeqCst);
     CACHE_DB
         .lock()
         .unwrap()
@@ -328,20 +333,31 @@ unsafe extern "C" fn fake_simplify_invoke(_host: *mut c_void, op: *const c_char)
         .get("op")
         .and_then(Value::as_str)
         .unwrap_or("send_message");
+    // 频道权限探测走通用 `invoke` op；其余 op 一律回一条「消息」占位结果。
+    let result =
+        if op_name == "invoke" && value["args"]["request"]["@type"] == "getMessageProperties" {
+            json!({
+                "@type": "messageProperties",
+                "can_be_edited": CAN_EDIT_TEXT.load(Ordering::SeqCst),
+                "can_edit_media": CAN_EDIT_MEDIA.load(Ordering::SeqCst),
+            })
+        } else {
+            json!({
+                "@type": "message",
+                "id": 555,
+                "chat_id": -1001234567890i64,
+                "content": {
+                    "@type": "messageText",
+                    "text": {"@type": "formattedText", "text": "ok", "entities": []}
+                }
+            })
+        };
     let payload = json!({
         "@type": "simplifyResult",
         "op": op_name,
         "request_id": id,
         "ok": true,
-        "result": {
-            "@type": "message",
-            "id": 555,
-            "chat_id": -1001234567890i64,
-            "content": {
-                "@type": "messageText",
-                "text": {"@type": "formattedText", "text": "ok", "entities": []}
-            }
-        }
+        "result": result
     });
     fire("response", &payload.to_string());
     RequestId { id }
@@ -518,6 +534,49 @@ fn command_update() -> Value {
             }
         }
     })
+}
+
+/// 一条频道里的 `/music163 186016 lossless`（自己发的频道帖，`is_outgoing=true`）。
+fn channel_command_update() -> Value {
+    json!({
+        "@type": "updateNewMessage",
+        "message": {
+            "@type": "message",
+            "id": 43,
+            "chat_id": -100777i64,
+            "is_outgoing": true,
+            "is_channel_post": true,
+            "sender_id": { "@type": "messageSenderChat", "chat_id": -100777i64 },
+            "content": {
+                "@type": "messageText",
+                "text": {
+                    "@type": "formattedText",
+                    "text": "/music163 186016 lossless",
+                    "entities": []
+                }
+            }
+        }
+    })
+}
+
+/// 启动插件并等 SQL 缓存初始化完成。
+fn start_and_wait(tag: &str) -> (MusicPlugin, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("fuyubot-music-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut plugin = MusicPlugin::init(fake_host()).expect("init");
+    let config = json!({ "plugins_dir": dir.to_string_lossy() }).to_string();
+    plugin.start(&config).expect("start");
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            LOGS.lock()
+                .unwrap()
+                .iter()
+                .any(|line| line.contains("SQL 缓存已启用"))
+        }),
+        "SQL 缓存没有初始化成功；日志：{:?}",
+        LOGS.lock().unwrap()
+    );
+    (plugin, dir)
 }
 
 /// 缓存命中：`/music163 186016 lossless` 直接用 `inputFileId` 发送，不下载、不解析。
@@ -735,5 +794,136 @@ fn a_slow_cache_init_still_lets_the_first_command_hit() {
         started.elapsed()
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 频道里 `/music163` 命中缓存：先查权限，再写占位，最后 `editMessageMedia` 编辑原帖。
+#[test]
+fn channel_commands_are_edited_in_place() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    reset_state();
+    let (mut plugin, dir) = start_and_wait("channel-command");
+
+    fire("updateNewMessage", &channel_command_update().to_string());
+
+    let captured = wait_until(Duration::from_secs(5), || {
+        CAPTURED_OPS.lock().unwrap().len() >= 3
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let ops = CAPTURED_OPS.lock().unwrap().clone();
+    assert!(
+        captured,
+        "频道里应当有权限探测 + 占位 + 编辑三条 op；{ops:?}"
+    );
+    assert_eq!(
+        ops.len(),
+        3,
+        "频道里应当是「权限探测 + 占位 + 编辑媒体」：{ops:?}"
+    );
+
+    assert_eq!(
+        ops[0]["args"]["request"]["@type"], "getMessageProperties",
+        "编辑前先查频道帖权限：{}",
+        ops[0]
+    );
+    assert_eq!(ops[1]["op"], "edit_message_text", "{}", ops[1]);
+    assert!(
+        ops[1]["args"]["input_message_content"]["text"]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("正在获取音乐")),
+        "占位文案：{}",
+        ops[1]
+    );
+    assert_eq!(ops[2]["op"], "edit_message_media", "{}", ops[2]);
+    assert_eq!(ops[2]["args"]["message_id"], 43);
+    assert_eq!(
+        ops[2]["args"]["input_message_content"]["audio"]["audio"],
+        json!({ "@type": "inputFileId", "id": 4242 }),
+        "缓存命中后应当直接编辑成文件 id：{}",
+        ops[2]
+    );
+    assert!(
+        ops.iter().all(|op| op["op"] != "send_message"),
+        "频道里不该新发消息：{ops:?}"
+    );
+
+    plugin.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 频道帖没有编辑媒体权限：只探测权限，不占位、不编辑、不新发。
+#[test]
+fn channel_commands_without_edit_permission_are_left_alone() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    reset_state();
+    CAN_EDIT_TEXT.store(false, Ordering::SeqCst);
+    CAN_EDIT_MEDIA.store(false, Ordering::SeqCst);
+    let (mut plugin, dir) = start_and_wait("channel-no-rights");
+
+    fire("updateNewMessage", &channel_command_update().to_string());
+
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            !CAPTURED_OPS.lock().unwrap().is_empty()
+        }),
+        "应当先探测一次权限"
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let ops = CAPTURED_OPS.lock().unwrap().clone();
+    assert_eq!(ops.len(), 1, "没权限时只该探测一次：{ops:?}");
+    assert_eq!(ops[0]["op"], "invoke", "{ops:?}");
+    assert!(
+        ops.iter().all(|op| op["op"] != "edit_message_text"
+            && op["op"] != "edit_message_media"
+            && op["op"] != "send_message"),
+        "没有编辑权限时不该占位 / 编辑 / 新发：{ops:?}"
+    );
+
+    plugin.stop();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 群里「频道身份 + 转发」的消息在自动识别入口就被跳过。
+#[test]
+fn channel_identity_forwards_are_ignored_in_groups() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    reset_state();
+    let (mut plugin, dir) = start_and_wait("channel-forward");
+
+    fire(
+        "updateNewMessage",
+        &json!({
+            "@type": "updateNewMessage",
+            "message": {
+                "@type": "message",
+                "id": 44,
+                "chat_id": -100888i64,
+                "is_outgoing": false,
+                "is_channel_post": false,
+                "sender_id": { "@type": "messageSenderChat", "chat_id": -100999i64 },
+                "forward_info": {
+                    "origin": { "@type": "messageOriginChannel", "chat_id": -100999i64, "message_id": 1 }
+                },
+                "content": {
+                    "@type": "messageText",
+                    "text": {
+                        "@type": "formattedText",
+                        "text": "https://music.163.com/song?id=186016",
+                        "entities": []
+                    }
+                }
+            }
+        })
+        .to_string(),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+
+    assert!(
+        CAPTURED_OPS.lock().unwrap().is_empty(),
+        "群里频道身份发出的转发消息不该触发解析：{:?}",
+        CAPTURED_OPS.lock().unwrap()
+    );
+
+    plugin.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }

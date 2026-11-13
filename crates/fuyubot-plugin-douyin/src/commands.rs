@@ -20,8 +20,17 @@
 //!
 //! 普通会话一律**新发一条消息**（不 `reply_to`、不引用）：旧实现会先 `getChat`
 //! 判群聊，群里引用原消息——用户明确要求删掉这套行为，所以 `getChat` 整段也一起删了。
-//! **频道帖子例外**：机器人通常没有发言权，只有编辑权，所以仍走 `editMessageMedia`
-//! （那是编辑，不是引用）。
+//!
+//! **频道帖子例外**：机器人通常没有发言权，只有编辑权，流程与 TS 版
+//! `parse/douyin/index.ts` + `utils/videomsg.ts` 对齐——
+//! 解析前 `edit_message_text` 把原帖改成「正在解析抖音视频...」，单条媒体
+//! `edit_message_media`，图集先 `delete_messages` 删原帖再发相册，失败也编辑原帖写 ❌。
+//!
+//! ## 自动识别的过滤
+//!
+//! 群里「发送人是频道身份（`messageSenderChat`）**且**这条是转发消息」时跳过：
+//! 那不是在群里正常发链接，而是把频道的转发链带进来，替它自动产出内容没有意义。
+//! 频道帖子本身不在此列（TDLib `is_channel_post` 为真，照常解析并走编辑）。
 //!
 //! ## SQL 缓存（软依赖 `fuyubot.sqlite`）
 //!
@@ -42,7 +51,7 @@ use crate::cached::{self, Cached};
 use crate::parse;
 use crate::runtime::Runtime;
 use crate::send::{self, Target};
-use crate::simplify::{Command, CommandSubscription, on_command};
+use crate::simplify::{Command, CommandSubscription, channel_post_of, on_command};
 
 /// 命令名（`/dy`）。
 pub const COMMAND: &str = "dy";
@@ -178,11 +187,12 @@ impl Plugin for DouyinPlugin {
 async fn handle_command(rt: &Runtime, command: Command) {
     // ⚠️ 不走 `first_url`：文本里同时有汽水与抖音链接时，要解析的是抖音那条。
     // 汽水音乐归 `fuyubot.music`，抢过来只会 HEAD 一趟然后发一条 ❌。
+    //
+    // 频道里 `/dy` 也走编辑：命令消息本身就是那条频道帖，不再新发（与 TS 版一致）。
+    let target = Target::of(&command);
     match pick_for_command(&format!("{} {}", command.args, command.text)) {
         Selection::Douyin(link) => {
-            // 只带 chat_id：不再 getChat 判群聊、不再引用原消息（用户要求去掉引用）。
-            let target = Target::of(&command);
-            reply_with_video(rt, &target, &link).await;
+            reply_with_video(rt, &target, &link, &command.text).await;
         }
         Selection::Qishui(link) => {
             // 记一条日志：用户报「/dy 发了但没反应」时，这里能直接看出是被让给了音乐插件。
@@ -192,21 +202,73 @@ async fn handle_command(rt: &Runtime, command: Command) {
             ));
             // 汽水音乐的短链**没有作品 id**，抖音解析器认不出来。
             // 直接说清楚归谁管，比让它跑一遍再报「认不出作品」有用。
-            rt.say(command.chat_id, QISHUI_REJECTION).await;
+            reply_text(rt, &target, QISHUI_REJECTION).await;
         }
         Selection::None => {
-            rt.say(command.chat_id, "用法：`/dy 抖音链接`").await;
+            reply_text(rt, &target, "用法：`/dy 抖音链接`").await;
         }
+    }
+}
+
+/// 回一句话：频道里编辑原帖，其它会话新发一条（不引用原消息）。
+///
+/// 频道里先查文本编辑权限；没有权限就**不编辑**（也不新发，避免往频道里灌消息）。
+async fn reply_text(rt: &Runtime, target: &Target, text: &str) {
+    if target.is_edit() {
+        match send::channel_rights(rt, target).await {
+            Ok(rights) if rights.can_edit_text => {
+                if let Err(error) = send::replace_text(rt, target, text).await {
+                    crate::log::warn(&format!("频道里编辑回复失败：{error}"));
+                }
+            }
+            Ok(_) => crate::log::info("频道帖没有编辑文本的权限，跳过回复"),
+            Err(error) => crate::log::warn(&format!("查频道帖权限失败，跳过回复：{error}")),
+        }
+    } else {
+        rt.say(target.chat_id, text).await;
     }
 }
 
 /// 解析一条链接并把结果发回去；失败给出**人能看懂**的原因。
 ///
 /// 把错误贴回聊天是刻意的：用户看不到宿主日志。
-async fn reply_with_video(rt: &Runtime, target: &Target, link: &str) {
+///
+/// 频道里与 TS 版对齐：先查编辑权限，有权限才先把原帖编辑成「正在解析抖音视频...」，
+/// 解析完再把它编辑成媒体；失败时也是**编辑原帖**写 ❌，不再往频道里另发错误消息。
+///
+/// **没有编辑媒体权限就整段跳过**：不解析、不编辑、也不新发——频道不是群，不能把
+/// 「没权限」变成一次次失败的编辑尝试。
+async fn reply_with_video(rt: &Runtime, target: &Target, link: &str, source_text: &str) {
+    let mut can_edit_text = false;
+    if target.is_edit() {
+        match send::channel_rights(rt, target).await {
+            Ok(rights) if rights.can_edit_media => {
+                can_edit_text = rights.can_edit_text;
+                if can_edit_text {
+                    send::announce_parsing(rt, target, source_text).await;
+                }
+            }
+            Ok(_) => {
+                crate::log::info("频道帖没有编辑媒体的权限，跳过解析");
+                return;
+            }
+            Err(error) => {
+                crate::log::warn(&format!("查频道帖编辑权限失败，跳过解析：{error}"));
+                return;
+            }
+        }
+    }
     if let Err(error) = try_reply(rt, target, link).await {
-        // 错误提示也不引用原消息（用户要求去掉引用行为）。
-        rt.say(target.chat_id, &format!("❌ {error}")).await;
+        if target.is_edit() {
+            if can_edit_text {
+                send::announce_error(rt, target, &error).await;
+            } else {
+                crate::log::warn(&format!("频道帖没有编辑文本的权限，错误只写日志：{error}"));
+            }
+        } else {
+            // 错误提示也不引用原消息（用户要求去掉引用行为）。
+            rt.say(target.chat_id, &format!("❌ {error}")).await;
+        }
     }
 }
 
@@ -287,14 +349,14 @@ async fn reply_full(
 
 /// `/dy` 在宿主命令表里的登记入参。
 ///
-/// `scopes` 只写 `private + group`：抖音分享链接没有频道场景，别让闸门在频道里
-/// 放行一条用不了的命令。
+/// `scopes` 写 `private + group + channel`：频道里命令消息本身就是那条帖子，
+/// 解析结果用 `editMessageMedia` 编辑回去（与 TS 版一致）。
 fn registration_payload() -> serde_json::Value {
     serde_json::json!({
         "name": COMMAND,
         "description": COMMAND_DESCRIPTION,
         "role": "user",
-        "scopes": ["private", "group"],
+        "scopes": ["private", "group", "channel"],
     })
 }
 
@@ -359,34 +421,61 @@ struct Message {
     message_id: i64,
     text: String,
     is_outgoing: bool,
+    /// 发送者是频道（`messageSenderChat`）——群里匿名频道马甲也满足这一点。
+    sender_is_chat: bool,
+    /// 这条消息是转发的（`forward_info` 存在，来源可能被隐藏）。
+    is_forwarded: bool,
+    /// 真正的频道帖：TDLib `is_channel_post` 为真（见 [`channel_post_of`]）。
     is_channel_post: bool,
+}
+
+/// 自动识别要不要处理这条消息；返回「发到哪儿 + 链接」。
+///
+/// 过滤顺序：
+/// 1. 自己发的不解析（否则机器人自己贴的链接会被再解析一遍，无限套娃）；
+///    频道帖例外：在自己的频道里发链接就是要插件把原帖编辑成视频；
+/// 2. `/…` 开头的是别的插件的命令，不抢；
+/// 3. **群聊里由频道身份发出、而且是转发的消息**：发送人是 `messageSenderChat`
+///    且 `forward_info` 存在。这类消息不是群友自己写的，解析它会替别人的转发链
+///    自动产出内容。频道帖子是例外——频道本身要解析，只是走编辑。
+fn auto_target(message: &Message) -> Option<(Target, String)> {
+    // 自己发的不解析（否则机器人自己贴的链接会被再解析一遍，无限套娃）；
+    // 频道帖例外——在自己的频道里发链接，本来就是要让插件把这条帖子编辑成视频。
+    // 编辑不会产生新的 `updateNewMessage`，不存在套娃。
+    if message.is_outgoing && !message.is_channel_post {
+        return None;
+    }
+    if message.text.trim_start().starts_with('/') {
+        return None;
+    }
+    if !message.is_channel_post && message.sender_is_chat && message.is_forwarded {
+        return None;
+    }
+    let link = first_douyin_url(&message.text)?;
+    // 频道帖子：机器人通常没有发言权，只有编辑自己那条的权限——TS 版就是这么
+    // 绕过去的（`isChannel` 为真的分支走 `editMessageMedia`）。普通消息只带
+    // chat_id：不引用原消息（用户要求），也不需要 getChat 判群聊。
+    let target = if message.is_channel_post {
+        Target::edit(message.chat_id, message.message_id)
+    } else {
+        Target::send(message.chat_id)
+    };
+    Some((target, link))
 }
 
 /// 订阅 `updateNewMessage`，把「含抖音链接的**非命令**消息」交给处理函数。
 fn scan_douyin_links(host: HostApi, runtime: std::sync::Arc<Runtime>) -> ScanSubscription {
     let mut handler: Box<Box<MessageFn>> = Box::new(Box::new(move |message: &Message| {
-        // 自己发的不解析（否则会把机器人自己贴的链接再解析一遍，无限套娃）。
-        if message.is_outgoing {
-            return;
-        }
-        // `/…` 开头的是别的插件的命令，不抢。
-        if message.text.trim_start().starts_with('/') {
-            return;
-        }
-        let Some(link) = first_douyin_url(&message.text) else {
+        let Some((target, link)) = auto_target(message) else {
             return;
         };
-        // 频道帖子里机器人通常没有发言权，只有编辑自己那条的权限——
-        // TS 版就是这么绕过去的（`isChannel` 为真的分支改发 `editMessageMedia`）。
-        // 普通消息只带 chat_id：不引用原消息（用户要求），也不需要 getChat 判群聊。
-        let target = if message.is_channel_post {
-            Target::edit(message.chat_id, message.message_id)
-        } else {
-            Target::send(message.chat_id)
-        };
+        // 频道里占位提示要带原文；普通会话用不上，但一起带过去省得再判一次。
+        let source_text = message.text.clone();
         // 回调线程只排队：真正的解析/下载/发送在这个任务里。
         let runtime = std::sync::Arc::clone(&runtime);
-        runtime.submit(move |rt| async move { reply_with_video(&rt, &target, &link).await });
+        runtime.submit(move |rt| async move {
+            reply_with_video(&rt, &target, &link, &source_text).await
+        });
     }));
     // 与 `on_command` 同一套 user_data 约定：递进去的是**内层 Box 的地址**
     // （只解一层：`Box<dyn Fn>` 本身是个瘦指针，外层 Box 活着它就稳定）。
@@ -439,20 +528,26 @@ fn message_of(update: &serde_json::Value) -> Option<Message> {
         .get("is_outgoing")
         .and_then(|flag| flag.as_bool())
         .unwrap_or(false);
-    // 频道帖子的 `chat_id` 就是频道本身，且发出者是频道——TS 版对它们走「编辑」路径。
-    // 这里没有发言权的判断，只把它标出来留作扩展点。
-    let is_channel_post = chat_id < 0
-        && value
-            .get("sender_id")
-            .and_then(|sender| sender.get("@type"))
-            .and_then(|kind| kind.as_str())
-            == Some("messageSenderChat");
+    let sender_is_chat = value
+        .get("sender_id")
+        .and_then(|sender| sender.get("@type"))
+        .and_then(|kind| kind.as_str())
+        == Some("messageSenderChat");
+    // 转发消息：`forward_info` 存在即可（来源被隐藏时 `origin` 可能为 null，
+    // 但「转发过」这件事仍然成立，正是要过滤的那一类）。
+    let is_forwarded = value
+        .get("forward_info")
+        .is_some_and(|info| !info.is_null());
     Some(Message {
         chat_id,
         message_id,
         text: text.to_owned(),
         is_outgoing,
-        is_channel_post,
+        sender_is_chat,
+        is_forwarded,
+        // 频道帖用 TDLib 自己的 `is_channel_post` 判：群里匿名频道马甲虽然发送者
+        // 也是 `messageSenderChat`，但这个标志为 false，不能去编辑别人的消息。
+        is_channel_post: channel_post_of(value),
     })
 }
 
@@ -849,18 +944,19 @@ mod tests {
         assert!(!message.is_channel_post);
     }
 
-    /// 频道帖子的发出者是**频道自己**（`messageSenderChat`），那条理论与 TS 版一致：
-    /// 走编辑而不是回复。
+    /// 频道判定用 TDLib 的 `is_channel_post`；群里「匿名频道马甲」的发送者也是
+    /// `messageSenderChat`，但 `is_channel_post` 为 false，不能走编辑。
     #[test]
-    fn channel_posts_are_detected_by_their_sender() {
-        let update = |sender: serde_json::Value| {
+    fn channel_posts_are_detected_by_the_tdlib_flag() {
+        let update = |chat_id: i64, is_channel_post: bool, sender: serde_json::Value| {
             serde_json::json!({
                 "@type": "updateNewMessage",
                 "message": {
                     "@type": "message",
                     "id": 5,
-                    "chat_id": -100777,
+                    "chat_id": chat_id,
                     "is_outgoing": false,
+                    "is_channel_post": is_channel_post,
                     "sender_id": sender,
                     "content": {
                         "@type": "messageText",
@@ -870,16 +966,151 @@ mod tests {
             })
         };
         let post = message_of(&update(
+            -100777,
+            true,
             serde_json::json!({ "@type": "messageSenderChat", "chat_id": -100777 }),
         ))
         .unwrap();
-        assert!(post.is_channel_post, "频道自己发的要认出来");
+        assert!(post.is_channel_post, "频道帖要认出来");
+        assert!(post.sender_is_chat);
+        assert!(!post.is_forwarded);
+
+        // 群里匿名频道马甲：发送者是关联频道 -100999，当前会话是 -100888。
+        let anonymous = message_of(&update(
+            -100888,
+            false,
+            serde_json::json!({ "@type": "messageSenderChat", "chat_id": -100999 }),
+        ))
+        .unwrap();
+        assert!(anonymous.sender_is_chat);
+        assert!(
+            !anonymous.is_channel_post,
+            "群里的匿名频道马甲不是频道帖，不能去编辑别人的消息"
+        );
 
         let user = message_of(&update(
+            -100777,
+            false,
             serde_json::json!({ "@type": "messageSenderUser", "user_id": 1 }),
         ))
         .unwrap();
+        assert!(!user.sender_is_chat);
         assert!(!user.is_channel_post, "普通群成员不是频道帖");
+    }
+
+    /// 自动识别的过滤：群里「发送人是频道 + 转发」的消息直接跳过；普通转发照常。
+    #[test]
+    fn channel_identity_forwards_are_skipped_in_groups() {
+        let message = |chat_id: i64,
+                       is_channel_post: bool,
+                       sender: serde_json::Value,
+                       forward_info: Option<serde_json::Value>| {
+            let mut update = serde_json::json!({
+                "@type": "updateNewMessage",
+                "message": {
+                    "@type": "message",
+                    "id": 7,
+                    "chat_id": chat_id,
+                    "is_outgoing": false,
+                    "is_channel_post": is_channel_post,
+                    "sender_id": sender,
+                    "content": {
+                        "@type": "messageText",
+                        "text": { "@type": "formattedText", "text": "https://v.douyin.com/x/", "entities": [] },
+                    },
+                },
+            });
+            if let Some(forward) = forward_info {
+                update["message"]["forward_info"] = forward;
+            }
+            message_of(&update).unwrap()
+        };
+
+        let channel_persona = serde_json::json!({
+            "@type": "messageSenderChat",
+            "chat_id": -100999_i64
+        });
+        let forwarded = serde_json::json!({
+            "origin": { "@type": "messageOriginChannel", "chat_id": -100999_i64, "message_id": 1 }
+        });
+        let user = serde_json::json!({ "@type": "messageSenderUser", "user_id": 42 });
+
+        // 群（不是频道帖）+ 频道身份 + 转发 → 跳过
+        assert!(
+            auto_target(&message(
+                -100888,
+                false,
+                channel_persona.clone(),
+                Some(forwarded.clone())
+            ))
+            .is_none(),
+            "群里频道身份发出的转发消息不该自动解析"
+        );
+        // 频道身份但**不是转发** → 照常解析（只是普通新消息）
+        assert!(
+            auto_target(&message(-100888, false, channel_persona.clone(), None)).is_some(),
+            "群里频道身份的普通发言仍然解析"
+        );
+        // 普通用户转发 → 照常解析
+        assert!(
+            auto_target(&message(
+                -100888,
+                false,
+                user.clone(),
+                Some(forwarded.clone())
+            ))
+            .is_some(),
+            "普通群成员转发的抖音链接仍然解析"
+        );
+        // 真正的频道帖即使是转发也照常解析，并走编辑
+        let channel = serde_json::json!({
+            "@type": "messageSenderChat",
+            "chat_id": -100777_i64
+        });
+        let (target, _) = auto_target(&message(-100777, true, channel, Some(forwarded))).unwrap();
+        assert!(target.is_edit(), "频道帖走编辑而不是新发");
+    }
+
+    /// 自己发的频道帖仍要解析（自家频道里发链接 → 编辑成视频）；自己发的群消息不解析。
+    #[test]
+    fn outgoing_channel_posts_are_still_recognized() {
+        let update = |chat_id: i64, is_channel_post: bool, sender: serde_json::Value| {
+            serde_json::json!({
+                "@type": "updateNewMessage",
+                "message": {
+                    "@type": "message",
+                    "id": 8,
+                    "chat_id": chat_id,
+                    "is_outgoing": true,
+                    "is_channel_post": is_channel_post,
+                    "sender_id": sender,
+                    "content": {
+                        "@type": "messageText",
+                        "text": { "@type": "formattedText", "text": "https://v.douyin.com/x/", "entities": [] },
+                    },
+                },
+            })
+        };
+
+        let channel = message_of(&update(
+            -100777,
+            true,
+            serde_json::json!({ "@type": "messageSenderChat", "chat_id": -100777 }),
+        ))
+        .unwrap();
+        let (target, _) = auto_target(&channel).expect("自己发的频道帖也要解析");
+        assert!(target.is_edit(), "并且走编辑");
+
+        let group = message_of(&update(
+            -100888,
+            false,
+            serde_json::json!({ "@type": "messageSenderUser", "user_id": 42 }),
+        ))
+        .unwrap();
+        assert!(
+            auto_target(&group).is_none(),
+            "自己发的群消息仍然跳过，避免套娃"
+        );
     }
 
     #[test]
@@ -919,6 +1150,8 @@ mod tests {
             message_id: 1,
             text: "x".to_owned(),
             is_outgoing: false,
+            sender_is_chat: false,
+            is_forwarded: false,
             is_channel_post: false,
         });
 
@@ -936,7 +1169,11 @@ mod tests {
             "说明不能为空，否则 /help 里会显示一条没有解释的命令"
         );
         assert_eq!(input["role"], "user");
-        assert_eq!(input["scopes"], serde_json::json!(["private", "group"]));
+        assert_eq!(
+            input["scopes"],
+            serde_json::json!(["private", "group", "channel"]),
+            "频道里 /dy 要能用，且按编辑模式处理"
+        );
     }
 
     /// 服务名是跨仓的**字符串约定**，改了它就等于换了协议，所以钉住。

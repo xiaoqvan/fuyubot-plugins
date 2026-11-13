@@ -256,7 +256,8 @@ async fn a_response_that_beats_the_invoke_call_is_not_lost() {
 fn send_text_waits_through_the_runtime() {
     clear_subscriptions();
     let runtime = Runtime::new(fake_host(), r#"{"plugins_dir":"plugins"}"#).expect("runtime");
-    let outcome = runtime.block_on(send::send_text(&runtime, 1, "hi"));
+    let target = send::Target::send(1);
+    let outcome = runtime.block_on(send::send_text(&runtime, &target, "hi"));
     assert!(outcome.is_ok(), "早到的 simplifyResult 不能丢：{outcome:?}");
     runtime.cancel.store(true, Ordering::SeqCst);
     runtime.shutdown();

@@ -16,6 +16,11 @@
 //!
 //! 剩下的两条主路径与 TS 版一致：**图集优先**（有图就发相册，相册里有视频就发视频），
 //! 否则发主视频。缓存命中时走 [`send_cached`]：全 `inputFileId`，不解析、不下载。
+//!
+//! 频道里按 TS 的**编辑模式**：编辑前先 [`channel_rights`] 查
+//! `getMessageProperties`；单条媒体 `edit_message_media` 编辑原帖；相册没有
+//! 编辑形态，所以先 `delete_messages` 删原帖再发相册；解析前后的占位/报错文案
+//! 都通过 [`replace_text`] 编辑原帖（不是新发消息）。没有编辑权限就不编辑。
 
 use serde_json::{Map, Value, json};
 
@@ -67,6 +72,18 @@ pub async fn send_video(
         (Some(images), Some(videos)) if !images.is_empty() && !videos.is_empty() => {
             // TS 版这里先试着发 video 相册，失败了退回图片相册；这里的组合更简单：
             // **有视频就发视频**（用户想看的是能动的那些页），图片留作兜底。
+            //
+            // 只有 1 个图集视频时 TS 走 `sendSingleImageVideo`：频道里是
+            // `editMessageMedia`，不是「删原帖 + 发只有一个元素的相册」。
+            if videos.len() == 1 {
+                let video = &videos[0];
+                let media = Media::video(InputFile::remote(&video.video_url))
+                    .size(video.width as i32, video.height as i32)
+                    .streaming(true);
+                return deliver(rt, target, media, Text::markdown(&caption))
+                    .await
+                    .map(|message| vec![message]);
+            }
             let medias = videos
                 .iter()
                 .map(|video| {
@@ -123,11 +140,12 @@ pub async fn send_cached(
 /// （那个请求当年只为决定「要不要引用」而存在）。
 ///
 /// 唯一保留的定位是 `edit_message_id`：频道帖子里机器人通常没有发言权，
-/// 只有编辑权，所以走 `editMessageMedia`——那是**编辑**，不是引用。
+/// 只有编辑权，所以走 `editMessageMedia` / `editMessageText`——那是**编辑**，不是引用。
+/// 图集例外：没有编辑形态，先删原帖再发相册（见 [`send_albums`]）。
 #[derive(Debug, Clone, Copy)]
 pub struct Target {
     pub chat_id: i64,
-    /// 频道：改成**编辑**那条消息（机器人在频道里通常没有发言权，只能编辑自己发的）。
+    /// 频道：改成**编辑**那条帖子（频道里机器人通常没有发帖权，只有编辑权）。
     pub edit_message_id: Option<i64>,
 }
 
@@ -140,14 +158,26 @@ impl Target {
         }
     }
 
-    /// 一条命令落在哪儿：只取 `chat_id`（不引用原消息，所以不需要 `getChat`）。
+    /// 一条命令落在哪儿。
+    ///
+    /// 普通会话只取 `chat_id`（不引用原消息，所以不需要 `getChat`）；频道帖走编辑，
+    /// 命令消息本身就是那条帖子。
     pub fn of(command: &crate::simplify::Command) -> Self {
-        Self::send(command.chat_id)
+        if command.is_channel_post {
+            Self::edit(command.chat_id, command.message_id)
+        } else {
+            Self::send(command.chat_id)
+        }
     }
 
-    /// 频道里「编辑已发的那条」的目标。
+    /// 这个目标是不是「编辑原帖」（频道）。
+    pub fn is_edit(&self) -> bool {
+        self.edit_message_id.is_some()
+    }
+
+    /// 频道里「编辑原帖」的目标。
     ///
-    /// 机器人在自己的频道里通常也没有发言权，只有编辑权——TS 版就是这么绕过去的。
+    /// 机器人在频道里通常没有发帖权，只有编辑权——TS 版就是这么绕过去的。
     /// 相册**没有**对应的编辑形态（`editMessageMedia` 一次只换一条内容），
     /// 所以这个目标只适用于单条视频。
     pub fn edit(chat_id: i64, message_id: i64) -> Self {
@@ -155,6 +185,121 @@ impl Target {
             chat_id,
             edit_message_id: Some(message_id),
         }
+    }
+}
+
+// ── 频道：权限 / 占位 / 报错 / 删原帖（对齐 TS 的编辑流程）───────────
+
+/// 当前账号对一条频道帖的编辑权限（来自 TDLib `getMessageProperties`）。
+///
+/// ⚠️ 为什么不用 `message.can_be_edited`：新版 TDLib 已把 `can_be_edited` /
+/// `can_edit_media` 移到 `MessageProperties`（`getMessageProperties` 方法），
+/// 消息对象本身不再带这两个字段。编辑媒体要用 `can_edit_media`，只查
+/// `can_be_edited` 不够（它只覆盖 `editMessageText` / `editMessageCaption`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChannelRights {
+    /// 能否编辑文本（占位提示 / ❌ 报错）。
+    pub can_edit_text: bool,
+    /// 能否编辑媒体（`editMessageMedia`，频道里把原帖换成视频）。
+    pub can_edit_media: bool,
+}
+
+/// 问 TDLib 这条频道帖当前能不能编辑（一次 `getMessageProperties` 往返）。
+///
+/// 走 simplify 的通用 `invoke` op：`args.request` 就是完整的 TDLib 请求 JSON。
+pub async fn channel_rights(rt: &Runtime, target: &Target) -> Result<ChannelRights, SendError> {
+    let Some(message_id) = target.edit_message_id else {
+        return Err(SendError("这个目标不是频道编辑模式".to_owned()));
+    };
+    let args = json!({
+        "request": {
+            "@type": "getMessageProperties",
+            "chat_id": target.chat_id,
+            "message_id": message_id,
+        },
+        "timeout_ms": TIMEOUT_MS,
+    });
+    let properties = rt.invoke_op("invoke", args, TIMEOUT_MS).await?;
+    Ok(ChannelRights {
+        can_edit_text: properties
+            .get("can_be_edited")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        can_edit_media: properties
+            .get("can_edit_media")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+/// TS 版频道占位提示中间那条分隔线：`\-` 重复 27 次（Markdown v1 里转义的连字符）。
+fn placeholder_separator() -> String {
+    "\\-".repeat(27)
+}
+
+/// 频道里「正在解析」的占位文案：原文 + 分隔线 + 提示。
+///
+/// 与 TS 版 `parse/douyin/index.ts` 的 `editMessageText` 文案逐字一致。
+fn parsing_placeholder(source_text: &str) -> String {
+    format!(
+        "{source_text}\n{}\n\n正在解析抖音视频...",
+        placeholder_separator()
+    )
+}
+
+/// 把原帖文本换成另一段文本（频道编辑模式）。
+///
+/// 走 simplify 的 `edit_message_text` op；`input_message_content` 的 `text` 交给
+/// 宿主按 Markdown 解析，与发送媒体时的文案口径一致。
+pub async fn replace_text(rt: &Runtime, target: &Target, text: &str) -> Result<Value, SendError> {
+    let Some(message_id) = target.edit_message_id else {
+        return Err(SendError("这个目标不是频道编辑模式".to_owned()));
+    };
+    let args = json!({
+        "chat_id": target.chat_id,
+        "message_id": message_id,
+        "input_message_content": {
+            "@type": "inputMessageText",
+            "text": text_json(&Text::markdown(text)),
+        },
+        "timeout_ms": TIMEOUT_MS,
+    });
+    Ok(rt.invoke_op("edit_message_text", args, TIMEOUT_MS).await?)
+}
+
+/// 解析开始前先把原帖改成「正在解析抖音视频...」（频道专用）。
+///
+/// 失败只记日志、**继续解析**：占位提示是体验优化，不该因为它没权限之类的原因
+/// 让整次解析失败；真正失败会由 [`announce_error`] 再试一次编辑。
+pub async fn announce_parsing(rt: &Runtime, target: &Target, source_text: &str) {
+    if let Err(error) = replace_text(rt, target, &parsing_placeholder(source_text)).await {
+        crate::log::warn(&format!("频道占位提示编辑失败（继续解析）：{error}"));
+    }
+}
+
+/// 频道里解析失败：把原帖编辑成 `❌ …`，而不是往频道另发一条错误消息。
+pub async fn announce_error(rt: &Runtime, target: &Target, error: &str) {
+    if let Err(failure) = replace_text(rt, target, &format!("❌ {error}")).await {
+        crate::log::warn(&format!("频道错误提示编辑失败：{failure}"));
+    }
+}
+
+/// 频道里图集要把原帖删掉再发相册：`editMessageMedia` 一次只能换一条内容，
+/// 相册没有编辑形态（TS 版也是 `deleteMessage` 后 `sendMessageAlbum`）。
+///
+/// 删除失败只记日志、继续发相册：删不掉顶多留一条原帖，比整次解析失败好。
+async fn remove_original(rt: &Runtime, target: &Target) {
+    let Some(message_id) = target.edit_message_id else {
+        return;
+    };
+    let args = json!({
+        "chat_id": target.chat_id,
+        "message_ids": [message_id],
+        "revoke": true,
+        "timeout_ms": TIMEOUT_MS,
+    });
+    if let Err(error) = rt.invoke_op("delete_messages", args, TIMEOUT_MS).await {
+        crate::log::warn(&format!("频道里删原帖失败（继续发相册）：{error}"));
     }
 }
 
@@ -339,8 +484,8 @@ impl Drop for Cleanup {
 
 /// 把一组媒体按 10 个一组发成相册，返回所有最终消息。
 ///
-/// 相册**没有**编辑形态（`editMessageMedia` 一次只换一条内容），
-/// 所以频道里也按「新发一组」处理。
+/// 相册**没有**编辑形态（`editMessageMedia` 一次只换一条内容），所以频道里先
+/// 删掉原帖再按「新发一组」处理——与 TS 版 `sendPhotoAlbum` / 多视频相册一致。
 async fn send_albums(
     rt: &Runtime,
     medias: Vec<Media>,
@@ -349,6 +494,10 @@ async fn send_albums(
 ) -> Result<Vec<Value>, SendError> {
     if medias.is_empty() {
         return Err(SendError("这个作品里没有可发送的媒体".to_owned()));
+    }
+    // 频道里相册没有编辑形态：先删原帖，再把相册新发出去（TS 版同样处理）。
+    if target.is_edit() {
+        remove_original(rt, target).await;
     }
     let mut sent = Vec::new();
     for batch in medias.chunks(ALBUM_LIMIT) {
@@ -448,6 +597,15 @@ mod tests {
             music: None,
             cooperation_info: Vec::new(),
         }
+    }
+
+    /// 频道占位文案对齐 TS：原文 + 27 个 `\-` + 「正在解析抖音视频...」。
+    #[test]
+    fn channel_parsing_placeholder_matches_ts() {
+        let text = parsing_placeholder("https://v.douyin.com/x/");
+        assert!(text.starts_with("https://v.douyin.com/x/\n"), "{text}");
+        assert_eq!(text.matches("\\-").count(), 27, "{text}");
+        assert!(text.ends_with("\n\n正在解析抖音视频..."), "{text}");
     }
 
     #[test]
