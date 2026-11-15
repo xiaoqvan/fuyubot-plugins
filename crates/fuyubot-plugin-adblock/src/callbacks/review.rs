@@ -41,7 +41,7 @@ pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
         "本人点击"
     };
 
-    let Some(user) = rt.td.user(user_id).await.ok() else {
+    let Some(user) = rt.td.user(user_id).await else {
         answer(rt, ctx, "无法获取用户信息", true, 60).await;
         return;
     };
@@ -98,8 +98,8 @@ pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
 
     if still_ad {
         let fail_text = format!(
-            "❌ {user_mention} 的复审未通过，仍疑似含广告，请修改资料后重试。\n\n**原因**: {reason}\n**置信度**: {confidence_pct}\n**操作**: {operator_label}({})",
-            ctx.sender_user_id
+            "❌ {user_mention} 的复审未通过，仍疑似含广告，请修改资料后重试。\n\n**原因**: {reason}\n**置信度**: {confidence_pct}\n**操作**: {}",
+            text::with_id(operator_label, ctx.sender_user_id)
         );
         let buttons: Vec<Vec<ReplyButton>> = vec![
             vec![ReplyButton::callback(
@@ -145,10 +145,13 @@ pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
             group,
             vec![
                 "#Mute #welcome #reviewFail".to_owned(),
-                format!("**User**: {user_mention}({user_id})"),
-                format!("**Chat**: {chat_mention}({group})"),
+                format!("**User**: {}", text::with_id(&user_mention, user_id)),
+                format!("**Chat**: {}", text::with_id(&chat_mention, group)),
                 "**Action**: 复审未通过，保持禁言".to_owned(),
-                format!("**Operator**: {operator_label}({})", ctx.sender_user_id),
+                format!(
+                    "**Operator**: {}",
+                    text::with_id(operator_label, ctx.sender_user_id)
+                ),
                 format!("**Confidence**: {confidence_pct}"),
                 format!("**Reason**: {reason}"),
             ],
@@ -188,8 +191,8 @@ pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
             ctx.chat_id,
             ctx.message_id,
             text::markdown(&format!(
-                "✅ {user_mention} 的个人信息复审已通过，已解除禁言。\n**操作**: {operator_label}({})",
-                ctx.sender_user_id
+                "✅ {user_mention} 的个人信息复审已通过，已解除禁言。\n**操作**: {}",
+                text::with_id(operator_label, ctx.sender_user_id)
             )),
             Vec::new(),
             Some(true),
@@ -203,10 +206,13 @@ pub async fn new_member_review(rt: &Runtime, ctx: &CallbackCtx) {
         group,
         vec![
             "#Unmute #welcome #reviewPass".to_owned(),
-            format!("**User**: {user_mention}({user_id})"),
-            format!("**Chat**: {chat_mention}({group})"),
+            format!("**User**: {}", text::with_id(&user_mention, user_id)),
+            format!("**Chat**: {}", text::with_id(&chat_mention, group)),
             "**Action**: 复审通过，已解除禁言".to_owned(),
-            format!("**Operator**: {operator_label}({})", ctx.sender_user_id),
+            format!(
+                "**Operator**: {}",
+                text::with_id(operator_label, ctx.sender_user_id)
+            ),
             format!("**Confidence**: {confidence_pct}"),
             "**Reason**: 资料已修改，AI复审未检出广告".to_owned(),
         ],

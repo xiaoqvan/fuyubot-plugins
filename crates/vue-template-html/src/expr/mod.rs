@@ -25,6 +25,7 @@ mod lexer;
 mod parser;
 
 #[cfg(test)]
+#[path = "../../tests/unit/expr__mod.rs"]
 mod tests;
 
 pub use eval::truthy;

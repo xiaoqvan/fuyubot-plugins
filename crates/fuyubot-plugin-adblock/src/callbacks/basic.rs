@@ -56,9 +56,10 @@ pub async fn unban(rt: &Runtime, ctx: &CallbackCtx) {
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Unban\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Action**: 已解除封禁{}",
-        member.id(),
-        ctx.sender_user_id,
+        "#Unban\n**Group**: {}\n**User**: {}\n**Admin**: {}\n**Action**: 已解除封禁{}",
+        text::with_id(&chat_mention, group),
+        text::with_id(&target, member.id()),
+        text::with_id(&admin, ctx.sender_user_id),
         if whitelisted {
             " 并已加入群白名单"
         } else {
@@ -135,9 +136,10 @@ pub async fn unmute(rt: &Runtime, ctx: &CallbackCtx) {
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Unmute\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})",
-        member.id(),
-        ctx.sender_user_id
+        "#Unmute\n**Group**: {}\n**User**: {}\n**Admin**: {}",
+        text::with_id(&chat_mention, group),
+        text::with_id(&target, member.id()),
+        text::with_id(&admin, ctx.sender_user_id)
     );
     send_group_log(rt, group, &body).await;
 }
@@ -178,9 +180,10 @@ pub async fn ban(rt: &Runtime, ctx: &CallbackCtx) {
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Ban\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Reason**: Spam detected",
-        member.id(),
-        ctx.sender_user_id
+        "#Ban\n**Group**: {}\n**User**: {}\n**Admin**: {}\n**Reason**: Spam detected",
+        text::with_id(&chat_mention, group),
+        text::with_id(&target, member.id()),
+        text::with_id(&admin, ctx.sender_user_id)
     );
     let buttons: Vec<Vec<ReplyButton>> =
         vec![callback_row("unban+白名单", unban_callback(group, member))];

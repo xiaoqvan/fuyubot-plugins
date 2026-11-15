@@ -8,8 +8,8 @@ FuyuBot 的**消息日志插件**（Rust，cdylib）。订阅 `updateNewMessage`
 - 无依赖：不注册命令、不发消息、不改消息，也不依赖其它插件
 - 产物：`fuyubot_plugin_message_log.{dll,so,dylib}`
 
-它对应旧 TS 框架的 [`plugins/message_log.ts`](../../../FuyuBot/plugins/message_log.ts)，
-但**输出交给框架的日志系统**，不再自带 pino 和按日轮转的 `logs/message.*.log`。
+输出交给 FuyuBot 的插件日志系统：宿主统一加时间、来源与级别，一次性写进控制台、
+TUI 日志页和 `logs/fuyubot.log`，插件自己不另外维护日志文件。
 
 ## 输出长什么样
 
@@ -21,7 +21,7 @@ FuyuBot 的**消息日志插件**（Rust，cdylib）。订阅 `updateNewMessage`
 2026-11-11 13:45:05 [plugins - fuyubot.message-log] INFO  [公告频道(id:-1009876543210)][频道名(id:-1009876543210)][topic:forum:7][forward_from_channel:-100111…][forward_msg_id:99]: [图片 file_id:AQAD…] 活动海报
 ```
 
-正文的拼法（与 TS 版同源）：
+正文的拼法：
 
 ```text
 [聊天][发送者][回复/引用/转发/话题…]: 正文
@@ -29,7 +29,7 @@ FuyuBot 的**消息日志插件**（Rust，cdylib）。订阅 `updateNewMessage`
 
 | 片段 | 规则 |
 | --- | --- |
-| 聊天 | 私聊固定 `Private`（TS 版行为）；群 / 频道 `标题(id:…)` |
+| 聊天 | 私聊固定 `Private`；群 / 频道 `标题(id:…)` |
 | 发送者 | 用户 `名字(id:…)`；频道 / 匿名管理员 `标题(id:…)` |
 | 回复 | `[reply_chat:…][reply_msg:…]`；有 `quote` 时再加 `[quote]` 与 `quote_from_*` |
 | 转发 | `[forward_from_user:…]`、`[forward_from_channel:…][forward_msg_id:…]` 等 |
@@ -64,6 +64,12 @@ ignore_outgoing = false # true = 不记录本账号自己发出的消息
 max_text_chars = 4096   # 单条正文最多保留多少字符；0 = 不截断
 ```
 
+| 键 | 默认 | 一句话 |
+| --- | --- | --- |
+| `enabled` | `true` | `false` = 插件照常加载但不订阅消息 |
+| `ignore_outgoing` | `false` | `true` = 不记录自己发出的消息 |
+| `max_text_chars` | `4096` | 正文最多保留多少字符，`0` = 不截断 |
+
 > 日志门槛由宿主统一控制：`[plugins].log_level`（默认 `info`）。
 > 本插件只打 `INFO`；调成 `warn` 后消息日志会一起消失，需要时调回来即可。
 > 想只保留本插件的日志，可以用 `fuyubot run --log-plugin fuyubot.message-log`。
@@ -82,20 +88,19 @@ max_text_chars = 4096   # 单条正文最多保留多少字符；0 = 不截断
 
 回复 / 引用 / 转发 / 话题的标签不依赖正文类型，媒体消息同样会带。
 
-## 与 TS 版的差异
+## 输出上的取舍
 
-| | TS 版 `message_log.ts` | 本插件 |
-| --- | --- | --- |
-| 输出 | `console.log`（彩色）+ pino 按日轮转文件 | `host.log`：控制台、TUI 日志页、`logs/fuyubot.log` 一次写全 |
-| 时间戳 | 正文里再打一遍消息时间 | 宿主日志行已有时间，正文不再重复 |
-| 换行 | 想转义 `\n`，实际只替换了字面量 `\\n` | 真正的换行 / 回车 / 制表符都转成 `\n` `\r` `\t` |
-| 控制字符 | 原样输出（可注入 ANSI） | 转义成 `\u{…}`，一条消息只占一行 |
-| 名字 | `first_name + last_name`（无空格），取不到会拼出 `undefined…` | `first last`（有空格），取不到回退「未知用户」 |
-| 聊天身份 | 频道发言缺 `: ` 分隔 | 统一 `[标签]: 正文` |
-| 话题 | 认不出的话题类型会把回复 / 转发标签清空 | 只追加，不清空 |
-| 正文上限 | 无 | `max_text_chars` 可配，按字符截断并注明原长度 |
-| 线程 | 回调里直接 `await` TDLib | 回调只入队，工作线程顺序处理；队列满时丢弃并告警 |
-| 开关 | 无 | `enabled` / `ignore_outgoing` / `max_text_chars` |
+| 项 | 做法 |
+| --- | --- |
+| 时间戳 | 宿主日志行已有时间，正文不再重复 |
+| 换行 | 真正的换行 / 回车 / 制表符都转成 `\n` `\r` `\t` |
+| 控制字符 | 转义成 `\u{…}`，一条消息只占一行 |
+| 名字 | `first last`（有空格），取不到回退「未知用户」 |
+| 聊天身份 | 统一 `[标签]: 正文` |
+| 话题 | 只追加，不清空已有标签 |
+| 正文上限 | `max_text_chars` 可配，按字符截断并注明原长度 |
+| 线程 | 回调只入队，工作线程顺序处理；队列满时丢弃并告警 |
+| 开关 | `enabled` / `ignore_outgoing` / `max_text_chars` |
 
 ## 线程与生命周期
 

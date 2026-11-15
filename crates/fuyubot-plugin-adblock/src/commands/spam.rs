@@ -143,7 +143,7 @@ pub async fn handle(rt: &Runtime, command: &Command, _sender: Sender, message: &
 // ── 目标解析 ────────────────────────────────────────────────────
 
 async fn target_from_user(rt: &Runtime, user_id: i64) -> Option<TargetInfo> {
-    let user = rt.td.user(user_id).await.ok()?;
+    let user = rt.td.user(user_id).await?;
     let full = rt.td.user_full(user_id).await.ok();
     let name = format!(
         "{}{}",
@@ -299,7 +299,7 @@ async fn report_user(rt: &Runtime, _message: &Value, chat_id: i64, info: TargetI
 
 /// 按 chat_id 取「主页挂载频道」（只认频道形态的超级群）。
 async fn personal_channel_by_chat(rt: &Runtime, chat_id: i64) -> Option<(String, String)> {
-    let chat = rt.td.chat(chat_id).await.ok()?;
+    let chat = rt.td.chat(chat_id).await?;
     let kind = chat.get("type")?;
     if kind.get("@type").and_then(Value::as_str) != Some("chatTypeSupergroup")
         || !kind
@@ -355,6 +355,8 @@ async fn report_message(
     }
 
     let target_mention = rt.td.sender_mention(target, true).await;
+    // 论坛群组：进度提示跟着 `/spam` 命令所在的话题走。
+    let topic = text::topic_of(command_message);
     let tips = rt
         .td
         .send_text(
@@ -362,7 +364,7 @@ async fn report_message(
             text::markdown(&format!("正在处理对 {target_mention} 的广告举报...")),
             None,
             Vec::new(),
-            None,
+            topic,
             Some(true),
         )
         .await;
@@ -521,20 +523,24 @@ async fn report_message(
     let target_id = target.id();
     if result.ad_detected && result.confidence > 0.8 {
         if let Some(tips_id) = tips_id {
-            let _ = rt.td.edit_text(
-                chat_id,
-                tips_id,
-                text::markdown(&format!(
-                    "经过 ChatGPT 的判断 {target_mention}(ID: {target_id}) 是已受到限制\n\n理由: {}",
-                    if result.reason.is_empty() {
-                        "AI检测为广告信息"
-                    } else {
-                        &result.reason
-                    }
-                )),
-                Vec::new(),
-                Some(true),
-            ).await;
+            let _ = rt
+                .td
+                .edit_text(
+                    chat_id,
+                    tips_id,
+                    text::markdown(&format!(
+                        "经过 ChatGPT 的判断 {} 是已受到限制\n\n理由: {}",
+                        text::with_id(&target_mention, target_id),
+                        if result.reason.is_empty() {
+                            "AI检测为广告信息"
+                        } else {
+                            &result.reason
+                        }
+                    )),
+                    Vec::new(),
+                    Some(true),
+                )
+                .await;
         }
         persist_ai_result(
             rt,
@@ -575,7 +581,8 @@ async fn report_message(
                 chat_id,
                 tips_id,
                 text::markdown(&format!(
-                    "经过 ChatGPT 的判断 {target_mention}(ID: {target_id}) \n可能是 广告 消息，但是存疑\n\n请管理员手动确认，如果不是请忽略\n\nAI判断理由: {}",
+                    "经过 ChatGPT 的判断 {} \n可能是 广告 消息，但是存疑\n\n请管理员手动确认，如果不是请忽略\n\nAI判断理由: {}",
+                    text::with_id(&target_mention, target_id),
                     if result.reason.is_empty() {
                         "AI检测可能为广告信息"
                     } else {
@@ -636,9 +643,15 @@ async fn send_report_log(rt: &Runtime, chat_id: i64, command_message: &Value, ta
         Some(sender) => rt.td.sender_mention(sender, true).await,
         None => "-".to_owned(),
     };
+    let reporter_label = if reporter == 0 {
+        reporter_mention.clone()
+    } else {
+        text::with_id(&reporter_mention, reporter)
+    };
     let body = format!(
-        "#SPAM\n**Group**:{chat_mention}({chat_id}) \n**User**:{reporter_mention}(ID: {reporter})\n**Reported User**:{user_mention}(ID: {})",
-        target.id()
+        "#SPAM\n**Group**:{} \n**User**:{reporter_label}\n**Reported User**:{}",
+        text::with_id(&chat_mention, chat_id),
+        text::with_id(&user_mention, target.id())
     );
     let _ = rt
         .td
@@ -934,7 +947,7 @@ async fn check_mentioned_usernames(rt: &Runtime, chat_id: i64, text: &str) {
                 else {
                     continue;
                 };
-                let user = rt.td.user(user_id).await.ok();
+                let user = rt.td.user(user_id).await;
                 let full = rt.td.user_full(user_id).await.ok();
                 let name = user
                     .as_ref()
@@ -1057,7 +1070,7 @@ fn caption_of(content: &Value) -> String {
 async fn sender_profile(rt: &Runtime, sender: Sender) -> (String, String) {
     match sender {
         Sender::User(user_id) => {
-            let user = rt.td.user(user_id).await.ok();
+            let user = rt.td.user(user_id).await;
             let full = rt.td.user_full(user_id).await.ok();
             let name = user
                 .as_ref()
@@ -1085,7 +1098,6 @@ async fn sender_profile(rt: &Runtime, sender: Sender) -> (String, String) {
                 .td
                 .chat(chat_id)
                 .await
-                .ok()
                 .and_then(|chat| chat.get("type").cloned())
                 .and_then(|kind| kind.get("supergroup_id").and_then(Value::as_i64))
             {
@@ -1228,20 +1240,5 @@ fn strip_html(text: &str) -> String {
 fn _config_types(_: crate::store::GroupConfig, _: crate::store::LimitMode) {}
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn extracts_mentions() {
-        let text = "@SpamUser1 你好 @ab 与 @_ok_name 和 @long_name2";
-        let mentions = extract_mentions(text);
-        assert!(mentions.contains(&"spamuser1".to_owned()));
-        assert!(!mentions.contains(&"ab".to_owned()));
-        assert!(mentions.contains(&"long_name2".to_owned()));
-    }
-
-    #[test]
-    fn strips_html_tags() {
-        assert_eq!(strip_html("<b>你好</b> 世界"), "你好 世界");
-    }
-}
+#[path = "../../tests/unit/commands__spam.rs"]
+mod tests;

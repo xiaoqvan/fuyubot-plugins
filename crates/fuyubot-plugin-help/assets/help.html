@@ -14,12 +14,22 @@ html,body{margin:0;padding:0;background:#fff;color:#000;font-family:system-ui,-a
 .help-card-title{font-size:1.25rem;line-height:1.75rem;font-weight:600;margin:0;padding:0}
 .help-card-desc{margin:0;padding:0;font-size:.75rem;line-height:1rem;color:#737373}
 .help-grid{display:flex;flex-wrap:wrap;margin-top:.5rem;gap:.5rem}
-.help-item{display:flex;flex-direction:column;width:24%;flex-grow:0;flex-shrink:0;padding:.375rem;border-radius:.5rem;background:rgba(255,255,255,.5);border:1px solid rgba(0,0,0,.1);box-shadow:0 0 6px rgba(0,0,0,.3)}
-.help-item-name{font-size:1rem;line-height:1.5rem;font-weight:500;margin:0;padding:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.help-item{display:flex;flex-direction:column;width:24%;flex-grow:0;flex-shrink:0;padding:.375rem .5rem;border-radius:.5rem;background:rgba(255,255,255,.72);border:1px solid rgba(0,0,0,.08);box-shadow:0 1px 2px rgba(15,23,42,.04)}
+.help-item-head{display:flex;flex-direction:row;align-items:center;flex-wrap:nowrap;width:100%;gap:.25rem}
+.help-item-name{font-size:1rem;line-height:1.5rem;font-weight:500;margin:0;padding:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-grow:1;flex-shrink:1;flex-basis:0%}
+.help-scopes{display:flex;flex-direction:row;align-items:center;flex-grow:0;flex-shrink:0;gap:3px}
+.help-scope{display:flex;flex-grow:0;flex-shrink:0;width:14px;height:14px}
+.help-scope svg{display:block;width:14px;height:14px}
 .help-item-desc{margin:0;padding:0;font-size:.75rem;line-height:1rem;color:rgba(0,0,0,.6);display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;text-overflow:ellipsis}
 .help-empty{margin:.5rem 0 0;font-size:.875rem;line-height:1.25rem;color:#737373}
-.help-foot{display:flex;align-items:center;justify-content:space-between;width:100%}
-.help-tips{margin:0;padding:.25rem .75rem;background:#f3f4f6;color:#3b82f6;font-size:.75rem;line-height:1rem;border-radius:.375rem}
+.help-foot{display:flex;flex-direction:row;align-items:center;flex-wrap:nowrap;width:100%;gap:6px}
+.help-tips{margin:0;padding:.25rem .75rem;background:#f3f4f6;color:#3b82f6;font-size:.75rem;line-height:1rem;border-radius:.375rem;flex-grow:0;flex-shrink:0}
+.help-legend{display:flex;flex-direction:row;align-items:center;flex-wrap:nowrap;gap:4px;min-width:0}
+.help-legend-item{display:flex;flex-direction:row;align-items:center;flex-grow:0;flex-shrink:1;gap:3px;padding:1px 4px;border-radius:9999px;background:rgba(255,255,255,.7);border:1px solid rgba(15,23,42,.06);min-width:0}
+.help-legend-swatch{display:flex;flex-grow:0;flex-shrink:0;width:9px;height:9px;border-radius:9999px;border:1px solid rgba(15,23,42,.16)}
+.help-legend-icon{display:flex;flex-grow:0;flex-shrink:0;width:14px;height:14px}
+.help-legend-icon svg{display:block;width:14px;height:14px}
+.help-legend-text{font-size:.6875rem;line-height:1rem;color:#525252;margin:0;padding:0;white-space:nowrap}
 .help-version{display:flex;margin:0 0 0 auto;padding:0;color:#a3a3a3;font-size:.75rem;line-height:1rem}
 </style>
 <div class="help-root">
@@ -38,8 +48,32 @@ html,body{margin:0;padding:0;background:#fff;color:#000;font-family:system-ui,-a
                 <p class="help-card-desc">{{ table.desc }}</p>
             </div>
             <div class="help-grid" v-if="table.commands.length">
-                <div class="help-item" v-for="command in table.commands" :key="command.name">
-                    <h3 class="help-item-name">/{{ command.name }}</h3>
+                <div class="help-item" v-for="command in table.commands" :key="command.name" :style="{ borderColor: command.color, boxShadow: command.shadow }">
+                    <div class="help-item-head">
+                        <h3 class="help-item-name">/{{ command.name }}</h3>
+                        <div class="help-scopes">
+                            <span class="help-scope" v-if="command.scopes.private" title="私聊">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#0d9488" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="12" cy="7" r="4"></circle>
+                                </svg>
+                            </span>
+                            <span class="help-scope" v-if="command.scopes.group" title="群组">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#ea580c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="9" cy="7" r="4"></circle>
+                                    <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                                </svg>
+                            </span>
+                            <span class="help-scope" v-if="command.scopes.channel" title="频道">
+                                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <path d="m3 11 18-5v12L3 14v-3z"></path>
+                                    <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"></path>
+                                </svg>
+                            </span>
+                        </div>
+                    </div>
                     <p class="help-item-desc">{{ command.desc }}</p>
                 </div>
             </div>
@@ -47,6 +81,28 @@ html,body{margin:0;padding:0;background:#fff;color:#000;font-family:system-ui,-a
         </div>
         <div class="help-foot">
             <p class="help-tips" v-if="tips">{{ tips }}</p>
+            <div class="help-legend" v-if="legend.items.length">
+                <span class="help-legend-item" v-for="item in legend.items" :key="item.key">
+                    <span class="help-legend-swatch" v-if="item.kind === 'role'" :style="{ backgroundColor: item.color }"></span>
+                    <span class="help-legend-icon" v-else>
+                        <svg v-if="item.key === 'scope-private'" viewBox="0 0 24 24" fill="none" stroke="#0d9488" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="12" cy="7" r="4"></circle>
+                        </svg>
+                        <svg v-else-if="item.key === 'scope-group'" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                        <svg v-else viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="m3 11 18-5v12L3 14v-3z"></path>
+                            <path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"></path>
+                        </svg>
+                    </span>
+                    <span class="help-legend-text">{{ item.label }}</span>
+                </span>
+            </div>
             <h1 class="help-version">{{ version }}</h1>
         </div>
     </div>

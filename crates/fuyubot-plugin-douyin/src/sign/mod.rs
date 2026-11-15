@@ -22,4 +22,5 @@ pub mod sm3;
 pub mod websign;
 
 #[cfg(test)]
+#[path = "../../tests/unit/sign__vectors.rs"]
 mod vectors;

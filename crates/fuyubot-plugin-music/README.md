@@ -2,7 +2,7 @@
 
 FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音乐**，只做三件事——
 搜索、解析分享链接、按指定音质发音频；汽水还支持 **UGC 音乐视频**分享
-（发视频，文案格式与抖音插件一致）。本仓库（`fuyubot-plugins`）把它和其余六个
+（发视频，文案格式与抖音插件一致）。本仓库（`fuyubot-plugins`）把它和其余七个
 插件一起按 **ABI v6** 编译、打成 bundle。
 
 ```
@@ -90,12 +90,15 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 
 ## 命令
 
-| 命令 | 作用 |
-| --- | --- |
-| `/music163 <关键词>` | 搜索，返回前 8 条（带歌曲 ID） |
-| `/music163 <链接或 ID> [音质]` | 解析并发送音频 |
-| `/soda <关键词>` | 搜索汽水，返回前 8 条（带 track ID） |
-| `/soda <链接或 ID> [音质]` | 单曲：解析并发送音频；UGC 视频：解析并发送视频 |
+| 命令 | 一句话 | 场景 | 权限 |
+| --- | --- | --- | --- |
+| `/music163 <关键词>` | 搜网易云，回前 8 条（带歌曲 ID） | 私聊 / 群 / 频道 | 所有人 |
+| `/music163 <链接或 ID> [音质]` | 解析网易云作品并发音频 | 私聊 / 群 / 频道 | 所有人 |
+| `/soda <关键词>` | 搜汽水，回前 8 条（带 track ID） | 私聊 / 群 / 频道 | 所有人 |
+| `/soda <链接或 ID> [音质]` | 单曲发音频；UGC 视频发视频 | 私聊 / 群 / 频道 | 所有人 |
+
+聊天里贴 `music.163.com` / `163cn.tv` / `qishui.com` / `qishui.douyin.com` 的分享链接
+也会自动按默认音质解析；`/` 开头的消息不抢，媒体说明文字里的链接不解析。
 
 链接支持：完整分享链接、短链（`163cn.tv` / `qishui.douyin.com`，会跟一次重定向）、
 汽水短链的落地页（`music.douyin.com/qishui/share/track?track_id=…` 或
@@ -183,6 +186,19 @@ soda_signer_token = "可选：签名器的 Bearer token"
 - **配置优先**：配置里有的平台不会再读旧文件；某个平台没配才回退，
   日志里会写明「鉴权材料来自 fuyubot.toml」还是「回退旧文件（建议迁移）」。
 - 换 cookie 后重启宿主即可，不用重编译。
+
+| 键 | 默认 | 一句话 |
+| --- | --- | --- |
+| `netease` | 空 | 网易云 Cookie 头，不填只能拿匿名可播曲目 |
+| `soda` | 空 | 汽水 Cookie 头，不填只走 Web 侧接口 |
+| `soda_device_id` | 自动生成 | 汽水设备号，要和抓包那台机器一致 |
+| `soda_iid` | 自动生成 | 汽水安装 id，同上 |
+| `soda_fp` | 同 `soda_device_id` | 汽水设备指纹 |
+| `soda_x_helios` | 空 | 抓包得到的签名头，会员整曲用 |
+| `soda_x_medusa` | 空 | 另一枚签名头，和上面成对出现 |
+| `soda_user_agent` | `LunaPC/3.3.0(359450208)` | 汽水客户端 UA |
+| `soda_signer_url` | 空 | 外部签名器地址，比静态头更稳 |
+| `soda_signer_token` | 空 | 签名器的 Bearer token |
 
 ### 旧文件格式（兼容，建议迁移到上面）
 
@@ -289,7 +305,7 @@ plugins/
 - 汽水 UGC 视频：落盘 mp4 + 封面缩略图 → `inputMessageVideo`：
   标题 / 作者 / 时长 / 宽高 / `supports_streaming`，文案为「标题 + `By @作者`」。
 - 普通会话**不引用 / 不回复原消息**：`sendMessage` 不带 `reply_to`，也不再为判断
-  群聊发 TDLib 方法请求（旧版的 `getChat` 已删除）。**频道帖例外**：命令 / 链接
+  群聊发 TDLib 方法请求。**频道帖例外**：命令 / 链接
   消息本身就是要替换的那条帖子，走 `editMessageText` / `editMessageMedia` 编辑
   原帖（编辑前先 `getMessageProperties` 验权限）。
 
@@ -308,12 +324,11 @@ plugins/
 
 ## 与参考实现的关系
 
-- 网易云命令与 eapi 行为参考 `F:/nodejs/tdlib/plugin/music163`（TypeScript 版）。
-- 汽水接口与音质档位参考 [`sodahub-org/libresoda`](https://github.com/sodahub-org/libresoda)。
-- **代码是本仓库独立写的**（没有把 AGPL 的 libresoda 源码搬进来），只沿用协议事实：
+- 网易云的 eapi（AES-128-ECB + MD5 签名）按公开协议实现，本仓库独立编写。
+- 汽水接口与音质档位参考 [`sodahub-org/libresoda`](https://github.com/sodahub-org/libresoda)，
+  **代码独立重写**（没有把 AGPL 的 libresoda 源码搬进来），只沿用协议事实：
   接口路径、参数形状、eapi / spade / CENC 的算法。
-- 不做参考实现里的其余内容：内联查询、搜索结果图 + 回调按钮、歌单 / 专辑 / 歌词、
-  扫码登录、播放上报。
+- 不做的事情：内联查询、搜索结果图 + 回调按钮、歌单 / 专辑 / 歌词、扫码登录、播放上报。
 
 ## 自检
 

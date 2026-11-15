@@ -50,11 +50,16 @@ pub mod collections {
     pub const AI_DEFAULT_CHATS: &str = "ai_default_chats";
     /// 插件自己的设置（全局 AI 触发关键词）。TS 版放的是本地 lowdb 文件。
     pub const SETTINGS: &str = "adblock_settings";
+    /// TS 版迁过来的全局 AI 触发词（`_id = "ai_review_keywords"`，字段 `keywords`）。
+    /// 只读兼容：本插件写的是 [`SETTINGS`]，老库里的这份不能被无视。
+    pub const LEGACY_GLOBAL_CONFIG: &str = "adb_global_config";
+    /// AI 审核的「这个人刚才在聊什么」：每人每群最近几条文本，48 小时 TTL。
+    pub const MESSAGE_TEXTS: &str = "message_texts";
     /// `/spam` 的举报流水（TS 版就有，保留以免审计断档）。
     pub const SPAM_LOG: &str = "SPAM_Log";
 }
 
-/// 消息记录保留 48 小时。
+/// 消息记录 / 消息文本历史保留 48 小时。
 pub const MESSAGE_RECORD_TTL_SECONDS: u64 = 48 * 60 * 60;
 /// 入群监视窗口：24 小时。
 pub const NEW_MEMBER_WATCH_MS: i64 = 24 * 60 * 60 * 1000;
@@ -102,6 +107,8 @@ pub struct GroupConfig {
     pub spam_tips_meg_delay: u32,
     pub ai_review_enabled: bool,
     pub check_new_member: bool,
+    /// 自动点赞机器人拦截（群管理员用 `/adconfig like_guard` 开启）。默认关闭。
+    pub like_guard_enabled: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -123,6 +130,7 @@ impl Default for GroupConfig {
             spam_tips_meg_delay: 30,
             ai_review_enabled: false,
             check_new_member: false,
+            like_guard_enabled: false,
             ai_api_key: None,
             ai_base_url: None,
             ai_model: None,
@@ -159,7 +167,7 @@ fn strings_of(doc: &Value, key: &str) -> Vec<String> {
 fn i64s_of(doc: &Value, key: &str) -> Vec<i64> {
     doc.get(key)
         .and_then(Value::as_array)
-        .map(|items| items.iter().filter_map(Value::as_i64).collect())
+        .map(|items| items.iter().filter_map(number_i64).collect())
         .unwrap_or_default()
 }
 
@@ -169,12 +177,47 @@ fn bool_of(doc: &Value, key: &str) -> Option<bool> {
 
 fn u32_of(doc: &Value, key: &str) -> Option<u32> {
     doc.get(key)
-        .and_then(Value::as_u64)
-        .map(|value| value.min(u32::MAX as u64) as u32)
+        .and_then(number_i64)
+        .and_then(|v| u32::try_from(v).ok())
 }
 
 fn i64_of(doc: &Value, key: &str) -> Option<i64> {
-    doc.get(key).and_then(Value::as_i64)
+    doc.get(key).and_then(number_i64)
+}
+
+/// 数字字段的**宽松读法**：整数值的浮点也认。
+///
+/// TS 版把 `chat_id` / `user_id` / `message_id` / `target_tgid` 存成 BSON
+/// `Double`，mongo 插件用 relaxed Extended JSON 回传后它们是 JSON 浮点数
+/// （`-1001997023691.0`）。`Value::as_i64()` 对浮点数一律返回 `None`，直接用它
+/// 读老库，id 全是 0、白名单全是空——查询能命中（Mongo 数字跨类型按值相等），
+/// 显示和后续写回却都错。这里把浮点、字符串数字和 canonical v2 的
+/// `{"$numberLong":"…"}` 一起认下来。
+fn number_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(number) => number.as_i64().or_else(|| integral_of(number.as_f64()?)),
+        Value::String(text) => text.trim().parse::<i64>().ok(),
+        Value::Object(object) => {
+            if let Some(inner) = object
+                .get("$numberLong")
+                .or_else(|| object.get("$numberInt"))
+            {
+                return number_i64(inner);
+            }
+            object
+                .get("$numberDouble")
+                .and_then(Value::as_str)
+                .and_then(|text| integral_of(text.trim().parse::<f64>().ok()?))
+        }
+        _ => None,
+    }
+}
+
+/// f64 → i64，只接受 **2^53 以内的整数**（再大 f64 已经不能精确表示整数了）。
+fn integral_of(value: f64) -> Option<i64> {
+    const EXACT_INT_LIMIT: f64 = 9_007_199_254_740_992.0; // 2^53
+    (value.is_finite() && value.fract() == 0.0 && value.abs() <= EXACT_INT_LIMIT)
+        .then_some(value as i64)
 }
 
 impl GroupConfig {
@@ -201,6 +244,7 @@ impl GroupConfig {
                 .unwrap_or(defaults.spam_tips_meg_delay),
             ai_review_enabled: bool_of(doc, "ai_review_enabled").unwrap_or(false),
             check_new_member: bool_of(doc, "check_new_member").unwrap_or(false),
+            like_guard_enabled: bool_of(doc, "like_guard_enabled").unwrap_or(false),
             ai_api_key: doc
                 .get("ai_api_key")
                 .and_then(Value::as_str)
@@ -264,6 +308,8 @@ pub struct NewMemberWatch {
     pub recheck_count: u32,
     pub review_approved: bool,
     pub review_approved_at: Option<i64>,
+    /// 24h 监视期内「未判为广告」的消息数；超过阈值就解除监视。
+    pub clean_message_count: u32,
     pub updated_at: i64,
 }
 
@@ -282,7 +328,43 @@ impl NewMemberWatch {
             recheck_count: u32_of(doc, "recheck_count").unwrap_or(0),
             review_approved: bool_of(doc, "review_approved").unwrap_or(false),
             review_approved_at: doc.get("review_approved_at").and_then(date_ms),
+            clean_message_count: u32_of(doc, "clean_message_count").unwrap_or(0),
             updated_at: date_ms(doc.get("updated_at").unwrap_or(&Value::Null)).unwrap_or(0),
+        }
+    }
+}
+
+impl BanRecord {
+    fn from_doc(doc: &Value) -> Self {
+        Self {
+            id: doc_id(doc),
+            chat_id: i64_of(doc, "chat_id").unwrap_or(0),
+            target_tgid: i64_of(doc, "target_tgid").unwrap_or(0),
+            target_type: string_of(doc, "target_type"),
+            action: string_of(doc, "action"),
+            spam_type: string_of(doc, "spam_type"),
+            spam_detail: string_of(doc, "spam_detail"),
+            trigger_db_id: doc
+                .get("trigger_db_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            created_at: doc.get("createdAt").and_then(date_ms).unwrap_or(0),
+        }
+    }
+}
+
+impl MuteReview {
+    fn from_doc(doc: &Value) -> Self {
+        Self {
+            chat_id: i64_of(doc, "chat_id").unwrap_or(0),
+            user_id: i64_of(doc, "user_id").unwrap_or(0),
+            message_id: i64_of(doc, "message_id"),
+            reason: string_of(doc, "reason"),
+            confidence: doc.get("confidence").and_then(Value::as_f64).unwrap_or(0.0),
+            muted_at: doc.get("muted_at").and_then(date_ms).unwrap_or(0),
+            deadline: doc.get("deadline").and_then(date_ms).unwrap_or(0),
+            status: string_of(doc, "status"),
+            updated_at: doc.get("updated_at").and_then(date_ms).unwrap_or(0),
         }
     }
 }
@@ -345,17 +427,13 @@ pub fn date(ms: i64) -> Value {
 pub fn date_ms(value: &Value) -> Option<i64> {
     match value {
         Value::String(text) => parse_rfc3339_ms(text),
-        Value::Number(number) => number.as_i64(),
+        Value::Number(_) => number_i64(value),
         Value::Object(object) => {
             let inner = object.get("$date")?;
             match inner {
                 Value::String(text) => parse_rfc3339_ms(text),
-                Value::Number(number) => number.as_i64(),
-                Value::Object(inner) => inner.get("$numberLong").and_then(|value| match value {
-                    Value::String(text) => text.parse::<i64>().ok(),
-                    Value::Number(number) => number.as_i64(),
-                    _ => None,
-                }),
+                Value::Number(_) => number_i64(inner),
+                Value::Object(inner) => inner.get("$numberLong").and_then(number_i64),
                 _ => None,
             }
         }
@@ -632,6 +710,18 @@ impl Db {
             ),
             (c::MESSAGE_RECORDS, json!({"messageId": 1}), false, None),
             (
+                c::MESSAGE_TEXTS,
+                json!({"createdAt": 1}),
+                false,
+                Some(MESSAGE_RECORD_TTL_SECONDS),
+            ),
+            (
+                c::MESSAGE_TEXTS,
+                json!({"chatId": 1, "userId": 1, "messageId": -1}),
+                false,
+                None,
+            ),
+            (
                 c::BAN_RECORDS,
                 json!({"target_tgid": 1, "createdAt": -1}),
                 false,
@@ -841,22 +931,7 @@ impl Db {
             )
             .await
             .unwrap_or_default();
-        docs.iter()
-            .map(|doc| BanRecord {
-                id: doc_id(doc),
-                chat_id: i64_of(doc, "chat_id").unwrap_or(0),
-                target_tgid: i64_of(doc, "target_tgid").unwrap_or(0),
-                target_type: string_of(doc, "target_type"),
-                action: string_of(doc, "action"),
-                spam_type: string_of(doc, "spam_type"),
-                spam_detail: string_of(doc, "spam_detail"),
-                trigger_db_id: doc
-                    .get("trigger_db_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                created_at: doc.get("createdAt").and_then(date_ms).unwrap_or(0),
-            })
-            .collect()
+        docs.iter().map(BanRecord::from_doc).collect()
     }
 
     // ── 消息记录 ──────────────────────────────────────────────────
@@ -901,6 +976,64 @@ impl Db {
             )
             .await
             .unwrap_or(0)
+    }
+
+    // ── 消息文本历史（AI 审核上下文） ─────────────────────────────
+
+    /// 记一条消息文本（AI 审核要看「这个人刚才在聊什么」）。
+    ///
+    /// 落库而不是放内存：进程重启 / 换实例都还在；TTL 48 小时由
+    /// `message_texts.createdAt` 索引负责。
+    pub async fn add_text(&self, chat_id: i64, user_id: i64, message_id: i64, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let doc = json!({
+            "messageId": message_id,
+            "userId": user_id,
+            "chatId": chat_id,
+            "text": text,
+            "createdAt": date(now_ms()),
+        });
+        if let Err(error) = self.mongo.insert(collections::MESSAGE_TEXTS, doc).await {
+            log::debug(&self.host, format!("写 message_texts 失败：{error}"));
+        }
+    }
+
+    /// 每人每群最近 `limit` 条文本（按时间从旧到新），排除 `exclude` 那条。
+    ///
+    /// `messageId` 在 TDLib 里随时间是递增的，所以按它倒序取就是「最近几条」。
+    pub async fn recent_texts(
+        &self,
+        chat_id: i64,
+        user_id: i64,
+        exclude: Option<i64>,
+        limit: usize,
+    ) -> Vec<String> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let mut filter = json!({ "chatId": chat_id, "userId": user_id });
+        if let Some(exclude) = exclude {
+            filter["messageId"] = json!({ "$ne": exclude });
+        }
+        let docs = self
+            .mongo
+            .find(
+                collections::MESSAGE_TEXTS,
+                filter,
+                Some(json!({ "messageId": -1 })),
+                Some(limit as i64),
+            )
+            .await
+            .unwrap_or_default();
+        let mut texts: Vec<String> = docs
+            .iter()
+            .filter_map(|doc| doc.get("text").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        texts.reverse();
+        texts
     }
 
     // ── 黑名单：写 ────────────────────────────────────────────────
@@ -1390,7 +1523,8 @@ impl Db {
     }
 
     pub async fn global_ai_keywords(&self) -> Vec<String> {
-        self.mongo
+        if let Some(values) = self
+            .mongo
             .find_one(
                 collections::SETTINGS,
                 json!({ "_id": "global_ai_keywords" }),
@@ -1399,6 +1533,21 @@ impl Db {
             .ok()
             .flatten()
             .map(|doc| strings_of(&doc, "values"))
+        {
+            return values;
+        }
+        // 兼容 TS 版：全局触发词原本存在 `adb_global_config` 的
+        // `_id = "ai_review_keywords"` 文档里（字段 `keywords`）。新库没建
+        // `adblock_settings` 时读这份，切过来不会「一个词都不剩」。
+        self.mongo
+            .find_one(
+                collections::LEGACY_GLOBAL_CONFIG,
+                json!({ "_id": "ai_review_keywords" }),
+            )
+            .await
+            .ok()
+            .flatten()
+            .map(|doc| strings_of(&doc, "keywords"))
             .unwrap_or_default()
     }
 
@@ -1540,17 +1689,7 @@ impl Db {
             .await
             .ok()
             .flatten()?;
-        Some(MuteReview {
-            chat_id: i64_of(&doc, "chat_id").unwrap_or(0),
-            user_id: i64_of(&doc, "user_id").unwrap_or(0),
-            message_id: i64_of(&doc, "message_id"),
-            reason: string_of(&doc, "reason"),
-            confidence: doc.get("confidence").and_then(Value::as_f64).unwrap_or(0.0),
-            muted_at: doc.get("muted_at").and_then(date_ms).unwrap_or(0),
-            deadline: doc.get("deadline").and_then(date_ms).unwrap_or(0),
-            status: string_of(&doc, "status"),
-            updated_at: doc.get("updated_at").and_then(date_ms).unwrap_or(0),
-        })
+        Some(MuteReview::from_doc(&doc))
     }
 
     pub async fn expired_mute_reviews(&self, now: i64) -> Vec<MuteReview> {
@@ -1564,19 +1703,7 @@ impl Db {
             )
             .await
             .unwrap_or_default();
-        docs.iter()
-            .map(|doc| MuteReview {
-                chat_id: i64_of(doc, "chat_id").unwrap_or(0),
-                user_id: i64_of(doc, "user_id").unwrap_or(0),
-                message_id: i64_of(doc, "message_id"),
-                reason: string_of(doc, "reason"),
-                confidence: doc.get("confidence").and_then(Value::as_f64).unwrap_or(0.0),
-                muted_at: doc.get("muted_at").and_then(date_ms).unwrap_or(0),
-                deadline: doc.get("deadline").and_then(date_ms).unwrap_or(0),
-                status: string_of(doc, "status"),
-                updated_at: doc.get("updated_at").and_then(date_ms).unwrap_or(0),
-            })
-            .collect()
+        docs.iter().map(MuteReview::from_doc).collect()
     }
 
     // ── 入群监视 ──────────────────────────────────────────────────
@@ -1595,6 +1722,7 @@ impl Db {
                 "recheck_count": 0,
                 "review_approved": false,
                 "review_approved_at": null,
+                "clean_message_count": 0,
                 "updated_at": date(now),
             },
             "$setOnInsert": { "chat_id": chat_id, "user_id": user_id, "created_at": date(now) },
@@ -1722,6 +1850,40 @@ impl Db {
             .is_some_and(|watch| watch.profile_changed)
     }
 
+    /// 更新监视期内的「未判为广告」消息计数；监视已过期 / 不存在时不会写入。
+    pub async fn set_watch_clean_messages(&self, chat_id: i64, user_id: i64, count: u32) {
+        let now = now_ms();
+        let _ = self
+            .mongo
+            .update(
+                collections::WATCHES,
+                json!({
+                    "chat_id": chat_id,
+                    "user_id": user_id,
+                    "expires_at": { "$gt": date(now) },
+                }),
+                json!({ "$set": {
+                    "clean_message_count": count,
+                    "updated_at": date(now),
+                }}),
+                false,
+                false,
+            )
+            .await;
+    }
+
+    /// 解除 24h 监视：用户已经用足够多的正常发言证明了自己。
+    pub async fn remove_watch(&self, chat_id: i64, user_id: i64) {
+        let _ = self
+            .mongo
+            .delete(
+                collections::WATCHES,
+                json!({ "chat_id": chat_id, "user_id": user_id }),
+                false,
+            )
+            .await;
+    }
+
     // ── /spam 举报流水 ───────────────────────────────────────────
 
     pub async fn log_spam_report(&self, chat_id: i64, reporter: i64, message: &Value) {
@@ -1743,6 +1905,7 @@ impl Db {
             (collections::CONFIG, "adb_config"),
             (collections::BAN_RECORDS, "ban_records"),
             (collections::MESSAGE_RECORDS, "message_records"),
+            (collections::MESSAGE_TEXTS, "message_texts"),
             (collections::ADS, "ads_blacklist"),
             (collections::AI_FULLTEXT, "ai_fulltext_blacklist"),
             (collections::WATCHES, "new_member_watch_records"),
@@ -1789,83 +1952,5 @@ fn fresh_id() -> String {
 // ── 测试 ──────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn date_round_trip() {
-        let ms = 1_767_225_600_000;
-        let encoded = date(ms);
-        assert_eq!(date_ms(&encoded), Some(ms));
-        // TS 写入的 relaxed 形态
-        assert_eq!(date_ms(&json!({"$date": "2026-01-01T00:00:00Z"})), Some(ms));
-        // Extended JSON v1
-        assert_eq!(date_ms(&json!({"$date": ms})), Some(ms));
-    }
-
-    #[test]
-    fn config_parses_legacy_fields() {
-        let doc = json!({
-            "chat_id": -100,
-            "type": "group",
-            "limit_mode": "ban",
-            "Whitelist": [1, 2],
-            "spam_fileId": ["a"],
-            "spam_sticker": ["b"],
-            "spam_tips": false,
-            "spam_tips_meg_delay": 5,
-            "ai_review_enabled": true,
-            "check_new_member": true,
-            "ai_api_key": "k",
-            "ai_base_url": "https://x",
-            "ai_model": "m"
-        });
-        let config = GroupConfig::from_doc(&doc);
-        assert_eq!(config.kind, "group");
-        assert_eq!(config.limit_mode, LimitMode::Ban);
-        assert_eq!(config.whitelist, vec![1, 2]);
-        assert_eq!(config.spam_file_id, vec!["a"]);
-        assert!(!config.spam_tips);
-        assert_eq!(config.spam_tips_meg_delay, 5);
-        assert!(config.ai_review_enabled);
-        assert!(config.check_new_member);
-        assert!(config.has_custom_ai());
-    }
-
-    #[test]
-    fn config_defaults_when_fields_missing() {
-        let config = GroupConfig::from_doc(&json!({"chat_id": 1}));
-        assert!(config.spam_tips);
-        assert_eq!(config.spam_tips_meg_delay, 30);
-        assert_eq!(config.limit_mode, LimitMode::Mute);
-        assert!(!config.ai_review_enabled);
-    }
-
-    #[test]
-    fn doc_id_reads_object_id() {
-        assert_eq!(
-            doc_id(&json!({"_id": {"$oid": "507f1f77bcf86cd799439011"}})),
-            "507f1f77bcf86cd799439011"
-        );
-        assert_eq!(doc_id(&json!({"_id": "abc"})), "abc");
-    }
-
-    #[test]
-    fn watch_doc_parses() {
-        let doc = json!({
-            "chat_id": -100,
-            "user_id": 7,
-            "join_at": {"$date": "2026-01-01T00:00:00Z"},
-            "expires_at": {"$date": "2026-01-02T00:00:00Z"},
-            "join_name": "n",
-            "join_bio": "b",
-            "profile_changed": true,
-            "recheck_count": 2
-        });
-        let watch = NewMemberWatch::from_doc(&doc);
-        assert_eq!(watch.user_id, 7);
-        assert!(watch.profile_changed);
-        assert_eq!(watch.recheck_count, 2);
-        assert!(watch.expires_at > watch.join_at);
-    }
-}
+#[path = "../tests/unit/store.rs"]
+mod tests;

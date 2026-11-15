@@ -1,8 +1,8 @@
 # fuyubot-plugin-douyin
 
-FuyuBot 的抖音解析插件（Rust，cdylib）。从 TypeScript 宿主 `plugins/video_parse`
-的**抖音分支**迁来；本仓库（`fuyubot-plugins`）把它和其余六个插件一起按
-**ABI v6** 编译、打成 bundle。
+FuyuBot 的抖音解析插件（Rust，cdylib）：聊天里出现抖音分享链接就解析，发去水印
+视频 / 图集。本仓库（`fuyubot-plugins`）把它和其余七个插件一起按 **ABI v6**
+编译、打成 bundle。
 
 ```
 消息里有抖音链接 ──┐                       ┌─ 命中 SQL 缓存 ─▶ 直接按文件 id 发送（不解析、不下载）
@@ -16,6 +16,15 @@ FuyuBot 的抖音解析插件（Rust，cdylib）。从 TypeScript 宿主 `plugin
   群里**发送人是频道身份且这条是转发消息**时跳过（见下）
 - 产出：`fuyubot_plugin_douyin.{dll,so,dylib}`
 
+## 命令
+
+| 命令 | 一句话 | 场景 | 权限 |
+| --- | --- | --- | --- |
+| `/dy <链接>` | 解析抖音分享链接，发视频 / 图集 | 私聊 / 群 / 频道 | 所有人 |
+
+聊天里直接贴链接也会自动解析（`/` 开头的消息不抢）：消息含 `douyin.com` /
+`iesdouyin.com` 就处理，普通会话新发一条、不引用原消息；频道帖编辑原帖。
+群里的转发消息，若发送人是频道身份，自动识别跳过。
 ## 依赖
 
 - **编译期只有 `fuyubot-abi`**：本仓库根 `Cargo.toml` 统一给 path 依赖，并带
@@ -59,7 +68,7 @@ FuyuBot 的抖音解析插件（Rust，cdylib）。从 TypeScript 宿主 `plugin
 一次解析只剩「短链 GET（可选）→ detail API 或分享页 GET → 发送」这几次请求。
 
 唯一的例外是**频道帖子**：机器人在频道里通常没有发言权、只有编辑权，
-所以按 TS 版 `parse/douyin/index.ts` + `utils/videomsg.ts` 的**编辑模式**处理：
+所以按**编辑模式**处理：
 
 1. 解析前 `editMessageText` 把原帖改成「原文 + 分隔线 + 正在解析抖音视频...」；
 2. 单条视频 / 单条图集视频 → `editMessageMedia` 编辑原帖；
@@ -127,13 +136,18 @@ cookie 配在全局配置文件里**本插件自己的段**：
 cookies = "ttwid=…; msToken=…; odin_tt=…"
 ```
 
-- 值就是整串 `Cookie` 请求头（与 TS 版 `cookies.json` 里那个字段一模一样）；
+- 值就是整串 `Cookie` 请求头（从浏览器里复制）；
 - 别名 `cookie` 也认（`cookie = "…"`），`cookies` 优先；
 - 空串视为**没配**，会继续回退旧文件；
 - 改完重启宿主生效，不用重编译。
 
-**旧方式仍兼容**：`plugins/douyin/cookies.json`（格式 `{"cookies": "<整串 Cookie 头>"}`，
-与 TS 版完全一致）只在配置里没配时才会被读，日志会提示「回退旧文件（建议迁移）」。
+| 键 | 默认 | 一句话 |
+| --- | --- | --- |
+| `cookies` | 空 | 整串 Cookie 请求头，解析抖音必需 |
+| `cookie` | 空 | 上面那个键的别名，`cookies` 优先 |
+
+**旧方式仍兼容**：`plugins/douyin/cookies.json`（格式 `{"cookies": "<整串 Cookie 头>"}`）
+只在配置里没配时才会被读，日志会提示「回退旧文件（建议迁移）」。
 两种都没有时插件**照常加载**，只在真正用到时才报错——错误里会写清楚该在
 `[plugin.fuyubot.douyin]` 下配什么。
 
@@ -156,15 +170,14 @@ cookies = "ttwid=…; msToken=…; odin_tt=…"
 > ⚠️ SALT 是「SecSDK VM 表第 39 个字符串」、`version_code` 跟随网页端大版本——
 > 抖音换表/升版时改 `src/sign/websign.rs` 的 `SALT` 与 `src/sign/detail.rs` 的版本三行。
 
-## 与 TS 版的差异（刻意的）
+## 设计取舍
 
-| TS 版 | 这里 | 为什么 |
-| --- | --- | --- |
-| `ffprobe` 补宽高时长 | 用抖音给的值 | `bit_rate` 里就有，省一个外部进程依赖 |
-| 消息写 `json` 前缀 → 吐原始 JSON | 不做 | TS 版特有的调试通道 |
-| 下载整文件进内存再写盘 | **流式写盘** | `ureq` 的 `read_to_vec()` 写死 10 MiB 上限，超过就报 `larger than request limit`；流式之后体积无上限、内存恒定 |
-| 快手 / YouTube / 内联查询 | **没迁** | 本仓库只覆盖抖音那一条分支 |
-| 每次重新解析、重新下载 | **SQL 缓存命中直接发** | 同一个作品第二次是「发文件 id」，不是「重做一遍」 |
+| 这里怎么做 | 为什么 |
+| --- | --- |
+| 宽高 / 时长用抖音接口给的值 | `bit_rate` 里就有，省一个 `ffprobe` 外部进程依赖 |
+| 下载**流式写盘** | 内存恒定、体积无上限；不会因为「整份读进内存」在大文件上失败 |
+| 只做抖音一条分支 | 快手 / YouTube 不在本插件范围内，需要就另开插件 |
+| 支持的作品第二次**直接按文件 id 发** | 装了 `fuyubot.sqlite` 才有；命中时零解析、零下载 |
 
 ## 自检
 

@@ -12,6 +12,7 @@ use crate::api::Sender;
 use crate::flow;
 use crate::log;
 use crate::runtime::Runtime;
+use crate::text;
 
 const USAGE: &str = "🤖 **内置 AI 授权群管理**\n\n用法:\n  /adaiset add <chat_id 或 @群用户名>  — 添加授权群\n  /adaiset rm <chat_id>  — 移除授权群\n  /adaiset list  — 查看所有授权群\n\n示例:\n  /adaiset add -1001234567890\n  /adaiset add @mygroup\n  /adaiset rm -1001234567890\n  /adaiset list";
 
@@ -111,12 +112,15 @@ async fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&
             rt,
             chat_id,
             &format!(
-                "✅ 已将群 `{resolved}`（{}）添加到内置 AI 授权群列表。",
-                if title.is_empty() {
-                    "未知名称"
-                } else {
-                    &title
-                }
+                "✅ 已将群 {} 添加到内置 AI 授权群列表。",
+                text::with_id(
+                    if title.is_empty() {
+                        "未知名称"
+                    } else {
+                        &title
+                    },
+                    resolved
+                )
             ),
             reply_to,
             30,
@@ -131,12 +135,15 @@ async fn add(rt: &Runtime, chat_id: i64, reply_to: Option<i64>, target: Option<&
             rt,
             chat_id,
             &format!(
-                "ℹ️ 群 `{resolved}`（{}）已在授权列表中。",
-                if title.is_empty() {
-                    "未知名称"
-                } else {
-                    &title
-                }
+                "ℹ️ 群 {} 已在授权列表中。",
+                text::with_id(
+                    if title.is_empty() {
+                        "未知名称"
+                    } else {
+                        &title
+                    },
+                    resolved
+                )
             ),
             reply_to,
             15,

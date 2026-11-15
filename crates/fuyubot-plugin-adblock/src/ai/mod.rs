@@ -471,6 +471,17 @@ pub struct AiMeta {
 
 // ── 主入口 ────────────────────────────────────────────────────────
 
+/// 这次审核是否真的会发起请求（与 [`review`] 的接口选择逻辑一致）。
+///
+/// 调用方用它决定要不要贴「审核中」的标记：没配接口时 [`review`] 只会返回失败原因，
+/// 不会有任何 AI 参与，就不该让消息看起来“正在审核”。
+pub async fn has_backend(rt: &Runtime, chat_id: Option<i64>, force_default: bool) -> bool {
+    if resolve_ai(rt, chat_id, force_default).await.usable() {
+        return true;
+    }
+    force_default && resolve_fallback(rt).is_some()
+}
+
 /// AI 审核：**永远返回结果**，失败信息在 `Reason` 里。
 ///
 /// `photo` 是本地图片路径（多模态）；`chat_id` 用于选接口与写日志。
@@ -849,10 +860,10 @@ async fn write_log(
 
     let chat_label = match chat_id {
         // 以前这里传 `false`，拿到的是 TS 版那条 `[title](id:…)` 伪链接；
-        // 现在统一成「群名 + 数字 id」，和处置日志的 Group 字段一致。
-        Some(chat_id) => format!(
-            "{}({chat_id})",
-            rt.td.sender_mention(Sender::Chat(chat_id), true).await
+        // 现在统一成「群名(ID: 可复制数字)」，和处置日志的 Group 字段一致。
+        Some(chat_id) => text::with_id(
+            &rt.td.sender_mention(Sender::Chat(chat_id), true).await,
+            chat_id,
         ),
         None => "-".to_owned(),
     };
@@ -1021,90 +1032,5 @@ pub async fn test_connection(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 一份「模型正常返回」的完整结果：严格校验要求 12 个字段齐全。
-    fn complete_result() -> Value {
-        json!({
-            "ad_detected": true,
-            "confidence": 0.9,
-            "Reason": "广告",
-            "message": {"keywords": ["a"]},
-            "quoted_message": {"has_ad": false, "keywords": []},
-            "media": {"image_ad": false, "sticker_ad": false},
-            "profile": {"name_ad": false, "bio_ad": false},
-            "contact": {"contact_ad": false},
-            "PersonalChannel": {"Channel_ad": false},
-            "mentioned_username": {"username_ad": false},
-            "link_Preview": {"title_ad": false, "description_ad": false}
-        })
-    }
-
-    #[test]
-    fn ai_json_needs_core_fields() {
-        assert!(ModerationResult::from_ai_json(&json!({"Reason": "x"})).is_none());
-        // 少一个嵌套字段 = 格式不符 → 让上层重试（TS `isValidModerationResult` 同款）。
-        let mut partial = complete_result();
-        partial.as_object_mut().expect("对象").remove("profile");
-        assert!(ModerationResult::from_ai_json(&partial).is_none());
-
-        let result = ModerationResult::from_ai_json(&complete_result()).expect("合法结果");
-        assert!(result.ad_detected);
-        assert_eq!(result.message.keywords, vec!["a"]);
-    }
-
-    #[test]
-    fn quoted_ad_forces_detection() {
-        let mut value = complete_result();
-        value["ad_detected"] = json!(false);
-        value["confidence"] = json!(0.5);
-        value["quoted_message"] = json!({"has_ad": true, "keywords": []});
-        let result = ModerationResult::from_ai_json(&value).unwrap();
-        assert!(result.ad_detected);
-    }
-
-    #[test]
-    fn failure_reasons_are_recognized() {
-        assert!(is_failure_reason("AI服务3次调用均失败: timeout"));
-        assert!(is_failure_reason("该群未配置AI接口"));
-        assert!(!is_failure_reason("就是普通聊天"));
-    }
-
-    #[test]
-    fn masking_keeps_edges() {
-        assert_eq!(mask_secret("sk-1234567890abcd"), "sk-1***abcd");
-        assert_eq!(mask_secret("short"), "sh***");
-        assert_eq!(mask_secret(""), "");
-    }
-
-    #[test]
-    fn endpoints_compare_by_connection() {
-        let endpoint = |key: &str, url: &str, model: &str| ResolvedAi {
-            api_key: key.to_owned(),
-            base_url: url.to_owned(),
-            model: model.to_owned(),
-            source: AiSource::Default,
-        };
-        let left = endpoint("sk", "https://a", "m");
-        assert!(same_endpoint(&left, &endpoint("sk", "https://a", "m")));
-        assert!(!same_endpoint(&left, &endpoint("sk", "https://b", "m")));
-        assert!(!same_endpoint(&left, &endpoint("sk", "https://a", "n")));
-    }
-
-    #[test]
-    fn temperature_rule() {
-        assert!(forbids_custom_temperature("gpt-5.6-luna"));
-        assert!(forbids_custom_temperature("o3-mini"));
-        assert!(!forbids_custom_temperature("gpt-4o-mini"));
-        assert!(!forbids_custom_temperature("deepseek-chat"));
-    }
-
-    #[test]
-    fn base_url_is_trimmed() {
-        assert_eq!(
-            trim_base_url("https://api.openai.com/v1/".to_owned()),
-            "https://api.openai.com/v1"
-        );
-    }
-}
+#[path = "../../tests/unit/ai__mod.rs"]
+mod tests;

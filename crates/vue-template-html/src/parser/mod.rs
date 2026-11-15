@@ -771,4 +771,5 @@ fn named_entity(name: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+#[path = "../../tests/unit/parser__mod.rs"]
 mod tests;

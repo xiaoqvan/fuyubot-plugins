@@ -42,22 +42,19 @@ pub async fn handle(rt: &Runtime, update: &Value) {
     let Some(chat_id) = message.get("chat_id").and_then(Value::as_i64) else {
         return;
     };
-    let Some(message_id) = message.get("id").and_then(Value::as_i64) else {
+    // 没有消息 id 的更新没法索引 / 处置，直接放过。
+    if message.get("id").and_then(Value::as_i64).is_none() {
         return;
-    };
+    }
 
     // 私聊里的 AI 配置流程：命中就消费掉这条消息。
     if flow::is_private(chat_id) && crate::commands::ai_config::consume_private(rt, message).await {
         return;
     }
 
-    // 缓存：最近消息（`/spam` 引用兜底）+ 用户历史文本（AI 降低误封）
+    // 缓存：最近消息（`/spam` 引用兜底）。用户历史文本在 `records` 里落库。
     rt.cache.remember_message(chat_id, message);
     let sender = message_sender(message);
-    let body = text::message_text(message);
-    if let Some(Sender::User(user_id)) = sender {
-        rt.cache.remember_text(chat_id, user_id, message_id, &body);
-    }
 
     // 命令：只认注册表里的名字，且**不 return**——命令消息同样要进索引、同样要被检测。
     // 注意传的是**整条 update**：`command_of` 会自己取 `update.message`。
@@ -127,6 +124,13 @@ async fn check(rt: &Runtime, message: &Value) {
     }
 
     if !hit.matched {
+        // 24h 监视：正常发言攒够数就提前解除监视（被处置的消息不算）。
+        // 没开「新用户检查」的群根本不会建监视记录，直接跳过这次查询。
+        if config.check_new_member
+            && let Sender::User(user_id) = sender
+        {
+            note_watch_clean_message(rt, chat_id, user_id).await;
+        }
         return;
     }
     // TS 版在处置前又查了一次管理员权限：中间可能刚好被摘了权限。
@@ -226,6 +230,9 @@ fn quote_of(message: &Value) -> Option<(i64, String)> {
 }
 
 /// AI 深度审核。返回 `Some(命中)` 才处置；未命中 / 未触发返回 `None`。
+///
+/// 全文精确比对（[`fulltext_hit`]）是**本地黑名单**，先于 AI 执行：命中就直接返回，
+/// 既不发 AI 请求，也不贴 👀。
 async fn review_with_ai(
     rt: &Runtime,
     message: &Value,
@@ -271,10 +278,6 @@ async fn review_with_ai(
         "messageContact" => {
             let contact_name = text::contact_name(content);
             let vcard = text::contact_vcard(content);
-            input.profile = Some(Profile {
-                name: user_first_name(details),
-                bio: Some(details.bio.clone()),
-            });
             input.contact = Some(Contact {
                 name: Some(contact_name),
                 phone: content
@@ -297,10 +300,6 @@ async fn review_with_ai(
     if let Some((_, quote_text)) = &quote {
         input = input.with_quote(quote_text.clone());
     }
-    input.profile = Some(Profile {
-        name: user_first_name(details),
-        bio: Some(details.bio.clone()),
-    });
 
     // ── 要不要触发 AI ─────────────────────────────────────────
     let keywords = rt.db.global_ai_keywords().await;
@@ -336,18 +335,57 @@ async fn review_with_ai(
         return None;
     }
 
-    // 主页挂载频道 + 最近历史（只对用户发送者）
+    // ── 全文精确比对（与已封禁广告完全一致） ─────────────────────
+    // 本地判定，排在 AI 之前：命中就不调 AI，也不贴 👀。
+    if let Some(hit) = fulltext_hit(
+        rt,
+        &message_text,
+        quote.as_ref().map(|(_, text)| text.as_str()),
+    )
+    .await
+    {
+        log::info(
+            &rt.host,
+            format!("[AI_FullText] 命中全文黑名单，跳过 AI 审核 msg={message_id}"),
+        );
+        return Some(hit);
+    }
+
+    // 资料 + 主页挂载频道：只有真进 AI 才取，且共用同一次 `getUserFullInfo`。
+    let full = match sender {
+        Sender::User(user_id) => flow::user_profile(rt, user_id).await,
+        Sender::Chat(_) => None,
+    };
+    input.profile = Some(Profile {
+        name: user_first_name(details),
+        bio: Some(full.as_ref().map(flow::bio_of).unwrap_or_default()),
+    });
+
+    // 最近历史（只对用户发送者）
     if let Sender::User(user_id) = sender {
-        if let Some((name, description)) = flow::personal_channel(rt, user_id).await {
+        if let Some(full) = &full
+            && let Some((name, description)) = flow::personal_channel_of(rt, full).await
+        {
             input = input.with_personal_channel(name, description);
         }
-        let history = rt.cache.recent_texts(chat_id, user_id, Some(message_id), 5);
+        let history = rt
+            .db
+            .recent_texts(chat_id, user_id, Some(message_id), 5)
+            .await;
         input = input.with_history(history);
     }
 
-    // 给被审的消息加 👀（Bot 账号必须用 setMessageReactions）
-    if let Err(error) = rt.td.react(chat_id, message_id, "👀").await {
-        log::debug(&rt.host, format!("加 👀 回应失败：{error}"));
+    // 给被审的消息加 👀（Bot 账号必须用 setMessageReactions）。
+    // 只在**真的会调 AI** 时贴：没配接口的群贴了也只是空等，不该出现“正在审核”的假象。
+    if ai::has_backend(rt, Some(chat_id), false).await {
+        if let Err(error) = rt.td.react(chat_id, message_id, "👀").await {
+            log::debug(&rt.host, format!("加 👀 回应失败：{error}"));
+        }
+    } else {
+        log::debug(
+            &rt.host,
+            format!("未配置可用 AI 接口，跳过 👀 msg={message_id}"),
+        );
     }
 
     let meta = AiMeta {
@@ -423,26 +461,61 @@ async fn review_with_ai(
         hit = Some(SpamHit::hit("AI_Text", None, format!("AI检测: {reason}")));
     }
 
-    // ── 全文精确比对（与已封禁广告完全一致） ────────────────────
-    if !message_text.is_empty()
-        && let Some(record) = rt.db.match_ai_fulltext(&message_text).await
+    hit
+}
+
+/// 全文精确比对：正文优先，其次引用文本。命中返回 `AI_FullText`。
+///
+/// 这是本地黑名单判定，**不调 AI**——调用方必须在贴 👀、发 AI 请求之前先查它。
+async fn fulltext_hit(rt: &Runtime, body: &str, quote: Option<&str>) -> Option<SpamHit> {
+    if !body.is_empty()
+        && let Some(record) = rt.db.match_ai_fulltext(body).await
     {
-        hit = Some(SpamHit::hit(
+        return Some(SpamHit::hit(
             "AI_FullText",
             Some(doc_id(&record)),
             "与已封禁广告全文完全一致",
         ));
-    } else if let Some((_, quote_text)) = &quote
+    }
+    if let Some(quote_text) = quote
         && let Some(record) = rt.db.match_ai_fulltext(quote_text).await
     {
-        hit = Some(SpamHit::hit(
+        return Some(SpamHit::hit(
             "AI_FullText",
             Some(doc_id(&record)),
             "引用与已封禁广告全文完全一致",
         ));
     }
+    None
+}
 
-    hit
+/// 24h 监视期内「未判为广告」的消息上限：**超过**这个数就解除监视。
+///
+/// 需求是「超过 4 条正常消息」→ 第 5 条正常消息落地时删除监视记录。
+const WATCH_CLEAN_MESSAGE_LIMIT: u32 = 4;
+
+/// 记一条「未判为广告」的消息；攒够数就把用户从 24h 监视里移除。
+///
+/// 只对仍在监视期内的用户生效；移除后该用户不再被强制 AI 审查，也不再因
+/// 入群 24h 内改资料触发复检。
+async fn note_watch_clean_message(rt: &Runtime, chat_id: i64, user_id: i64) {
+    let Some(watch) = rt.db.active_watch(chat_id, user_id).await else {
+        return;
+    };
+    let count = watch.clean_message_count.saturating_add(1);
+    if count > WATCH_CLEAN_MESSAGE_LIMIT {
+        rt.db.remove_watch(chat_id, user_id).await;
+        log::info(
+            &rt.host,
+            format!(
+                "[入群监视] 用户({user_id}) 群({chat_id}) 已发 {count} 条正常消息，提前解除 24h 监视"
+            ),
+        );
+    } else {
+        rt.db
+            .set_watch_clean_messages(chat_id, user_id, count)
+            .await;
+    }
 }
 
 /// 关键词 > 3 存关键词组；1–2 个存全文；正好 3 个**什么都不存**

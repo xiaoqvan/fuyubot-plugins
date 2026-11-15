@@ -149,9 +149,10 @@ async fn finish(
         .sender_mention(Sender::User(ctx.sender_user_id), true)
         .await;
     let body = format!(
-        "#Ban\n**Group**: {chat_mention}({group})\n**User**: {target}({})\n**Admin**: {admin}({})\n**Reason**: Spam detected",
-        member.id(),
-        ctx.sender_user_id
+        "#Ban\n**Group**: {}\n**User**: {}\n**Admin**: {}\n**Reason**: Spam detected",
+        text::with_id(&chat_mention, group),
+        text::with_id(&target, member.id()),
+        text::with_id(&admin, ctx.sender_user_id)
     );
     let buttons: Vec<Vec<ReplyButton>> =
         vec![callback_row("unban+白名单", unban_callback(group, member))];

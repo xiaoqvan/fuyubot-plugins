@@ -33,6 +33,20 @@ max_result_bytes = 8388608
 read_only = false         # true = 以只读方式打开，所有写操作返回 read_only
 ```
 
+| 键 | 默认 | 一句话 |
+| --- | --- | --- |
+| `mode` | `per_plugin` | 每个插件一个库，还是共用一个库 |
+| `dir` | `data/sqlite` | 库文件放哪，相对项目根 |
+| `file` | `fuyubot.sqlite3` | `shared` 模式下的库文件名 |
+| `table_prefix` | 空 | 再叠一层表前缀 |
+| `journal_mode` | `wal` | 日志模式，`wal` 并发最好 |
+| `busy_timeout_ms` | `3000` | 等锁最多多久 |
+| `max_rows` | `1000` | 一次查询最多回多少行 |
+| `max_sql_bytes` | `65536` | 单条 SQL 的字节上限 |
+| `max_batch` | `100` | 一次批量最多多少条 |
+| `max_result_bytes` | `8388608` | 一次返回的字节上限 |
+| `read_only` | `false` | 只读打开，写操作直接报错 |
+
 配置写错（未知 `mode`、非法 `table_prefix`、越界数字）会让插件 start 失败，宿主日志给出具体
 原因，不会静默退回默认值。`read_only = true` 要求库文件已存在：本插件不会为只读连接新建文件。
 

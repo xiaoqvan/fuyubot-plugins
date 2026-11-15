@@ -12,6 +12,7 @@
 //! | `updateNewCallbackQuery` | 日志频道里的按钮 | unban / unmute / ban / 贴纸集 / 文件 / 图片 / 复审 |
 //! | `updateChatMember` | 新成员入群 | 名称与简介查黑名单 + AI 审核，命中即封禁或「禁言待复审」 |
 //! | `updateUser` | 入群 24h 内改资料 | 重新审核资料（带节流） |
+//! | `updateMessageInteractionInfo` | 群里有人给消息点表情 | 自动点赞统计：连续回应 5 条消息的账号封禁回应权限（群配置开启后） |
 //! | `updateDeleteMessages` | 消息被删 | 从索引里同步移除 |
 //! | 周期任务 | 每 5 分钟 | 扫「禁言 1 小时未复审」→ 封禁 |
 //!
@@ -48,6 +49,7 @@ mod commands;
 mod config;
 mod detect;
 mod flow;
+mod like;
 mod log;
 mod roles;
 mod runtime;
@@ -175,6 +177,11 @@ impl Plugin for AdblockPlugin {
         self.listen(&runtime, "updateUser", |rt, update| async move {
             flow::profile::handle_update_user(&rt, &update).await
         })?;
+        self.listen(
+            &runtime,
+            "updateMessageInteractionInfo",
+            |rt, update| async move { flow::like::handle(&rt, &update).await },
+        )?;
 
         // 周期扫描 + 启动时立即来一轮（原版 `immediate: true`）。
         let sweeper = Arc::clone(&runtime);
@@ -203,7 +210,7 @@ impl Plugin for AdblockPlugin {
     }
 
     fn description() -> &'static str {
-        "关键词 / 文件 / 贴纸 / AI 审核，命中即删除、禁言或封禁"
+        "关键词 / 文件 / 贴纸 / AI 审核 / 自动点赞机器人，命中即删除、禁言或封禁"
     }
 
     /// 硬依赖：`storage.mongo` 不在时不要激活。

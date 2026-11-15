@@ -8,6 +8,7 @@
 //! 即可（`&Arc<T>` 会自动降级成 `&T`）。
 
 pub mod gky;
+pub mod like;
 pub mod message;
 pub mod new_member;
 pub mod profile;
@@ -23,10 +24,12 @@ use crate::runtime::Runtime;
 use crate::text;
 
 /// 发送者画像：一次消息处理要用四五次它的字段，所以一次查齐。
+///
+/// **不含 bio**：资料（bio / 主页挂载频道）只在真要调 AI 时才取，
+/// 常规消息不该为它白花一次 `getUserFullInfo`。
 #[derive(Debug, Clone, Default)]
 pub struct SenderDetails {
     pub user: Option<Value>,
-    pub bio: String,
     pub is_bot: bool,
     pub is_admin: bool,
     pub is_member: bool,
@@ -37,34 +40,29 @@ pub fn is_private(chat_id: i64) -> bool {
     chat_id > 0
 }
 
-/// 这个 chat 是不是群（带 60 秒缓存）。
+/// 这个 chat 是不是群。
+///
+/// **实时**：`getChat` 走宿主缓存（`updateNewChat` / `updateChat*` 维护），
+/// 插件不再自己攒 60 秒 TTL——提权 / 转频道这类变化不必等缓存过期。
 pub async fn is_group(rt: &Runtime, chat_id: i64) -> bool {
-    if let Some(value) = rt.cache.chat_is_group(chat_id) {
-        return value;
-    }
-    let value = rt.td.chat_is_group(chat_id).await;
-    rt.cache.store_chat_is_group(chat_id, value);
-    value
+    rt.td.chat_is_group(chat_id).await
 }
 
-/// Bot 在这个群有没有「删消息 + 限制成员」（带 60 秒缓存）。
+/// Bot 在这个群有没有「删消息 + 限制成员」权限。
+///
+/// 同样走宿主：身份服务拿自己的 id，`getChatMember` 吃宿主缓存
+/// （`updateChatMember` 实时刷新，30 秒兜底）。
 pub async fn am_i_admin(rt: &Runtime, chat_id: i64) -> bool {
-    if let Some(value) = rt.cache.admin_ok(chat_id) {
-        return value;
-    }
-    let value = rt
-        .td
+    rt.td
         .am_i_admin(chat_id, &["can_delete_messages", "can_restrict_members"])
-        .await;
-    rt.cache.store_admin_ok(chat_id, value);
-    value
+        .await
 }
 
 /// 查一次发送者画像。
 pub async fn sender_details(rt: &Runtime, chat_id: i64, sender: Sender) -> SenderDetails {
     match sender {
         Sender::User(user_id) => {
-            let user = rt.td.user(user_id).await.ok();
+            let user = rt.td.user(user_id).await;
             let is_bot = user
                 .as_ref()
                 .and_then(|user| user.get("type"))
@@ -84,21 +82,8 @@ pub async fn sender_details(rt: &Runtime, chat_id: i64, sender: Sender) -> Sende
                     | Some("chatMemberStatusAdministrator")
                     | Some("chatMemberStatusCreator")
             );
-            let bio = rt
-                .td
-                .user_full(user_id)
-                .await
-                .ok()
-                .and_then(|full| {
-                    full.get("bio")
-                        .and_then(|bio| bio.get("text"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .unwrap_or_default();
             SenderDetails {
                 user,
-                bio,
                 is_bot,
                 is_admin,
                 is_member,
@@ -131,11 +116,17 @@ pub async fn sender_details(rt: &Runtime, chat_id: i64, sender: Sender) -> Sende
 /// 用户的「主页挂载频道」名称与简介（广告载体之一）。
 pub async fn personal_channel(rt: &Runtime, user_id: i64) -> Option<(String, String)> {
     let full = rt.td.user_full(user_id).await.ok()?;
+    personal_channel_of(rt, &full).await
+}
+
+/// 从已有的 `getUserFullInfo` 结果里取主页挂载频道——AI 审核用，
+/// 避免和 bio 各发一次 `getUserFullInfo`。
+pub async fn personal_channel_of(rt: &Runtime, full: &Value) -> Option<(String, String)> {
     let personal_chat_id = full
         .get("personal_chat_id")
         .and_then(Value::as_i64)
         .filter(|id| *id != 0)?;
-    let chat = rt.td.chat(personal_chat_id).await.ok()?;
+    let chat = rt.td.chat(personal_chat_id).await?;
     let kind = chat.get("type")?;
     if kind.get("@type").and_then(Value::as_str) != Some("chatTypeSupergroup")
         || !kind
@@ -164,6 +155,22 @@ pub async fn personal_channel(rt: &Runtime, user_id: i64) -> Option<(String, Str
             .to_owned(),
         description,
     ))
+}
+
+/// `getUserFullInfo`：bio 与主页挂载频道都在里面。
+///
+/// **只在真要调 AI 时取**：本地规则就能放行 / 处置的消息不再为它白花一次 TDLib 往返。
+pub async fn user_profile(rt: &Runtime, user_id: i64) -> Option<Value> {
+    rt.td.user_full(user_id).await.ok()
+}
+
+/// 从 `getUserFullInfo` 里取 bio 文本（没有就是空串）。
+pub fn bio_of(full: &Value) -> String {
+    full.get("bio")
+        .and_then(|bio| bio.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
 }
 
 /// 命令的「只能在群里用」检查；不满足时回一句并返回 `false`。
@@ -282,6 +289,9 @@ pub async fn send_with(
     buttons: Vec<Vec<ReplyButton>>,
     seconds: u32,
 ) -> Option<Value> {
+    // 论坛群组：回复要落在触发消息所在的话题里，否则会跑到 General。
+    // 话题从最近消息缓存里取（`remember_message` 每条都记，命令消息一定在）。
+    let topic = reply_to.and_then(|message_id| rt.cache.topic_of(chat_id, message_id));
     let message = rt
         .td
         .send_text(
@@ -289,7 +299,7 @@ pub async fn send_with(
             text::markdown(body),
             reply_to,
             buttons,
-            None,
+            topic,
             Some(false),
         )
         .await;

@@ -19,3 +19,7 @@ serde_json.workspace = true
 [dev-dependencies]
 # 只用于测试：在本地把同一份模板编译一遍，确认 `{{ }}` / `v-for` 都能正常出 HTML。
 vue-template-html.workspace = true
+# 只用于 `examples/preview.rs`：本地渲染一张预览图（不参与插件构建）。
+hyper-render.workspace = true
+image.workspace = true
+serde_json.workspace = true

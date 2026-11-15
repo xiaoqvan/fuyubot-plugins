@@ -115,9 +115,9 @@ pub async fn sweep(rt: &Runtime) {
                 .await;
             let user_mention = rt.td.sender_mention(sender, true).await;
             let body = format!(
-                "#Ban #welcome #timeout\n**ID**: {user_mention}({})\n**Chat**: {chat_mention}({})\n**Reason**: 禁言1小时内未通过复审\n**Detail**:\n - Type: profile_ad\n - Reason: {} ({})",
-                record.user_id,
-                record.chat_id,
+                "#Ban #welcome #timeout\n**ID**: {}\n**Chat**: {}\n**Reason**: 禁言1小时内未通过复审\n**Detail**:\n - Type: profile_ad\n - Reason: {} ({})",
+                text::with_id(&user_mention, record.user_id),
+                text::with_id(&chat_mention, record.chat_id),
                 record.reason,
                 text::confidence_percent(record.confidence)
             );

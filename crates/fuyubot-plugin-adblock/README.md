@@ -11,12 +11,14 @@ FuyuBot 的广告拦截插件：一条消息进来，按「关键词 / 文件 / 
 | 入口 | 说明 |
 | --- | --- |
 | 消息检测 | 文本（含富消息）、图片、视频、联系人、贴纸；广告关键词组按 **AND** 匹配 |
+| 自动点赞机器人 | 群管理员在 `/adconfig` 打开后，连续回应 5 条消息的账号会被封禁其**回应权限**（禁言 + 禁止表情回应）；中间被删除的消息不计 |
 | 处置 | 撤回触发消息 + 该用户 48 小时内的历史消息；按群配置 **禁言**（默认）或 **封禁** |
 | 通知 | 群内提示（可配置自删延时）、群绑定的日志频道（带 `unban` / `unmute` / `Ban` 按钮）、可选的全局审计频道 |
+| 话题群 | 群内提示 / 处置通知跟着触发消息回到**同一条话题**；日志频道的 topic 可配（`log_topic` / `ai_log_topic` / `ai_db_topic`） |
 | 转发黑名单 | 来自黑名单频道/超级群的消息一律处置；AI 判定后自动把来源加进去 |
 | AI 审核 | OpenAI 兼容接口；群可自定义接口，也可由 Bot 主人给「内置接口」授权 |
 | 入群检查 | 新成员按名称 / 简介 / 主页挂载频道查黑名单与 AI；高危直接封，存疑先禁言并给「重新审查」按钮 |
-| 24h 监视 | 入群后改资料会触发复检；复审通过后不再因弱信号被禁言 |
+| 24h 监视 | 入群后改资料会触发复检；复审通过后不再因弱信号被禁言；正常发言超过 4 条自动解除监视 |
 | 超时兜底 | 禁言 1 小时内没通过复审 → 自动封禁（每 5 分钟扫一次） |
 | 人工举报 | `/spam` 可对消息、用户、`@用户名` 做一次 AI 判定，并把结果沉淀成规则 |
 
@@ -96,15 +98,22 @@ admins = [987654321]     # 全局管理员：/qadid /delad /addkw /editkw /addfw
 
 `[plugin.fuyubot.adblock]` 里各键的含义与默认值：
 
-| 键 | 不配置时 | 说明 |
+| 键 | 默认 | 一句话 |
 | --- | --- | --- |
-| `db` | mongo 插件的 db | 覆盖本插件用的库名；多个 bot 共用一套 MongoDB 时用它隔离 |
-| `log_channel` / `log_topic` | 不发送 | 全局封禁审计频道及其话题 |
-| `ai_api_key` / `ai_base_url` / `ai_model` | 未配置 | 内置默认 AI 接口；没有它时只有「群自定义了接口」的群启用 AI |
-| `ai_token_limit` | `2000000` | 默认接口每天累计 token 上限；按本地日期归零，`0` = 不限制 |
-| `ai_fallback_api_key` / `ai_fallback_base_url` / `ai_fallback_model` | 未配置 | 备用 AI 接口；默认接口超限或调用失败时切换，三项都配齐才生效 |
-| `ai_log_channel` / `ai_log_topic` | 不发送 | AI 审查总日志 |
-| `ai_db_channel` / `ai_db_topic` | 不发送 | `/spam` 判定写库后的通知 |
+| `db` | mongo 插件的 db | 换一个库名放本插件的数据 |
+| `log_channel` | 不发送 | 全局封禁审计频道 |
+| `log_topic` | 不发送 | 上面那个频道的话题 id |
+| `ai_api_key` | 未配置 | 内置 AI 接口的 Key |
+| `ai_base_url` | 未配置 | 内置 AI 接口地址（OpenAI 兼容） |
+| `ai_model` | `gpt-4o-mini` | 内置 AI 接口的模型名 |
+| `ai_token_limit` | `2000000` | 内置接口每天 token 上限，`0` = 不限 |
+| `ai_fallback_api_key` | 未配置 | 备用接口的 Key |
+| `ai_fallback_base_url` | 未配置 | 备用接口地址 |
+| `ai_fallback_model` | `gpt-4o-mini` | 备用接口的模型名 |
+| `ai_log_channel` | 不发送 | AI 审查总日志频道 |
+| `ai_log_topic` | 不发送 | 上面那个频道的话题 id |
+| `ai_db_channel` | 不发送 | `/spam` 判定写库后的通知频道 |
+| `ai_db_topic` | 不发送 | 上面那个频道的话题 id |
 
 ## 快速开始
 
@@ -116,27 +125,54 @@ admins = [987654321]     # 全局管理员：/qadid /delad /addkw /editkw /addfw
 
 ## 命令
 
-| 命令 | 场景 | 权限 |
-| --- | --- | --- |
-| `/adconfig` | 群内 | 群管理员 |
-| `/setlogchannel <channel_id>` | 群内 | 群管理员 |
-| `/whitelist add\|rm <ID\|@username\|reply>` | 群内 | 群管理员 |
-| `/rmwhitelist <ID\|@username\|reply>` | 群内 | 群管理员 |
-| `/spam [user_id\|@username]`（回复消息） | 群内 | 群管理员 + Bot 有管理权限 |
-| `/qban <tgid\|@username> [limit]` | 任意 | 所有人 |
-| `/qadid <ID>` / `/delad <ID>` | 私聊 | Bot 主人/管理员 |
-| `/addkw <ads\|bio> [r18] <kw…>` / `/editkw <_id> <kw…>` | 私聊 | Bot 主人/管理员 |
-| `/addfwdbl <chat_id\|@username>` / `/rmfwdbl <chat_id>` | 私聊 | Bot 主人/管理员 |
-| `/adkew add\|rm\|list [关键词]` | 私聊 | Bot 主人 |
-| `/admatch <文本>` / `/adaiadd <文本>` | 私聊 | Bot 主人 |
-| `/adaiset add\|rm\|list [chat_id\|@群用户名]` | 私聊 | Bot 主人 |
-| `/start aiConfig_<chat_id>` | 私聊 | 目标群管理员 |
+| 命令 | 一句话 | 场景 | 权限 |
+| --- | --- | --- | --- |
+| `/adconfig [配置项]` | 看本群状态；给配置项则切换开关 | 群内 | 群管理员 |
+| `/setlogchannel <channel_id>` | 绑定本群日志频道 | 群内 | 群管理员 |
+| `/whitelist add\|rm <ID\|@username\|reply>` | 加白名单，跳过一切检测 | 群内 | 群管理员 |
+| `/rmwhitelist <ID\|@username\|reply>` | 移出白名单 | 群内 | 群管理员 |
+| `/spam [user_id\|@username]` | 对这条消息做一次 AI 判定 | 群内 | 所有人（Bot 需有管理权限） |
+| `/qban <tgid\|@username> [limit]` | 查这个人的封禁记录 | 任意 | 所有人 |
+| `/qadid <ID>` | 按 `_id` 查黑名单条目 | 私聊 | 管理员 |
+| `/delad <ID>` | 按 `_id` 删黑名单条目 | 私聊 | 管理员 |
+| `/addkw <ads\|bio> [r18] <关键词…>` | 加关键词，同组按 AND 命中 | 私聊 | 管理员 |
+| `/editkw <_id> <关键词…>` | 按 `_id` 改一条关键词 | 私聊 | 管理员 |
+| `/addfwdbl <chat_id\|@username>` | 把来源频道 / 群加进转发黑名单 | 私聊 | 管理员 |
+| `/rmfwdbl <chat_id>` | 从转发黑名单里移除 | 私聊 | 管理员 |
+| `/adkew add\|rm\|list [关键词]` | 管理触发 AI 审核的全局关键词 | 私聊 | 主人 |
+| `/admatch <文本>` | 看这段文本命中了哪些关键词 | 私聊 | 主人 |
+| `/adaiadd <文本>` | AI 判一段文本，超过 3 个词就入库 | 私聊 | 主人 |
+| `/adaiset add\|rm\|list [chat_id]` | 授权群用内置 AI 接口 | 私聊 | 主人 |
+| `/start aiConfig_<chat_id>` | 私聊三步向导配本群 AI 接口 | 私聊 | 目标群管理员 |
 
 命令名、说明与权限同时用于分发和 `/help` 登记：装了宿主 help 插件时 `/help` 会列出这 17 条，没装时插件照常工作。
 
 群内 `/adconfig` 的「🔑 配置AI接口」按钮会跳到 Bot 私聊，走三步向导（API Key → 后端地址 → 模型名），最后自动测一次连通性。
 
-群管理员的群内命令还会再核一次「真的是本群管理员」；`/spam` 另外要求 Bot 自己有管理权限，否则无法撤回或禁言。
+`/adconfig`、`/setlogchannel`、`/whitelist`、`/rmwhitelist` 会在 handler 里再核一次「真的是本群管理员」。
+
+`/spam` **不限制发起人**：群里任何人都能举报（举报管理员会被拒、举报白名单用户会被拒），
+但 Bot 自己必须有「删除消息 + 限制成员」，否则命令直接不响应。
+
+## 自动点赞机器人
+
+有些群里会挂着一批「点赞机器人」：每来一条新消息就挨个点表情。这个功能默认**关闭**，由群管理员在群里打开：
+
+```text
+/adconfig like_guard          # 打开 / 关闭（别名，等同 /adconfig like_guard_enabled）
+```
+
+开启后，插件拿该群**最近 20 条消息**（cache 里本来就有）当基准，看某个账号是否**连续回应了 5 条**；判定时被删除的消息已经从最近消息里摘掉，所以「A B C(已删) D E F」会连成 A B D E F，不会被删掉的那条打断。命中后封禁它的「回应权限」——`setChatMemberStatus` 设为受限成员，`can_send_basic_messages` 与 `can_react_to_messages` 全部关掉，发言和表情一起停掉：
+
+- 写一条 `ban_records`（`spam_type = reaction_bot`）；
+- 群里发一条 `#ReactionBot` 提示（`**User ID**: 小王` + `**Reason**: reaction_bot 连续回应 5 条消息`），带「解除限制」/「Ban」按钮，删除时间与其它提示共用 `spam_tips_meg_delay`（`spam_tips` 关闭时提示常驻）；
+- 群绑定的日志频道同步一份（带「解除限制」按钮），配了全局审计频道时也写一条。
+
+判定状态只在内存里（插件重启即清空）；同一账号命中后 30 分钟内不会重复处置；管理员、白名单成员不会被处置。
+
+> 检测依赖 TDLib 的 `updateMessageInteractionInfo`：`recent_sender_ids` 每种表情最多只给 3 个最近的点赞者。同一条消息被 4 个以上账号点同一种表情时，这一轮可能只看得到 3 个——处置掉之后，剩下的账号会在后续消息里浮现。
+>
+> Bot 需要「限制成员」权限；没有权限时不会统计，也不会动作。
 
 ## 数据
 
@@ -146,6 +182,7 @@ admins = [987654321]     # 全局管理员：/qadid /delad /addkw /editkw /addfw
 | --- | --- |
 | `adb_config` | 每个群的配置（开关、处置模式、日志频道、自定义 AI） |
 | `message_records` | 48 小时消息索引（`createdAt` 有 TTL 索引），封禁时连带撤回 |
+| `message_texts` | 48 小时消息文本历史（AI 审核的「刚才在聊什么」上下文） |
 | `ban_records` | 封禁/禁言审计（`/qban`） |
 | `mute_review_records` | 禁言待复审（1 小时超时 → 封禁） |
 | `new_member_watch_records` | 入群 24h 监视（`expires_at` 有 TTL 索引） |
@@ -168,6 +205,7 @@ admins = [987654321]     # 全局管理员：/qadid /delad /addkw /editkw /addfw
 - **`/setlogchannel` 先验证再落库**：测试消息真的发出去了才写配置，频道填错不会留下半套配置。
 - **换库要谨慎**：`db` 指向已有数据的库会直接沿用其中的集合；指向空库时会新建集合与索引，不会导入任何旧数据。
 - **封禁只撤回近 48 小时**：可连带撤回的历史消息来自 `message_records` 索引，更早的消息不会被翻出来。
+- **自动点赞机器人默认关闭**：只有群管理员 `/adconfig like_guard` 打开后才统计；判定是连续 5 条回应（被删除的消息会被剔除，不算中断），误判时点提示上的「解除限制」即可恢复。
 
 ## 来源与致谢
 

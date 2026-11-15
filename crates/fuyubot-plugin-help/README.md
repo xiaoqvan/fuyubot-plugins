@@ -27,9 +27,22 @@ adblock 等插件各自登记，本插件只读 `list` 并按命令的能力过�
 - 图片生成 / 发送失败时，按配置补发一条**纯文本命令表**（`fallback_text = true`），
   保证 `/help` 不会什么都不回。
 - **按宿主命令表的权限过滤**：`hidden` 不进列表；`role`（user / chat_admin / admin /
-  owner）和 `scopes`（private / group / channel）按当前用户与会话裁剪。图片版、
-  文字版、统计数字吃同一份过滤结果。
+  owner）和 `scopes`（private / group / channel）按当前用户与会话裁剪。
+- **图片版在私聊里放宽一档**：主人看到全部命令，管理员看到除主人命令以外的全部；
+  普通用户 / 群 / 频道仍按 `role` / `scopes` 裁剪。文字版（`/help text`）保持原语义。
+- **每条命令带角色描边与会话图标**：紫=主人、绿=管理员、黄=群管、白=普通用户；
+  右侧小图标表示这条命令允许在私聊 / 群组 / 频道哪里用。条目阴影整体调淡。
 - 不再维护静态兜底：`start` / `help` / `plugins` 都由各自插件登记，没登记就不显示。
+
+## 命令
+
+| 命令 | 一句话 | 场景 | 权限 |
+| --- | --- | --- | --- |
+| `/help` | 出图片版命令表，按插件分组 | 私聊 / 群 / 频道 | 所有人 |
+| `/help text`（`/help t`）| 出同一份数据的文字版，不渲染图片 | 私聊 / 群 / 频道 | 所有人 |
+
+`/help@本Bot` 同样认；其它参数（含裸 `/help`）照旧出图。私聊里主人看到全部命令、
+管理员看到除主人命令以外的全部。
 
 ## 硬依赖：`fuyubot.html2img`
 
@@ -75,7 +88,7 @@ id 失败（或者其中一份被跳过）——这不是本插件的 bug，是�
 [plugin.fuyubot.help]
 title = "可用命令"
 description = "FuyuBot · 一张图看完所有命令"
-tips = "发送 /help 随时刷新"
+tips = "可使用 /help t 获取文本版本"
 table_desc = "共 {count} 条命令"
 image = "https://files.catbox.moe/py80s6.jpg"
 width = 760
@@ -91,7 +104,7 @@ fallback_text = true
 | --- | --- | --- |
 | `title` | `可用命令` | 图片大标题 |
 | `description` | `FuyuBot · 一张图看完所有命令` | 副标题 |
-| `tips` | `发送 /help 随时刷新` | 左下角小提示 |
+| `tips` | `可使用 /help t 获取文本版本` | 左下角小提示 |
 | `table_desc` | `共 {count} 条命令` | **每组**（一个插件一张卡）的说明，支持 `{count}`（本组条数）/ `{plugins}`（来源插件数）/ `{version}` |
 | `image` | catbox 头图 | 头图 URL；支持 `http(s)` / `data:`，**置空则不画头图** |
 | `width` | `760` | 渲染宽度（CSS px），夹到 320–1920 |
@@ -117,6 +130,49 @@ fallback_text = true
 群管理权先读宿主对象缓存（`fuyubot.host.cache`，`chat_member` 30 秒 TTL），
 未命中再问一次 TDLib。因此群管理员能看到 `chat_admin` 命令，普通群员看不到。
 
+**图片版在私聊里放宽一档**（`/help text` 不受影响，保持上表语义）：
+
+| 私聊里的身份 | 图片版能看到 |
+| --- | --- |
+| 主人 `owner` | **全部命令**（含 `admin` / `owner` 命令、含只在群 / 频道执行的命令） |
+| 管理员 `admin` | 除 `owner` 命令以外的**全部命令** |
+| 普通用户 | 与文字版一致：按 `role` / `scopes` 裁剪 |
+
+`hidden` 在两种形态下都排除——它表达的是「别列出来」，与角色无关。放宽只改
+**展示**，不改变命令本身的执行权限。
+
+#### 图片里的视觉语言
+
+每条命令是一张卡片，**1px 淡色**描边 = 这条命令**要求的角色**：
+
+| 描边 | 角色 | 含义 |
+| --- | --- | --- |
+| 🟪 淡紫 `#c9a2fb` | `owner` | 主人专用 |
+| 🟩 淡绿 `#7fd8a0` | `admin` | 全局管理员 |
+| 🟨 淡黄 `#f2d268` | `chat_admin` | 本群管理员 |
+| ⬜ 白色（垫一圈淡灰外圈） | `user` | 所有人 |
+
+卡片右侧的彩色小图标 = 这条命令**允许出现的会话**（按宿主给的原始 `scopes`，
+与当前会话无关）：`user` 私聊（青 `#0d9488`）、`users` 群组（橙 `#ea580c`）、
+`megaphone` 频道（蓝 `#2563eb`）。
+
+图标用 [Lucide](https://lucide.dev) 的线性 SVG（14px、`stroke-width: 2`、
+`fill: none` + `round` 端点），内联在 `assets/help.html` 里——不是字体图标、也不是
+远程资源，`hyper-render` 直接按 SVG 画，不联网、不依赖系统 emoji 字体。
+底部图例里用的是同一套图标。
+
+阴影统一是**中性灰**的轻投影（`0 1px 2px rgba(15,23,42,.04)`），不跟随描边颜色：
+同色阴影会把 1px 描边糊成 2px 的粗边。白色描边本身在浅色卡片上不可见，额外垫的
+那圈 `rgba(203,213,225,.55)` 也是中性灰，只为勾出轮廓。
+
+图片**底部是一整排**：刷新提示 + 七项图例 + 版本号，从左到右一条线排开
+（图例色块与卡片描边同源，见 `commands::legend()`）：
+
+`可使用 /help t 获取文本版本`　`● 主人`　`● 管理员`　`● 群管理`　`○ 用户`　`👤 私聊`　`👥 群组`　`📢 频道`　`v0.1.3`
+
+图例是静态的，不随这张图里实际有哪些命令变化——同一张图在任何会话里读法一致。
+`tips` 置空时这一排从图例开始；`legend.items` 为空时整排只剩提示与版本号。
+
 > `image` 走 html2img 的远程资源能力（仅公网 `http(s)` 与 `data:`；不要填
 > `file://` 或局域网地址）。头图拉取失败不会让整张图失败，只是没有头图。
 > 完全不想联网就写 `image = ""`。`data:` 会算进 html2img 的 `max_html_bytes`
@@ -136,6 +192,11 @@ fallback_text = true
 ```bash
 # 只测本插件（不编译 hyper-render）
 cargo test -p fuyubot-plugin-help
+
+# 看效果：本地渲染一张预览图（不连宿主、不发消息）
+# 真实链路：build_render_request → 模板 → vue-template-html → hyper-render
+cargo run -p fuyubot-plugin-help --example preview
+cargo run -p fuyubot-plugin-help --example preview -- /tmp/help-preview.jpg
 
 # 打 bundle（与其它插件同一套脚本）
 python scripts/package.py --plugin fuyubot-plugin-help \

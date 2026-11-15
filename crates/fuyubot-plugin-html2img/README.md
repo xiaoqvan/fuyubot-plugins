@@ -148,6 +148,25 @@ max_html_bytes = 131072
 max_pixels = 16000000
 ```
 
+| 键 | 默认 | 一句话 |
+| --- | --- | --- |
+| `width` | `1024` | 视口宽度（CSS px） |
+| `height` | `768` | 视口高度 |
+| `scale` | `1.0` | 输出倍率，2.0 约等于高清屏 |
+| `auto_height` | `true` | 高度按内容撑开，长页不被截断 |
+| `dark` | `false` | 深色底，同时影响配色偏好 |
+| `transparent` | `false` | 透明底，只有 PNG 保留得住 |
+| `padding` | `20` | 片段模式的 body 内边距 |
+| `font_family` | 系统字体栈 | 自定义字体，只收 CSS 合法字体名 |
+| `temp_dir` | 系统临时目录 | 渲染产物落在哪 |
+| `format` | `jpg` | 默认输出格式，`jpg` / `png` |
+| `jpeg_quality` | `85` | JPEG 质量，1–100 |
+| `max_width` | `1920` | 宽度上限，超了报错 |
+| `max_height` | `6000` | 高度上限 |
+| `max_scale` | `3.0` | 倍率上限 |
+| `max_html_bytes` | `131072` | HTML 字节上限 |
+| `max_pixels` | `16000000` | 总像素预算上限 |
+
 这里的值就是 `render` 入参省略时的默认值；入参里显式给出的 `width` / `height` / `scale` 会被夹到
 `max_*` 范围内，超出总像素预算（宽 × 高 × scale²）的请求直接返回错误。
 

@@ -24,7 +24,7 @@
 //! ⚠️ 真库实测（见 `fuyubot-simplify` 的 `Text::markdown_v2` 注释）：MarkdownV2 的粗体是
 //! `*x*`，**不是** `**x**`；`**x**` 会被吞掉。转换是必须的，不是可选的。
 
-use crate::simplify::Text;
+use crate::simplify::{Text, Topic};
 use serde_json::Value;
 
 // ── 消息文本 ──────────────────────────────────────────────────────
@@ -32,6 +32,25 @@ use serde_json::Value;
 /// 内容对象本身。
 pub fn content(message: &Value) -> Option<&Value> {
     message.get("content")
+}
+
+/// 消息所在的话题（论坛群组）。
+///
+/// TDLib 1.8.70 的 `Message.topic_id` 是 `MessageTopic`：
+/// - `messageTopicForum`：论坛话题——回复时必须**原样带回**，否则会落到 General；
+/// - 其它（私信话题 / 收藏夹话题）本插件不处理。
+///
+/// 非论坛群组没有 `topic_id`（评论串是别的字段），返回 `None` 正好走普通发送。
+pub fn topic_of(message: &Value) -> Option<Topic> {
+    let topic = message.get("topic_id")?;
+    if topic.get("@type").and_then(Value::as_str) != Some("messageTopicForum") {
+        return None;
+    }
+    topic
+        .get("forum_topic_id")
+        .and_then(Value::as_i64)
+        .and_then(|id| i32::try_from(id).ok())
+        .map(Topic::forum)
 }
 
 /// 一条消息里「能拿去审的文本」。
@@ -299,6 +318,14 @@ fn page_block_text(block: &Value) -> String {
 
 // ── Markdown ─────────────────────────────────────────────────────
 
+/// 名字 + 可点击复制的 ID：`小王(ID: 701234567)`。
+///
+/// `mention` 是 [`crate::api::Td::sender_mention`] 的产物（通常是 Markdown 链接）；
+/// ID 包进行内代码，Telegram 客户端点一下就能复制。整段最终仍要经过 [`markdown`]。
+pub fn with_id(mention: &str, id: i64) -> String {
+    format!("{mention}(ID: `{id}`)")
+}
+
 /// 把 `**粗体**` / `` `代码` `` / `[文字](url)` 转成 MarkdownV2，其余字符转义。
 pub fn markdown(input: &str) -> Text {
     Text::markdown_v2(render_markdown_v2(input))
@@ -413,88 +440,5 @@ pub fn confidence_percent(confidence: f64) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn extracts_text_and_captions() {
-        let text = json!({
-            "content": {"@type": "messageText", "text": {"text": "你好"}}
-        });
-        assert_eq!(message_text(&text), "你好");
-
-        let photo = json!({
-            "content": {"@type": "messagePhoto", "caption": {"text": "图说"}}
-        });
-        assert_eq!(message_text(&photo), "图说");
-    }
-
-    #[test]
-    fn rich_message_text_walks_blocks() {
-        let content = json!({
-            "@type": "messageRichMessage",
-            "message": {
-                "blocks": [
-                    {"@type": "pageBlockTitle", "title": {"@type": "richTextPlain", "text": "标题"}},
-                    {"@type": "pageBlockParagraph", "text": {"@type": "richTexts", "texts": [
-                        {"@type": "richTextPlain", "text": "第一段"},
-                        {"@type": "richTextBold", "text": {"@type": "richTextPlain", "text": "加粗"}}
-                    ]}}
-                ]
-            }
-        });
-        let text = rich_message_text(&content);
-        assert!(text.contains("标题"), "{text}");
-        assert!(text.contains("第一段"), "{text}");
-        assert!(text.contains("加粗"), "{text}");
-    }
-
-    #[test]
-    fn bold_is_converted_to_markdown_v2() {
-        assert_eq!(render_markdown_v2("**粗体**"), "*粗体*");
-        assert_eq!(render_markdown_v2("**a.b**"), "*a\\.b*");
-    }
-
-    #[test]
-    fn reserved_characters_are_escaped() {
-        assert_eq!(render_markdown_v2("a.b-c!"), "a\\.b\\-c\\!");
-        assert_eq!(render_markdown_v2("#Tag"), "\\#Tag");
-    }
-
-    #[test]
-    fn inline_code_keeps_dots() {
-        assert_eq!(render_markdown_v2("`a.b`"), "`a.b`");
-        assert_eq!(render_markdown_v2("`a\\b`"), "`a\\\\b`");
-    }
-
-    #[test]
-    fn links_keep_url_unescaped() {
-        let rendered = render_markdown_v2("[我](tg://user?id=1)");
-        assert_eq!(rendered, "[我](tg://user?id=1)");
-    }
-
-    #[test]
-    fn unmatched_bold_marker_is_escaped() {
-        assert_eq!(render_markdown_v2("**"), "\\*\\*");
-        assert_eq!(render_markdown_v2("a*b"), "a\\*b");
-    }
-
-    #[test]
-    fn confidence_is_percentage() {
-        assert_eq!(confidence_percent(0.876), "88%");
-        assert_eq!(confidence_percent(0.0), "0%");
-    }
-
-    #[test]
-    fn photo_ids_are_collected() {
-        let content = json!({
-            "photo": {"sizes": [
-                {"photo": {"remote": {"unique_id": "a"}}},
-                {"photo": {"remote": {"unique_id": "b"}}},
-                {"photo": {}}
-            ]}
-        });
-        assert_eq!(photo_unique_ids(&content), vec!["a", "b"]);
-    }
-}
+#[path = "../tests/unit/text.rs"]
+mod tests;

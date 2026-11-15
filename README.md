@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | [fuyubot-plugin-sqlite](crates/fuyubot-plugin-sqlite/) | `fuyubot.sqlite` | SQLite 存储服务：参数化查询、表结构模板、事务批量写入，按插件隔离库文件 |
 | [fuyubot-plugin-mongo](crates/fuyubot-plugin-mongo/) | `fuyubot.mongo` | MongoDB 存储服务（`storage.mongo`）：集合级 CRUD、聚合、索引管理 |
-| [fuyubot-plugin-adblock](crates/fuyubot-plugin-adblock/) | `fuyubot.adblock` | 广告拦截：关键词 / 文件 / 贴纸 / AI 审核，命中即删除、禁言或封禁；**硬依赖 `storage.mongo`** |
+| [fuyubot-plugin-adblock](crates/fuyubot-plugin-adblock/) | `fuyubot.adblock` | 广告拦截：关键词 / 文件 / 贴纸 / AI 审核 / 自动点赞机器人，命中即删除、禁言或封禁；**硬依赖 `storage.mongo`** |
 | [fuyubot-plugin-html2img](crates/fuyubot-plugin-html2img/) | `fuyubot.html2img` | HTML / Vue 转图片服务：把 HTML、CSS 或 Vue 模板渲染成 PNG / JPEG（默认 JPEG）并返回本地文件路径（hyper-render，纯 Rust，无 Chromium） |
 | [fuyubot-plugin-help](crates/fuyubot-plugin-help/) | `fuyubot.help` | **替代框架内置 `/help`**：读取宿主命令表（`fuyubot.host.commands`）**按插件分组**渲染成图片发送（`/help text` 出文字版），按命令的 `role` / `scopes` / `hidden` 过滤；同 id；**硬依赖 `fuyubot.html2img`** |
 | [fuyubot-plugin-douyin](crates/fuyubot-plugin-douyin/) | `fuyubot.douyin` | 抖音解析：`/dy` 命令 + 聊天里自动识别分享链接，发去水印视频 / 图集；**可选** `fuyubot.sqlite` 缓存文件 id |
@@ -100,17 +100,81 @@ v6 对插件作者的两点变化：**服务调用经过宿主**——提供方�
   不注册命令、不发消息；停用 / 卸载它不会影响任何业务插件。
 - 想用 Vue 模板出图，`fuyubot.html2img` 已经内置了本仓库的 `vue-template-html`。
 
+## 测试代码放哪里
+
+**测试代码不写在实现文件里**。每个插件在自己的 `tests/unit/` 下放测试模块，`src/` 里只留声明：
+
+```rust
+#[cfg(test)]
+#[path = "../tests/unit/<模块名>.rs"]
+mod tests;
+```
+
+- `tests/unit/*.rs` 是被 `#[cfg(test)]` 引入的模块，Cargo **不会**把它当成集成测试目标
+  （只有 `tests/*.rs` 顶层文件才会），所以放多少都不会多出测试二进制。
+- 测试仍在原模块的作用域里展开，可以 `use super::*` 直接测私有函数，但实现文件里不再有测试代码。
+- 需要宿主 / 网络 / 跨 crate 的端到端测试，仍放在插件的 `tests/*.rs`（Cargo 集成测试）。
+- 多模块文件用 `__` 连接路径（如 `src/commands/mod.rs` → `tests/unit/commands__mod.rs`），
+  一个文件里有多个测试模块时再加模块名后缀（如 `parse__live_tests.rs`）。
+
+## 命令一览
+
+命令都登记在宿主的 `fuyubot.host.commands` 里，装了 `fuyubot.help` 时 `/help` 按插件分组列出
+（`/help text` 出文字版）。权限档：`所有人` / `群管理`（本群管理员）/ `管理员`
+（宿主 `[roles].admins`）/ `主人`（宿主 `[roles].owners`）。
+
+| 插件 | 命令 | 一句话 |
+| --- | --- | --- |
+| adblock | `/adconfig` | 看 / 改本群的拦截开关（群管理） |
+| adblock | `/setlogchannel <channel_id>` | 绑定本群日志频道，先发测试消息（群管理） |
+| adblock | `/whitelist add\|rm <ID\|@用户名\|回复>` | 加本群白名单（群管理） |
+| adblock | `/rmwhitelist <ID\|@用户名\|回复>` | 移出本群白名单（群管理） |
+| adblock | `/spam [user_id\|@用户名]` | 对一条消息做一次 AI 判定（任何人，需 Bot 有管理权） |
+| adblock | `/qban <tgid\|@用户名> [limit]` | 按 TGID 查封禁记录（所有人） |
+| adblock | `/qadid <ID>` | 按 `_id` 查黑名单条目（管理员） |
+| adblock | `/delad <ID>` | 按 `_id` 删黑名单条目（管理员） |
+| adblock | `/addkw <ads\|bio> [r18] <关键词…>` | 加关键词，同组按 AND 命中（管理员） |
+| adblock | `/editkw <_id> <关键词…>` | 按 `_id` 改一条关键词（管理员） |
+| adblock | `/addfwdbl <chat_id\|@用户名>` | 把来源频道 / 群加进转发黑名单（管理员） |
+| adblock | `/rmfwdbl <chat_id>` | 从转发黑名单里移除（管理员） |
+| adblock | `/adkew add\|rm\|list [关键词]` | 管理触发 AI 审核的全局关键词（主人） |
+| adblock | `/admatch <文本>` | 看一段文本命中了哪些关键词（主人） |
+| adblock | `/adaiadd <文本>` | 让 AI 判一段文本，超过 3 个词就入库（主人） |
+| adblock | `/adaiset add\|rm\|list [chat_id]` | 授权群使用内置 AI 接口（主人） |
+| adblock | `/start aiConfig_<chat_id>` | 私聊三步向导配置本群 AI 接口（目标群管理） |
+| douyin | `/dy <链接>` | 解析抖音分享链接，发视频 / 图集 |
+| music | `/music163 <关键词\|链接\|ID> [音质]` | 网易云搜索或直接发音频 |
+| music | `/soda <关键词\|链接\|ID> [音质]` | 汽水搜索，或发音频 / UGC 视频 |
+| help | `/help` | 出图片版命令表，按插件分组 |
+| help | `/help text` | 同一份数据的文字版（`/help t` 同义） |
+
+## 配置一览
+
+每个插件只读自己名字点分的那一段，段内全部平铺。键的含义与默认值见各自 README。
+
+| 插件 | 配置段 | 键 |
+| --- | --- | --- |
+| sqlite | `[plugin.fuyubot.sqlite]` | `mode` `dir` `file` `table_prefix` `journal_mode` `busy_timeout_ms` `max_rows` `max_sql_bytes` `max_batch` `max_result_bytes` `read_only` |
+| mongo | `[plugin.fuyubot.mongo]` | `uri` `db` `timeout_ms` `app_name` |
+| adblock | `[plugin.fuyubot.adblock]` | `db` `log_channel` `log_topic` `ai_api_key` `ai_base_url` `ai_model` `ai_token_limit` `ai_fallback_api_key` `ai_fallback_base_url` `ai_fallback_model` `ai_log_channel` `ai_log_topic` `ai_db_channel` `ai_db_topic` |
+| html2img | `[plugin.fuyubot.html2img]` | `width` `height` `scale` `auto_height` `dark` `transparent` `padding` `font_family` `temp_dir` `format` `jpeg_quality` `max_width` `max_height` `max_scale` `max_html_bytes` `max_pixels` |
+| help | `[plugin.fuyubot.help]` | `title` `description` `tips` `table_desc` `image` `width` `height` `scale` `format` `max_commands` `send_timeout_ms` `fallback_text` |
+| douyin | `[plugin.fuyubot.douyin]` | `cookies`（别名 `cookie`） |
+| music | `[plugin.fuyubot.music]` | `netease` `soda` `soda_device_id` `soda_iid` `soda_fp` `soda_x_helios` `soda_x_medusa` `soda_user_agent` `soda_signer_url` `soda_signer_token` |
+| message-log | `[plugin.fuyubot.message-log]` | `enabled` `ignore_outgoing` `max_text_chars` |
+
+宿主全局的 `[roles].owners` / `[roles].admins`、日志级别 `[plugins].log_level` 不在插件段里。
+
 ## 来源与致谢
 
-- **`fuyubot-plugin-message-log`** 从 TypeScript 宿主 `plugins/message_log.ts` 迁来：
-  聊天气泡 / 发送者 / 回复 / 转发 / 话题的拼法沿用原版，输出改走 FuyuBot 的插件日志
-  （宿主统一加时间、来源与级别），不再自带 pino 与按日轮转文件。
-- **`fuyubot-plugin-douyin`** 从 TypeScript 宿主 `plugins/video_parse` 的抖音分支迁来；
-  签名栈移植自 [Evil0ctal/Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)
+- **`fuyubot-plugin-message-log`** 把聊天气泡 / 发送者 / 回复 / 转发 / 话题拼成一行，
+  交给 FuyuBot 的插件日志（宿主统一加时间、来源与级别），不自带日志文件与按日轮转。
+- **`fuyubot-plugin-douyin`** 的签名栈移植自
+  [Evil0ctal/Douyin_TikTok_Download_API](https://github.com/Evil0ctal/Douyin_TikTok_Download_API)
   （Apache-2.0）的 `dtk/signing/native/`，并用 `sign-vectors.json` 逐字节对拍。
-- **`fuyubot-plugin-music`** 的网易云命令 / eapi 行为参考旧 TS 实现，汽水接口与音质
-  档位参考 [sodahub-org/libresoda](https://github.com/sodahub-org/libresoda)；代码是独立
-  重写，只沿用协议事实（路径、参数形状、eapi / spade / CENC 算法），没有搬 AGPL 源码。
+- **`fuyubot-plugin-music`** 的汽水接口与音质档位参考
+  [sodahub-org/libresoda](https://github.com/sodahub-org/libresoda)；代码是独立重写，
+  只沿用协议事实（路径、参数形状、eapi / spade / CENC 算法），没有搬 AGPL 源码。
 - **`fuyubot.html2img` 的渲染器**是 [hyper-render](https://github.com/thomasmost/hyper-render)
   的本地 vendored fork（`vendor/`），合并了 upstream PR #1（blitz 0.3.0-alpha.4 + `data:` URI
   资源 + StyleThreading）并实现了 PR #3 的外部 URL 资源能力；底层是 Blitz、Stylo、Taffy 与

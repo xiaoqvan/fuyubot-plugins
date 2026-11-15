@@ -13,7 +13,15 @@
 //!
 //! 全部按 TDLib 1.8.69 的真签名写（`banChatMember` / `setChatMemberStatus` /
 //! `getChatMember` …）。Bot API 那套（`kickChatMember`、`restrictChatMember`）不存在。
+//!
+//! ## 读对象先问宿主缓存
+//!
+//! `getChat` / `getChatMember` / `getSupergroup` 走 **`fuyubot.host.cache`**：
+//! 宿主的更新管线（`updateNewChat` / `updateChat*` / `updateChatMember` …）会实时刷新，
+//! 所以「有没有缓存」和「是不是最新」是同一件事——插件不再自己攒一份 TTL 缓存，
+//! 也就不会出现「刚提权还要等 60 秒」的窗口。未命中且在线才直连 TDLib，成功后回填。
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use fuyubot_abi::HostApi;
@@ -21,7 +29,8 @@ use fuyubot_abi::ResponseRouter;
 use serde_json::{Value, json};
 
 use crate::simplify::{
-    EditTextParams, ReplyButton, SendMessageParams, Simplify, Text, Topic, send_params,
+    EditTextParams, IDENTITY_SERVICE, ReplyButton, SendMessageParams, Simplify, Text, Topic,
+    send_params,
 };
 
 /// 普通请求的等待上限。发消息另算（`send_message` 自带 30 秒预算）。
@@ -30,6 +39,18 @@ pub const CALL_TIMEOUT_MS: u64 = 15_000;
 /// 宿主预置的**命令回复**服务（方法 `reply`）：由宿主决定发新消息 / 编辑原命令 /
 /// 发 ephemeral。名字写错或宿主太旧时调用会失败，[`Td::send`] 会退回普通发送。
 pub const COMMAND_SERVICE: &str = "fuyubot.host.command";
+
+/// 宿主内置的 **TDLib 对象缓存**服务（`get` / `put`）。
+///
+/// 这张缓存由宿主的更新管线维护（`updateNewChat` / `updateChat*` / `updateChatMember`
+/// 等实时刷新），所以读它既是「已缓存」也是「跟得上更新」——比插件自己攒一份 TTL
+/// 缓存更准，也比每条消息直连 TDLib 便宜。
+pub const CACHE_SERVICE: &str = "fuyubot.host.cache";
+
+/// 成员信息的兜底 TTL：权限会变，不能只靠 `updateChatMember`（与 `fuyubot-simplify` 一致）。
+///
+/// 注意这是**上限**：`updateChatMember` 到达时宿主会覆盖条目并重置计时。
+const CHAT_MEMBER_TTL_MS: u64 = 30_000;
 
 // ── 发送者 ────────────────────────────────────────────────────────
 
@@ -147,13 +168,19 @@ impl ApiError {
 pub struct Td {
     host: HostApi,
     router: ResponseRouter,
+    /// 自己的 user id：身份服务拿到一次就记住（id 不会变）。
+    me_id: OnceLock<i64>,
 }
 
 impl Td {
     /// `router` 必须在插件 `start` 里建（宿主作用域栈顶是本插件），
     /// 由 [`crate::runtime::Runtime::new`] 创建后传进来。
     pub fn new(host: HostApi, router: ResponseRouter) -> Self {
-        Self { host, router }
+        Self {
+            host,
+            router,
+            me_id: OnceLock::new(),
+        }
     }
 
     /// 发一条请求并等它的响应；`@type == "error"` 变成 [`ApiError`]。
@@ -182,14 +209,35 @@ impl Td {
         self.call(method, params).await.map(|_| ())
     }
 
-    // ── 查询 ──────────────────────────────────────────────────────
+    // ── 查询（宿主缓存优先） ─────────────────────────────────────
 
-    pub async fn chat(&self, chat_id: i64) -> Result<Value, ApiError> {
-        self.call("getChat", json!({ "chat_id": chat_id })).await
+    /// `getChat`：**宿主缓存优先**（`updateNewChat` / `updateChat*` 实时刷新）。
+    ///
+    /// 未命中且 TDLib 在线才真的发请求，成功后回填缓存；离线时直接 `None`，
+    /// 不再为一个已知问不到的 `getChat` 等满 15 秒。
+    pub async fn chat(&self, chat_id: i64) -> Option<Value> {
+        self.cached(
+            "chat",
+            chat_id,
+            None,
+            0,
+            "getChat",
+            json!({ "chat_id": chat_id }),
+        )
+        .await
     }
 
-    pub async fn user(&self, user_id: i64) -> Result<Value, ApiError> {
-        self.call("getUser", json!({ "user_id": user_id })).await
+    /// `getUser`：**宿主缓存优先**（`updateUser` / `updateUserStatus` 实时刷新）。
+    pub async fn user(&self, user_id: i64) -> Option<Value> {
+        self.cached(
+            "user",
+            user_id,
+            None,
+            0,
+            "getUser",
+            json!({ "user_id": user_id }),
+        )
+        .await
     }
 
     pub async fn user_full(&self, user_id: i64) -> Result<Value, ApiError> {
@@ -197,19 +245,39 @@ impl Td {
             .await
     }
 
+    /// `getChatMember`：**宿主缓存优先**（30 秒兜底 TTL，`updateChatMember` 实时刷新）。
+    ///
     /// 取不到（用户不在群里之类）就当 `None`——调用方九成只想「能用就用」。
+    /// 频道身份没有 user_id，缓存键对不上，只能直连。
     pub async fn chat_member(&self, chat_id: i64, sender: Sender) -> Option<Value> {
-        self.call(
-            "getChatMember",
-            json!({ "chat_id": chat_id, "member_id": sender.to_json() }),
-        )
-        .await
-        .ok()
+        let params = json!({ "chat_id": chat_id, "member_id": sender.to_json() });
+        match sender {
+            Sender::User(user_id) => {
+                self.cached(
+                    "chat_member",
+                    chat_id,
+                    Some(user_id),
+                    CHAT_MEMBER_TTL_MS,
+                    "getChatMember",
+                    params,
+                )
+                .await
+            }
+            Sender::Chat(_) => self.call("getChatMember", params).await.ok(),
+        }
     }
 
-    pub async fn supergroup(&self, supergroup_id: i64) -> Result<Value, ApiError> {
-        self.call("getSupergroup", json!({ "supergroup_id": supergroup_id }))
-            .await
+    /// `getSupergroup`：**宿主缓存优先**（`updateSupergroup` 实时刷新）。
+    pub async fn supergroup(&self, supergroup_id: i64) -> Option<Value> {
+        self.cached(
+            "supergroup",
+            supergroup_id,
+            None,
+            0,
+            "getSupergroup",
+            json!({ "supergroup_id": supergroup_id }),
+        )
+        .await
     }
 
     pub async fn supergroup_full(&self, supergroup_id: i64) -> Result<Value, ApiError> {
@@ -218,11 +286,6 @@ impl Td {
             json!({ "supergroup_id": supergroup_id }),
         )
         .await
-    }
-
-    pub async fn basic_group(&self, basic_group_id: i64) -> Result<Value, ApiError> {
-        self.call("getBasicGroup", json!({ "basic_group_id": basic_group_id }))
-            .await
     }
 
     pub async fn sticker_set(&self, set_id: i64) -> Option<Value> {
@@ -301,20 +364,15 @@ impl Td {
 
     /// 是「群」吗（超级群的非频道形态，或基本群）。
     pub async fn chat_is_group(&self, chat_id: i64) -> bool {
-        let Ok(chat) = self.chat(chat_id).await else {
+        let Some(chat) = self.chat(chat_id).await else {
             return false;
         };
-        match chat
-            .get("type")
-            .and_then(|kind| kind.get("@type"))
-            .and_then(Value::as_str)
-        {
+        match chat.pointer("/type/@type").and_then(Value::as_str) {
             Some("chatTypeBasicGroup") => true,
-            Some("chatTypeSupergroup") => chat
-                .get("type")
-                .and_then(|kind| kind.get("is_channel"))
+            Some("chatTypeSupergroup") => !chat
+                .pointer("/type/is_channel")
                 .and_then(Value::as_bool)
-                .is_some_and(|is_channel| !is_channel),
+                .unwrap_or(false),
             _ => false,
         }
     }
@@ -322,7 +380,6 @@ impl Td {
     pub async fn chat_title(&self, chat_id: i64) -> String {
         self.chat(chat_id)
             .await
-            .ok()
             .and_then(|chat| chat.get("title").and_then(Value::as_str).map(str::to_owned))
             .unwrap_or_else(|| chat_id.to_string())
     }
@@ -350,47 +407,22 @@ impl Td {
     }
 
     /// 自己（Bot）在这个群里有没有这些管理员权限。
+    ///
+    /// 两次读取都走宿主预置的东西，插件不再自己缓存 60 秒：
+    /// 1. `fuyubot.host.identity` 的 `me` —— 登录时宿主就填好了，**不碰 TDLib**；
+    /// 2. `getChatMember(chat, 我)` —— 宿主缓存优先，`updateChatMember` 实时刷新，
+    ///    30 秒只是「更新丢了」时的兜底。
+    ///
+    /// 提升/降权后宿主会收到 `updateChatMember` 并刷新缓存，所以这里拿到的基本是实时值。
     pub async fn am_i_admin(&self, chat_id: i64, rights: &[&str]) -> bool {
-        let Ok(chat) = self.chat(chat_id).await else {
+        let Some(user_id) = self.my_id().await else {
             return false;
         };
-        let status = match chat
-            .get("type")
-            .and_then(|kind| kind.get("@type"))
-            .and_then(Value::as_str)
-        {
-            Some("chatTypeBasicGroup") => {
-                let id = chat
-                    .get("type")
-                    .and_then(|kind| kind.get("basic_group_id"))
-                    .and_then(Value::as_i64);
-                match id {
-                    Some(id) => self
-                        .basic_group(id)
-                        .await
-                        .ok()
-                        .and_then(|group| group.get("status").cloned()),
-                    None => None,
-                }
-            }
-            Some("chatTypeSupergroup") => {
-                let id = chat
-                    .get("type")
-                    .and_then(|kind| kind.get("supergroup_id"))
-                    .and_then(Value::as_i64);
-                match id {
-                    Some(id) => self
-                        .supergroup(id)
-                        .await
-                        .ok()
-                        .and_then(|group| group.get("status").cloned()),
-                    None => None,
-                }
-            }
-            _ => None,
+        let Some(member) = self.chat_member(chat_id, Sender::User(user_id)).await else {
+            return false;
         };
-        status
-            .as_ref()
+        member
+            .get("status")
             .is_some_and(|status| status_has_rights(status, rights))
     }
 
@@ -399,11 +431,8 @@ impl Td {
         if sender == Sender::Chat(chat_id) {
             return true;
         }
-        if let Ok(chat) = self.chat(chat_id).await
-            && let Some(supergroup_id) = chat
-                .get("type")
-                .and_then(|kind| kind.get("supergroup_id"))
-                .and_then(Value::as_i64)
+        if let Some(chat) = self.chat(chat_id).await
+            && let Some(supergroup_id) = chat.pointer("/type/supergroup_id").and_then(Value::as_i64)
             && let Ok(full) = self.supergroup_full(supergroup_id).await
             && let Some(linked) = full.get("linked_chat_id").and_then(Value::as_i64)
             && sender == Sender::Chat(linked)
@@ -703,7 +732,7 @@ impl Td {
                 if !name {
                     return chat_id.to_string();
                 }
-                let Ok(chat) = self.chat(chat_id).await else {
+                let Some(chat) = self.chat(chat_id).await else {
                     return chat_id.to_string();
                 };
                 let title = chat.get("title").and_then(Value::as_str).unwrap_or("");
@@ -717,7 +746,7 @@ impl Td {
                     .get("type")
                     .and_then(|kind| kind.get("supergroup_id"))
                     .and_then(Value::as_i64)
-                    && let Ok(supergroup) = self.supergroup(supergroup_id).await
+                    && let Some(supergroup) = self.supergroup(supergroup_id).await
                 {
                     username = supergroup
                         .get("usernames")
@@ -736,8 +765,109 @@ impl Td {
     }
 }
 
+// ── 宿主缓存 ──────────────────────────────────────────────────────
+
+/// 宿主缓存查询的三种结果（与 `fuyubot-simplify` 的判定一致）。
+enum CacheAnswer {
+    /// 命中，直接用。
+    Hit(Value),
+    /// 未命中，但 TDLib 在线，可以去问。
+    Miss,
+    /// 未命中且离线：再问只会白等超时。
+    Offline,
+}
+
+impl Td {
+    /// `getChat` / `getChatMember` … 的统一入口：**缓存优先**。
+    ///
+    /// 未命中且在线才发一次 TDLib 请求，成功后回填宿主缓存——下一次（包括别的插件）
+    /// 就都能命中。宿主太旧、没有缓存服务时按未命中处理，行为退回直连。
+    async fn cached(
+        &self,
+        kind: &str,
+        id: i64,
+        user_id: Option<i64>,
+        ttl_ms: u64,
+        method: &str,
+        params: Value,
+    ) -> Option<Value> {
+        match self.cache_lookup(kind, id, user_id, ttl_ms) {
+            CacheAnswer::Hit(value) => return Some(value),
+            CacheAnswer::Offline => return None,
+            CacheAnswer::Miss => {}
+        }
+        let value = self.call(method, params).await.ok()?;
+        self.cache_store(kind, id, user_id, &value);
+        Some(value)
+    }
+
+    fn cache_lookup(&self, kind: &str, id: i64, user_id: Option<i64>, ttl_ms: u64) -> CacheAnswer {
+        let input = json!({
+            "kind": kind,
+            "id": id,
+            "user_id": user_id,
+            "ttl_ms": ttl_ms,
+        });
+        let Ok(raw) = self
+            .host
+            .call_service(CACHE_SERVICE, "get", &input.to_string())
+        else {
+            // 老宿主没有缓存服务：按未命中处理，走原来的直连。
+            return CacheAnswer::Miss;
+        };
+        let Ok(reply) = serde_json::from_str::<Value>(&raw) else {
+            return CacheAnswer::Miss;
+        };
+        if let Some(value) = reply.get("value").filter(|value| !value.is_null()) {
+            return CacheAnswer::Hit(value.clone());
+        }
+        if reply.get("online").and_then(Value::as_bool) == Some(false) {
+            CacheAnswer::Offline
+        } else {
+            CacheAnswer::Miss
+        }
+    }
+
+    fn cache_store(&self, kind: &str, id: i64, user_id: Option<i64>, value: &Value) {
+        let input = json!({
+            "kind": kind,
+            "id": id,
+            "user_id": user_id,
+            "value": value,
+        });
+        // 写失败不影响调用方：它已经拿到 TDLib 的结果。
+        let _ = self
+            .host
+            .call_service(CACHE_SERVICE, "put", &input.to_string());
+    }
+
+    /// 自己的 user id：宿主身份服务的 `me`（登录时填好，不碰 TDLib），
+    /// 老宿主退回 `getMe`。id 不会变，拿到一次就记住。
+    pub async fn my_id(&self) -> Option<i64> {
+        if let Some(id) = self.me_id.get() {
+            return Some(*id);
+        }
+        let id = match self.identity_me() {
+            Some(id) => id,
+            None => self
+                .call("getMe", json!({}))
+                .await
+                .ok()?
+                .get("id")
+                .and_then(Value::as_i64)?,
+        };
+        let _ = self.me_id.set(id);
+        Some(id)
+    }
+
+    fn identity_me(&self) -> Option<i64> {
+        let raw = self.host.call_service(IDENTITY_SERVICE, "me", "{}").ok()?;
+        let me: Value = serde_json::from_str(&raw).ok()?;
+        me.get("id").and_then(Value::as_i64)
+    }
+}
+
 /// 用户显示名：`first last`，两边都空时返回 `None`。
-///
 /// TS 版直接 `first_name + last_name`（没有空格，缺失时还会拼出 `undefinedundefined`）；
 /// 这里统一成「有空格、缺一个就只显示另一个、全缺才回退 ID」。
 fn display_name(first: &str, last: &str) -> Option<String> {
@@ -797,52 +927,5 @@ pub fn member_param(sender: Sender) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sender_round_trip() {
-        let user = Sender::User(5);
-        assert_eq!(Sender::from_json(&user.to_json()), Some(user));
-        let chat = Sender::Chat(-100);
-        assert_eq!(Sender::from_json(&chat.to_json()), Some(chat));
-        assert_eq!(
-            Sender::from_json(&json!({"@type": "messageSenderHidden"})),
-            None
-        );
-    }
-
-    #[test]
-    fn rights_are_checked() {
-        let admin = json!({
-            "@type": "chatMemberStatusAdministrator",
-            "rights": {"can_delete_messages": true, "can_restrict_members": false}
-        });
-        assert!(status_has_rights(&admin, &["can_delete_messages"]));
-        assert!(!status_has_rights(&admin, &["can_restrict_members"]));
-        assert!(status_has_rights(&admin, &[]));
-        let creator = json!({"@type": "chatMemberStatusCreator"});
-        assert!(status_has_rights(&creator, &["can_restrict_members"]));
-        let member = json!({"@type": "chatMemberStatusMember"});
-        assert!(!status_has_rights(&member, &[]));
-    }
-
-    #[test]
-    fn display_names_are_trimmed_and_fall_back() {
-        assert_eq!(display_name("Ada", "Lovelace"), Some("Ada Lovelace".into()));
-        assert_eq!(display_name("Ada", ""), Some("Ada".into()));
-        assert_eq!(display_name("", "Lovelace"), Some("Lovelace".into()));
-        assert_eq!(display_name("  ", "\t"), None);
-    }
-
-    #[test]
-    fn callback_data_shapes() {
-        assert_eq!(unban_callback(-100, Sender::User(5)), "unban?cid=-100&u=5");
-        assert_eq!(
-            unban_callback(-100, Sender::Chat(-200)),
-            "unban?cid=-100&c=-200"
-        );
-        assert_eq!(member_param(Sender::User(5)), "u=5");
-        assert_eq!(member_param(Sender::Chat(-200)), "c=-200");
-    }
-}
+#[path = "../tests/unit/api.rs"]
+mod tests;

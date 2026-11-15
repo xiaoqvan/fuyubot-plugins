@@ -39,10 +39,13 @@
 //! 同步渲染与等发送结果都在那个线程里。渲染用一把锁串行化，`stop()` 会 join 掉
 //! 仍在跑的线程——动态库卸载之后不能让它们继续跑本插件的代码。
 
-mod commands;
-mod config;
 mod log;
-mod template;
+
+// 这几个模块对外可见只为一件事：`examples/preview.rs` 在本地用**同一份**模板、
+// 同一套组装代码渲染预览图（不连宿主、不发消息）。
+pub mod commands;
+pub mod config;
+pub mod template;
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
@@ -192,17 +195,5 @@ impl Plugin for HelpPlugin {
 define_plugin!(HelpPlugin, "fuyubot.help");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn html2img_is_a_hard_dependency() {
-        assert_eq!(HelpPlugin::inject(), vec!["fuyubot.html2img"]);
-    }
-
-    #[test]
-    fn host_command_table_name_matches_the_contract() {
-        // 跨仓契约：名字写错不会报错，只会让 /help 读到空表。
-        assert_eq!(commands::HOST_COMMANDS, "fuyubot.host.commands");
-    }
-}
+#[path = "../tests/unit/lib.rs"]
+mod tests;

@@ -9,7 +9,7 @@
 //!   → 自动测试连通性 → 写回该群的 adb_config
 //! ```
 //!
-//! 流程状态只活在内存里（[`crate::cache`]），30 分钟不作答就作废——它是一次性引导，
+//! 流程状态只活在内存里（[`crate::cache`]），10 分钟不作答就作废——它是一次性引导，
 //! 没有写库的必要，重启丢掉反而干净。
 
 use crate::simplify::Command;
@@ -81,7 +81,7 @@ pub async fn handle_start(rt: &Runtime, command: &Command, sender: Sender, _mess
         rt,
         chat_id,
         &format!(
-            "🔑 **开始配置群的 AI 广告审查接口**（OpenAI 兼容）\n\n目标群：`{target}`\n\n**第 1/3 步**：请发送你的 **API Key**（如 `sk-xxxx`）\n\n输入 `/cancel` 可随时取消。{chain}"
+            "🔑 **开始配置群的 AI 广告审查接口**（OpenAI 兼容）\n\n目标群：`{target}`\n\n**第 1/3 步**：请发送你的 **API Key**（如 `sk-xxxx`）\n\n⏱ 每一步请在 **10 分钟**内完成，超时自动作废；输入 `/cancel` 可随时取消。{chain}"
         ),
         reply_to,
         Vec::new(),
@@ -159,7 +159,7 @@ pub async fn consume_private(rt: &Runtime, message: &Value) -> bool {
                 rt,
                 chat_id,
                 &format!(
-                    "✅ API Key 已记录：`{}`\n\n**第 2/3 步**：请发送 **后端地址**（如 `https://api.openai.com/v1`），输入 `skip` 使用默认地址 `{DEFAULT_BASE_URL}`。",
+                    "✅ API Key 已记录：`{}`\n\n**第 2/3 步**：请发送 **后端地址**（如 `https://api.openai.com/v1`），输入 `skip` 使用默认地址 `{DEFAULT_BASE_URL}`。⏱ 10 分钟内有效。",
                     mask_secret(&text)
                 ),
                 reply_to,
@@ -194,7 +194,7 @@ pub async fn consume_private(rt: &Runtime, message: &Value) -> bool {
                 rt,
                 chat_id,
                 &format!(
-                    "✅ 后端地址已记录：`{base_url}`\n\n**第 3/3 步**：请发送 **模型名称**（如 `gpt-4o-mini`），输入 `skip` 使用默认模型 `{DEFAULT_MODEL}`。"
+                    "✅ 后端地址已记录：`{base_url}`\n\n**第 3/3 步**：请发送 **模型名称**（如 `gpt-4o-mini`），输入 `skip` 使用默认模型 `{DEFAULT_MODEL}`。⏱ 10 分钟内有效。"
                 ),
                 reply_to,
                 0,
@@ -304,26 +304,5 @@ fn pending_for(chat_id: i64) -> PendingAiConfig {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_payload() {
-        assert_eq!(
-            parse_payload("aiConfig_-1001234567890"),
-            Some(-1_001_234_567_890)
-        );
-        assert_eq!(parse_payload("aiConfig_123"), None);
-        assert_eq!(parse_payload("something"), None);
-    }
-
-    #[test]
-    fn normalizes_urls() {
-        assert_eq!(
-            normalize_url("https://api.openai.com/v1/"),
-            Some("https://api.openai.com/v1".to_owned())
-        );
-        assert_eq!(normalize_url("ftp://x"), None);
-        assert_eq!(normalize_url("https://no-dot"), None);
-    }
-}
+#[path = "../../tests/unit/commands__ai_config.rs"]
+mod tests;

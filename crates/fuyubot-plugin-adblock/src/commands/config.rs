@@ -13,8 +13,8 @@ use crate::log;
 use crate::runtime::Runtime;
 use crate::store::LimitMode;
 
-/// 三个开关的展示文案。
-const TOGGLES: [(&str, &str, &str, &str); 3] = [
+/// 四个开关的展示文案。
+const TOGGLES: [(&str, &str, &str, &str); 4] = [
     (
         "ai_review_enabled",
         "AI深度审核：对未部分命中关键词的消息进行AI审查",
@@ -33,7 +33,25 @@ const TOGGLES: [(&str, &str, &str, &str); 3] = [
         "✅ 垃圾信息提示已开启",
         "❌ 垃圾信息提示已关闭",
     ),
+    (
+        "like_guard_enabled",
+        "自动点赞机器人：连续回应 5 条消息的账号会被封禁回应权限",
+        "✅ 自动点赞机器人拦截已开启",
+        "❌ 自动点赞机器人拦截已关闭",
+    ),
 ];
+
+/// 把 `/adconfig` 的参数归一化成配置键。
+///
+/// `like_guard` 是 `like_guard_enabled` 的短别名（少敲几个字符），
+/// 其余参数原样交给下面的匹配。
+fn config_key(word: &str) -> &str {
+    if word == "like_guard" {
+        "like_guard_enabled"
+    } else {
+        word
+    }
+}
 
 pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &Value) {
     let chat_id = command.chat_id;
@@ -46,7 +64,7 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &V
     }
 
     let words = super::words(command);
-    let key = words.first().map(String::as_str).unwrap_or("");
+    let key = config_key(words.first().map(String::as_str).unwrap_or(""));
     if key.is_empty() || key == "status" {
         show_status(rt, chat_id, sender, message).await;
         return;
@@ -154,6 +172,7 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &V
     let current = match *name {
         "ai_review_enabled" => config.ai_review_enabled,
         "check_new_member" => config.check_new_member,
+        "like_guard_enabled" => config.like_guard_enabled,
         _ => config.spam_tips,
     };
     let next = !current;
@@ -161,6 +180,7 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &V
         .update_config(chat_id, |config| match *name {
             "ai_review_enabled" => config.ai_review_enabled = next,
             "check_new_member" => config.check_new_member = next,
+            "like_guard_enabled" => config.like_guard_enabled = next,
             _ => config.spam_tips = next,
         })
         .await;
@@ -176,6 +196,7 @@ async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Valu
         let value = match name {
             "ai_review_enabled" => config.ai_review_enabled,
             "check_new_member" => config.check_new_member,
+            "like_guard_enabled" => config.like_guard_enabled,
             _ => config.spam_tips,
         };
         body.push_str(&format!(
@@ -184,6 +205,7 @@ async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Valu
             if value { "开启" } else { "关闭" }
         ));
     }
+    body.push_str("ℹ️ **自动点赞判定：**\n  连续回应 5 条消息的账号会被封禁回应权限（被删除的消息不计；同一账号 30 分钟内只处置一次）\n\n");
     body.push_str("🤖 **AI 接口配置：**\n");
     body.push_str(&ai::ai_status_line(rt, chat_id, Some(&config)).await);
     body.push_str("\n\n🛡️ **广告处置模式：**\n");
@@ -192,7 +214,7 @@ async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Valu
         config.limit_mode.as_str(),
         config.spam_tips_meg_delay
     ));
-    body.push_str("**开关管理：**\n发送 `/adconfig <配置项>` 切换开关\n可用命令：/adconfig limit ban|mute、/adconfig delay <秒数>");
+    body.push_str("**开关管理：**\n发送 `/adconfig <配置项>` 切换开关\n可用命令：/adconfig limit ban|mute、/adconfig delay <秒数>、/adconfig like_guard");
 
     // 私聊配置链接：需要 Bot 自己的用户名
     let username = crate::simplify::my_usernames(&rt.host)
@@ -214,3 +236,7 @@ async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Valu
     let reply_to = message.get("id").and_then(Value::as_i64);
     flow::send_with(rt, chat_id, &body, reply_to, buttons, 60).await;
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/commands__config.rs"]
+mod tests;

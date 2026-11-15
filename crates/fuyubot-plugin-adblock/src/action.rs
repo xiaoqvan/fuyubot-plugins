@@ -103,9 +103,10 @@ pub async fn punish(
         None => format!("\n - Type: {}\n - Reason: {}", hit.kind, hit.details),
     };
     let log_text = format!(
-        "#{}\n**ID**: {member}({})\n**Chat ID**: {chat_mention}({chat_id})\n**Reason**: Spam detected\n**Detail**:{detail}",
+        "#{}\n**ID**: {}\n**Chat ID**: {}\n**Reason**: Spam detected\n**Detail**:{detail}",
         if action_is_ban { "Ban" } else { "Mute" },
-        sender.id()
+        text::with_id(&member, sender.id()),
+        text::with_id(&chat_mention, chat_id)
     );
     let member_query = member_param(sender);
     let buttons = if action_is_ban {
@@ -158,7 +159,15 @@ pub async fn punish(
     {
         tips.push_str(&format!("\n**LOG CHANNEL**: [Link]({link})"));
     }
-    if let Some(message) = send_log(rt, chat_id, None, &tips, buttons).await {
+    if let Some(message) = send_log(
+        rt,
+        chat_id,
+        tips_topic(rt, chat_id, delete_message_id),
+        &tips,
+        buttons,
+    )
+    .await
+    {
         let message_id = message.get("id").and_then(Value::as_i64).unwrap_or(0);
         if message_id != 0 && config.spam_tips && config.spam_tips_meg_delay > 0 {
             schedule_delete(rt, chat_id, message_id, config.spam_tips_meg_delay);
@@ -166,8 +175,13 @@ pub async fn punish(
     }
 }
 
+/// 处置提示该发到哪条话题：跟着被处置的消息走（论坛群组；私聊 / 普通群为 `None`）。
+fn tips_topic(rt: &Runtime, chat_id: i64, message_id: Option<i64>) -> Option<Topic> {
+    message_id.and_then(|message_id| rt.cache.topic_of(chat_id, message_id))
+}
+
 /// 发一条格式化消息；失败只记 debug（处置已经做完了，通知失败不该回滚）。
-async fn send_log(
+pub(crate) async fn send_log(
     rt: &Runtime,
     chat_id: i64,
     topic: Option<Topic>,
@@ -207,17 +221,5 @@ pub fn schedule_delete(rt: &Runtime, chat_id: i64, message_id: i64, delay_second
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn detail_prefers_record_id() {
-        let hit = SpamHit::hit("Text", Some("abc".to_owned()), "hasAdKeyword");
-        let detail = match &hit.id {
-            Some(id) => format!("\n - Type: {}\n - ID: `{id}`", hit.kind),
-            None => format!("\n - Type: {}\n - Reason: {}", hit.kind, hit.details),
-        };
-        assert!(detail.contains("ID: `abc`"));
-        assert!(!detail.contains("Reason"));
-    }
-}
+#[path = "../tests/unit/action.rs"]
+mod tests;

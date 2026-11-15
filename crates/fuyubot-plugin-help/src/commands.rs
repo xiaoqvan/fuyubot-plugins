@@ -311,6 +311,31 @@ impl Role {
         }
     }
 
+    /// 条目描边颜色（图片版）：主人紫、管理员绿、群管黄、普通用户白。
+    ///
+    /// 都是**淡色**（往白里调过），1px 描边才不至于压过卡片本身；饱和度高一级时
+    /// 在浅色卡片上会像一圈粗线。
+    fn color(self) -> &'static str {
+        match self {
+            Self::Owner => "#c9a2fb",
+            Self::Admin => "#7fd8a0",
+            Self::ChatAdmin => "#f2d268",
+            Self::User => "#ffffff",
+        }
+    }
+
+    /// 条目阴影（图片版）：**中性灰**的一点点投影，颜色与描边无关——同色阴影会把
+    /// 1px 描边糊成 2px 的粗边。
+    ///
+    /// 纯白描边在浅色卡片上看不出来，所以普通用户可以再垫一圈很淡的灰外圈勾轮廓；
+    /// 那是中性灰，不是「白描边的阴影」。
+    fn shadow(self) -> &'static str {
+        match self {
+            Self::User => "0 0 0 1px rgba(203,213,225,.55), 0 1px 2px rgba(15,23,42,.04)",
+            _ => "0 1px 2px rgba(15,23,42,.04)",
+        }
+    }
+
     /// 这个人能不能看到 / 使用要求该角色的命令。
     fn allows(self, global: GlobalRole, chat_admin: bool) -> bool {
         match self {
@@ -341,14 +366,38 @@ impl GlobalRole {
 }
 
 /// `/help` 实际要显示的命令：宿主表 → 角色 / 会话 / `hidden` 过滤。
-/// 图片、文字版、统计数字都吃这同一份结果。
+/// **文字版**吃这份结果（保持原有语义，不跟随图片的私聊全量视图）。
 fn visible_commands(host: &HostApi, chat_id: i64, sender_user_id: Option<i64>) -> Vec<Value> {
+    filtered_commands(host, chat_id, sender_user_id, false)
+}
+
+/// 图片版要显示的命令：在 [`visible_commands`] 的基础上，**私聊里的主人 / 管理员
+/// 能看到整张表**（主人看全部，管理员看除主人命令以外的全部）。
+///
+/// 这是图片版专属的展示口径：只影响 `/help` 画出来的卡片，不改变命令本身的
+/// 执行权限，也不影响 `/help text`。`hidden` 仍然排除——它表达的是「别列出来」。
+fn visible_image_commands(host: &HostApi, chat_id: i64, sender_user_id: Option<i64>) -> Vec<Value> {
+    filtered_commands(host, chat_id, sender_user_id, true)
+}
+
+fn filtered_commands(
+    host: &HostApi,
+    chat_id: i64,
+    sender_user_id: Option<i64>,
+    image_view: bool,
+) -> Vec<Value> {
     let kind = chat_kind(host, chat_id);
     let global = global_role(host, sender_user_id);
     let chat_admin = is_chat_admin(host, kind, chat_id, sender_user_id);
     registered_commands(host)
         .into_iter()
-        .filter(|entry| entry_visible(entry, global, kind, chat_admin))
+        .filter(|entry| {
+            if image_view {
+                entry_visible_to_image(entry, global, kind, chat_admin)
+            } else {
+                entry_visible(entry, global, kind, chat_admin)
+            }
+        })
         .collect()
 }
 
@@ -373,11 +422,7 @@ fn entry_visible(entry: &Value, global: GlobalRole, kind: ChatKind, chat_admin: 
     {
         return false;
     }
-    let role = entry
-        .get("role")
-        .and_then(Value::as_str)
-        .and_then(Role::parse)
-        .unwrap_or(Role::User);
+    let role = entry_role(entry);
     if !role.allows(global, chat_admin) {
         return false;
     }
@@ -390,6 +435,48 @@ fn entry_visible(entry: &Value, global: GlobalRole, kind: ChatKind, chat_admin: 
     }
 }
 
+/// 图片版的可见性：**私聊里的主人 / 管理员看整张表**，其余情况与 [`entry_visible`] 相同。
+///
+/// - 主人（`owner`）：私聊里所有命令都画出来（含 `admin` / `owner` 命令、含只允许
+///   频道 / 群执行的命令）——主人本来就什么都能用，`/help` 给一张全表更有用。
+/// - 管理员（`admin`）：私聊里能看到除 `owner` 以外的全部命令。
+/// - 其他人 / 群 / 频道：`scopes` 照旧，只在当前会话类型下画能用的命令。
+///
+/// `hidden` 一律排除：它表达的是「不要列出来」，与角色无关。
+fn entry_visible_to_image(
+    entry: &Value,
+    global: GlobalRole,
+    kind: ChatKind,
+    chat_admin: bool,
+) -> bool {
+    let hidden = entry
+        .get("hidden")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if hidden {
+        return false;
+    }
+    let private_all_access = kind == ChatKind::Private
+        && match global {
+            GlobalRole::Owner => true,
+            GlobalRole::Admin => entry_role(entry) != Role::Owner,
+            GlobalRole::User => false,
+        };
+    if private_all_access {
+        return true;
+    }
+    entry_visible(entry, global, kind, chat_admin)
+}
+
+/// 条目要求的角色；缺字段 / 认不出按宿主默认 `user`。
+fn entry_role(entry: &Value) -> Role {
+    entry
+        .get("role")
+        .and_then(Value::as_str)
+        .and_then(Role::parse)
+        .unwrap_or(Role::User)
+}
+
 fn scope_allows(raw: &str, kind: ChatKind) -> bool {
     match raw.trim().to_ascii_lowercase().as_str() {
         "private" | "pm" | "dm" => kind == ChatKind::Private,
@@ -397,6 +484,26 @@ fn scope_allows(raw: &str, kind: ChatKind) -> bool {
         "channel" => kind == ChatKind::Channel,
         _ => false,
     }
+}
+
+/// 条目声明了哪些会话类型：按**宿主给的原始 `scopes`** 解析（不按当前会话裁剪），
+/// 图片右侧的图标就是这三个开关。缺字段按宿主默认值 `private + group`。
+fn entry_scopes(entry: &Value) -> (bool, bool, bool) {
+    let Some(scopes) = entry.get("scopes").and_then(Value::as_array) else {
+        return (true, true, false);
+    };
+    let mut private = false;
+    let mut group = false;
+    let mut channel = false;
+    for raw in scopes.iter().filter_map(Value::as_str) {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "private" | "pm" | "dm" => private = true,
+            "group" | "supergroup" => group = true,
+            "channel" => channel = true,
+            _ => {}
+        }
+    }
+    (private, group, channel)
 }
 
 /// 问宿主「这个人的全局角色」：纯内存，不碰 TDLib。
@@ -607,6 +714,53 @@ pub struct HelpStats {
     pub shown: usize,
 }
 
+/// 模板里一个条目的默认值（截断提示这类「不是命令」的条目用它）。
+fn placeholder_item(name: &str, desc: &str) -> Value {
+    json!({
+        "name": name,
+        "desc": desc,
+        "color": Role::User.color(),
+        "shadow": Role::User.shadow(),
+        "scopes": { "private": false, "group": false, "channel": false },
+    })
+}
+
+/// 命令条目在图片里的样子：`/名字` + 说明 + 角色描边色 + 右侧会话图标。
+fn render_item(command: &Value) -> Option<Value> {
+    let name = command.get("name").and_then(Value::as_str)?;
+    let desc = command
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let role = entry_role(command);
+    let (private, group, channel) = entry_scopes(command);
+    Some(json!({
+        "name": name,
+        "desc": desc,
+        "color": role.color(),
+        "shadow": role.shadow(),
+        "scopes": { "private": private, "group": group, "channel": channel },
+    }))
+}
+
+/// 底部的图例：**一排**，四项角色描边色 + 三项会话图标。
+///
+/// 图例是**静态**的（不随这张图里的命令变化），保证同一张图在不同会话里
+/// 读法一致。模板只按 `kind` 决定画色块还是画图标。
+fn legend() -> Value {
+    json!({
+        "items": [
+            { "key": "owner", "kind": "role", "label": "主人", "color": Role::Owner.color() },
+            { "key": "admin", "kind": "role", "label": "管理员", "color": Role::Admin.color() },
+            { "key": "chat_admin", "kind": "role", "label": "群管理", "color": Role::ChatAdmin.color() },
+            { "key": "user", "kind": "role", "label": "用户", "color": Role::User.color() },
+            { "key": "scope-private", "kind": "scope", "label": "私聊" },
+            { "key": "scope-group", "kind": "scope", "label": "群组" },
+            { "key": "scope-channel", "kind": "scope", "label": "频道" },
+        ],
+    })
+}
+
 /// 拼出交给 `fuyubot.html2img` 的 `render` 入参。
 ///
 /// **一个提供方插件一张卡片**：组标题优先用宿主报告的展示名，命令在组内保持
@@ -635,14 +789,7 @@ pub fn build_render_request(
         let take = group.commands.len().min(config.max_commands - shown);
         let items: Vec<Value> = group.commands[..take]
             .iter()
-            .filter_map(|command| {
-                let name = command.get("name").and_then(Value::as_str)?;
-                let desc = command
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                Some(json!({ "name": name, "desc": desc }))
-            })
+            .filter_map(render_item)
             .collect();
         if items.is_empty() {
             continue;
@@ -656,10 +803,7 @@ pub fn build_render_request(
     }
     // 截断提示挂在最后一张卡上：不额外占一张空卡片。
     if total > shown {
-        let note = json!({
-            "name": "…",
-            "desc": format!("还有 {} 条命令未显示", total - shown),
-        });
+        let note = placeholder_item("…", &format!("还有 {} 条命令未显示", total - shown));
         match cards.last_mut().and_then(|card| card.get_mut("commands")) {
             Some(Value::Array(list)) => list.push(note),
             _ => cards.push(json!({
@@ -677,6 +821,7 @@ pub fn build_render_request(
         "version": config::version_label(),
         "imgSrc": config.image,
         "data": cards,
+        "legend": legend(),
     });
 
     let request = json!({
@@ -858,15 +1003,19 @@ pub fn run_help(
     mode: HelpMode,
 ) {
     let names = plugin_display_names(&host);
-    // 宿主表 → 角色 / 会话 / hidden 过滤，在**分组之前**一次算完：图片卡片、
-    // 文字版、统计数字看到的是同一份结果，不会出现「图里没有、文字里有」。
-    let commands = visible_commands(&host, chat_id, sender_user_id);
 
-    // `/help text`：直接出文字，不渲染、不占渲染锁。
+    // `/help text`：直接出文字，不渲染、不占渲染锁。**文字版保持原有过滤语义**
+    // （按 role / scopes 裁剪），不跟随图片版「私聊里主人 / 管理员看全表」的口径。
     if mode == HelpMode::Text {
+        let commands = visible_commands(&host, chat_id, sender_user_id);
         send_text_version(&host, &config, chat_id, message_id, &commands, &names);
         return;
     }
+
+    // 图片版：私聊里的主人 / 管理员能看整张表（主人全部、管理员除 owner 外全部）。
+    let commands = visible_image_commands(&host, chat_id, sender_user_id);
+    // 图片链路失败时补发的文字版仍用**严格口径**：文字版不跟随图片版的放宽。
+    let strict = visible_commands(&host, chat_id, sender_user_id);
 
     // 渲染是同步且吃 CPU 的：串行化，但别把发送也锁在里面。
     let rendered = {
@@ -889,13 +1038,13 @@ pub fn run_help(
                 Ok(_) => log::debug(&host, format!("/help 图片已回复到 chat {chat_id}")),
                 Err(error) => {
                     log::error(&host, format!("/help 图片发送失败：{error}"));
-                    send_fallback(&host, &config, chat_id, message_id, &commands, &names);
+                    send_fallback(&host, &config, chat_id, message_id, &strict, &names);
                 }
             }
         }
         Err(error) => {
             log::error(&host, format!("/help 出图失败：{error}"));
-            send_fallback(&host, &config, chat_id, message_id, &commands, &names);
+            send_fallback(&host, &config, chat_id, message_id, &strict, &names);
         }
     }
 }
@@ -1041,372 +1190,5 @@ fn truncate_utf16(text: String, limit: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn commands() -> Vec<Value> {
-        vec![
-            json!({ "name": "start", "description": "开始使用", "plugin": "fuyubot.start" }),
-            json!({ "name": "help", "description": "这条帮助", "plugin": "fuyubot.help" }),
-        ]
-    }
-
-    #[test]
-    fn command_is_parsed_from_the_update_envelope() {
-        let update = json!({
-            "@type": "updateNewMessage",
-            "message": {
-                "@type": "message",
-                "id": 101,
-                "chat_id": 777,
-                "sender_id": { "@type": "messageSenderUser", "user_id": 888 },
-                "is_outgoing": false,
-                "content": {
-                    "@type": "messageText",
-                    "text": { "@type": "formattedText", "text": "/Help@SomeBot  参数 ", "entities": [] }
-                }
-            }
-        });
-        let command = command_of(&update).expect("应该解析出命令");
-        assert!(command.is("help"));
-        assert_eq!(command.chat_id, 777);
-        assert_eq!(command.message_id, 101);
-        assert_eq!(command.args, "参数");
-        assert_eq!(command.addressed_to.as_deref(), Some("SomeBot"));
-        assert_eq!(command.sender_user_id, Some(888));
-        // 传成 `update["message"]` 就一条命令都收不到。
-        assert!(command_of(&update["message"]).is_none());
-    }
-
-    #[test]
-    fn outgoing_or_plain_messages_are_not_commands() {
-        let outgoing = json!({
-            "message": {
-                "id": 2, "chat_id": 1, "is_outgoing": true,
-                "content": { "@type": "messageText", "text": { "text": "/help" } }
-            }
-        });
-        assert!(command_of(&outgoing).is_none());
-
-        let plain = json!({
-            "message": {
-                "id": 2, "chat_id": 1,
-                "content": { "@type": "messageText", "text": { "text": "hello" } }
-            }
-        });
-        assert!(command_of(&plain).is_none());
-    }
-
-    #[test]
-    fn addressed_commands_only_answer_when_named() {
-        let command = Command {
-            chat_id: 1,
-            message_id: 2,
-            name: "help".to_owned(),
-            args: String::new(),
-            addressed_to: Some("SomeBot".to_owned()),
-            sender_user_id: Some(42),
-            text: "/help@SomeBot".to_owned(),
-        };
-        assert!(command.is_for(&["somebot".to_owned()]));
-        assert!(!command.is_for(&["otherbot".to_owned()]));
-        // 身份未知时不吞命令。
-        assert!(command.is_for(&[]));
-    }
-
-    /// 展示名映射：与宿主 `list_plugins` 报告里的 `display_name` 同形。
-    fn display_names() -> BTreeMap<String, String> {
-        BTreeMap::from([
-            ("fuyubot.help".to_owned(), "帮助".to_owned()),
-            ("fuyubot.start".to_owned(), "启动问候".to_owned()),
-        ])
-    }
-
-    #[test]
-    fn render_request_groups_by_plugin() {
-        let config = Config::default();
-        let mut list = commands();
-        // 一条没有归属的（宿主自己 / 静态基线）。
-        list.push(json!({ "name": "plugins", "description": "看看装了哪些插件" }));
-        let (request, stats) = build_render_request(&config, &list, &display_names());
-        assert_eq!(request["vue"], true);
-        assert_eq!(request["width"], 760);
-        assert_eq!(stats.total, 3);
-        assert_eq!(stats.plugins, 2, "没有归属的那条不算来源插件");
-
-        let cards = request["data"]["data"].as_array().unwrap();
-        // 组按插件名排序（help < start），「其它」永远最后。
-        assert_eq!(cards.len(), 3);
-        assert_eq!(cards[0]["name"], "帮助（help）");
-        assert_eq!(cards[0]["commands"].as_array().unwrap().len(), 1);
-        assert_eq!(cards[0]["desc"], "共 1 条命令");
-        assert_eq!(cards[1]["name"], "启动问候（start）");
-        assert_eq!(cards[2]["name"], OTHER_GROUP);
-        assert_eq!(cards[2]["commands"][0]["name"], "plugins");
-    }
-
-    /// 组标题没有展示名时退回短名；展示名里已含短名时不重复追加。
-    #[test]
-    fn group_titles_fall_back_to_the_short_name() {
-        let names = BTreeMap::from([("fuyubot.adblock".to_owned(), "adblock".to_owned())]);
-        assert_eq!(group_title("fuyubot.adblock", &names), "adblock");
-        assert_eq!(group_title("fuyubot.other", &names), "other");
-
-        // 插件包 `plugin.json` 的 name 常见形态：英文名里已经带上了短名。
-        let names = BTreeMap::from([
-            ("fuyubot.adblock".to_owned(), "Adblock".to_owned()),
-            ("fuyubot.help".to_owned(), "Help (Image)".to_owned()),
-        ]);
-        assert_eq!(group_title("fuyubot.adblock", &names), "Adblock");
-        assert_eq!(group_title("fuyubot.help", &names), "Help (Image)");
-
-        // 中文展示名不含短名：补一个括号，点明是哪份插件。
-        let names = BTreeMap::from([("fuyubot.adblock".to_owned(), "广告拦截".to_owned())]);
-        assert_eq!(
-            group_title("fuyubot.adblock", &names),
-            "广告拦截（adblock）"
-        );
-    }
-
-    #[test]
-    fn long_tables_are_truncated_with_a_note() {
-        let config = Config {
-            max_commands: 2,
-            ..Config::default()
-        };
-        let many: Vec<Value> = (0..5)
-            .map(|index| {
-                json!({
-                    "name": format!("cmd{index}"),
-                    "description": "x",
-                    "plugin": "fuyubot.demo",
-                })
-            })
-            .collect();
-        let (request, stats) = build_render_request(&config, &many, &BTreeMap::new());
-        assert_eq!(stats.total, 5);
-        assert_eq!(stats.shown, 2);
-        let cards = request["data"]["data"].as_array().unwrap();
-        // 一个来源只画一张卡：2 条真实命令 + 1 条截断提示。
-        assert_eq!(cards.len(), 1);
-        let items = cards[0]["commands"].as_array().unwrap();
-        assert_eq!(items.len(), 3);
-        assert_eq!(items[2]["name"], "…");
-        assert!(items[2]["desc"].as_str().unwrap().contains("还有 3 条"));
-    }
-
-    #[test]
-    fn help_mode_accepts_t_and_text() {
-        assert_eq!(HelpMode::from_args(""), HelpMode::Image);
-        assert_eq!(HelpMode::from_args("  t "), HelpMode::Text);
-        assert_eq!(HelpMode::from_args("TEXT"), HelpMode::Text);
-        // 别的参数维持老行为：出图。
-        assert_eq!(HelpMode::from_args("foo"), HelpMode::Image);
-    }
-
-    #[test]
-    fn photo_content_matches_tdlib_shape() {
-        let content = photo_content("/tmp/help.jpg");
-        assert_eq!(content["@type"], "inputMessagePhoto");
-        assert_eq!(content["photo"]["@type"], "inputPhoto");
-        assert_eq!(content["photo"]["photo"]["@type"], "inputFileLocal");
-        assert_eq!(content["photo"]["photo"]["path"], "/tmp/help.jpg");
-    }
-
-    /// 文字版的 `text` 必须是 `formattedText` 对象；直接塞字符串会被 TDLib 以
-    /// `Expected Object, but receive String` 拒绝（历史上 `/help text` 就挂在这）。
-    #[test]
-    fn text_content_wraps_the_text_in_formatted_text() {
-        let content = text_content("/help — 这条帮助");
-        assert_eq!(content["@type"], "inputMessageText");
-        assert_eq!(content["text"]["@type"], "formattedText");
-        assert_eq!(content["text"]["text"], "/help — 这条帮助");
-        assert_eq!(content["text"]["entities"], json!([]));
-        assert!(content["text"].is_object(), "text 不能是字符串：{content}");
-        assert_eq!(content["link_preview_options"]["is_disabled"], true);
-    }
-
-    /// 回复入参的形状是跨仓契约：`chat_id` / `message_id` 指命令消息，`payload` 装内容。
-    #[test]
-    fn reply_input_carries_command_ids() {
-        let input = reply_input(
-            -100,
-            9,
-            30_000,
-            json!({"input_message_content": {"@type": "inputMessageText"}}),
-        );
-        assert_eq!(input["chat_id"], -100);
-        assert_eq!(input["message_id"], 9);
-        assert_eq!(input["timeout_ms"], 30_000);
-        assert_eq!(
-            input["payload"]["input_message_content"]["@type"],
-            "inputMessageText"
-        );
-    }
-
-    #[test]
-    fn fallback_text_lists_every_command_by_group() {
-        let text = help_text(&commands(), &display_names());
-        assert!(text.contains("/start — 开始使用"), "{text}");
-        assert!(text.contains("/help — 这条帮助"), "{text}");
-        // 与图片同一分组：每个来源一段。
-        assert!(text.contains("【帮助（help）】"), "{text}");
-        assert!(text.contains("【启动问候（start）】"), "{text}");
-    }
-
-    #[test]
-    fn fallback_text_is_truncated_by_utf16_units() {
-        let long: Vec<Value> = (0..500)
-            .map(|index| json!({ "name": format!("cmd{index}"), "description": "很长的说明 🚀" }))
-            .collect();
-        let text = help_text(&long, &BTreeMap::new());
-        assert!(text.encode_utf16().count() <= FALLBACK_TEXT_LIMIT + 10);
-        assert!(
-            text.ends_with("（已截断）"),
-            "{}",
-            &text[text.len().saturating_sub(20)..]
-        );
-    }
-
-    /// 权限过滤按宿主命令表的三个字段走；缺字段时按宿主默认值
-    /// （`user` / `private + group` / `hidden = false`）。
-    #[test]
-    fn visibility_follows_role_scopes_and_hidden() {
-        let user_command = json!({ "name": "x", "role": "user", "scopes": ["private", "group"] });
-        assert!(entry_visible(
-            &user_command,
-            GlobalRole::User,
-            ChatKind::Private,
-            false
-        ));
-        assert!(entry_visible(
-            &user_command,
-            GlobalRole::User,
-            ChatKind::Group,
-            false
-        ));
-        assert!(!entry_visible(
-            &user_command,
-            GlobalRole::User,
-            ChatKind::Channel,
-            false
-        ));
-
-        // 老登记没有 role / scopes / hidden：按默认值。
-        let legacy = json!({ "name": "legacy" });
-        assert!(entry_visible(
-            &legacy,
-            GlobalRole::User,
-            ChatKind::Group,
-            false
-        ));
-        assert!(!entry_visible(
-            &legacy,
-            GlobalRole::User,
-            ChatKind::Channel,
-            false
-        ));
-
-        // chat_admin 是「本会话管理员」，不是全局 admin。
-        let chat_admin = json!({ "name": "a", "role": "chat_admin", "scopes": ["group"] });
-        assert!(entry_visible(
-            &chat_admin,
-            GlobalRole::User,
-            ChatKind::Group,
-            true
-        ));
-        assert!(!entry_visible(
-            &chat_admin,
-            GlobalRole::User,
-            ChatKind::Group,
-            false
-        ));
-
-        // admin 要全局管理员 / 主人；owner 只要主人。
-        let admin = json!({ "name": "g", "role": "admin", "scopes": ["private"] });
-        assert!(entry_visible(
-            &admin,
-            GlobalRole::Admin,
-            ChatKind::Private,
-            false
-        ));
-        assert!(!entry_visible(
-            &admin,
-            GlobalRole::User,
-            ChatKind::Private,
-            false
-        ));
-        let owner = json!({ "name": "o", "role": "owner", "scopes": ["private"] });
-        assert!(entry_visible(
-            &owner,
-            GlobalRole::Owner,
-            ChatKind::Private,
-            false
-        ));
-        assert!(!entry_visible(
-            &owner,
-            GlobalRole::Admin,
-            ChatKind::Private,
-            false
-        ));
-
-        // hidden 只是不进列表，与角色无关。
-        let hidden = json!({ "name": "h", "hidden": true, "scopes": ["private"] });
-        assert!(!entry_visible(
-            &hidden,
-            GlobalRole::Owner,
-            ChatKind::Private,
-            true
-        ));
-
-        // 兼容写法与未知值：认不出就当 user / 不匹配。
-        assert_eq!(Role::parse("chat-admin"), Some(Role::ChatAdmin));
-        assert_eq!(Role::parse("chatadmin"), Some(Role::ChatAdmin));
-        assert_eq!(Role::parse("nope"), None);
-        assert!(scope_allows("supergroup", ChatKind::Group));
-        assert!(!scope_allows("channel", ChatKind::Group));
-    }
-
-    /// `getChat` 的三种类型映射；supergroup 再看 `is_channel`。
-    #[test]
-    fn chat_kind_is_read_from_the_chat_object() {
-        assert_eq!(
-            kind_of_chat(&json!({ "type": { "@type": "chatTypePrivate" } })),
-            Some(ChatKind::Private)
-        );
-        assert_eq!(
-            kind_of_chat(&json!({ "type": { "@type": "chatTypeBasicGroup" } })),
-            Some(ChatKind::Group)
-        );
-        assert_eq!(
-            kind_of_chat(&json!({
-                "type": { "@type": "chatTypeSupergroup", "is_channel": false }
-            })),
-            Some(ChatKind::Group)
-        );
-        assert_eq!(
-            kind_of_chat(&json!({
-                "type": { "@type": "chatTypeSupergroup", "is_channel": true }
-            })),
-            Some(ChatKind::Channel)
-        );
-        assert_eq!(kind_of_chat(&json!({})), None);
-    }
-
-    /// 成员状态只认群主 / 管理员；其它（成员、受限、离开）都不算。
-    #[test]
-    fn only_creator_or_administrator_counts_as_chat_admin() {
-        for status in ["chatMemberStatusCreator", "chatMemberStatusAdministrator"] {
-            assert!(member_is_admin(&json!({ "status": { "@type": status } })));
-        }
-        for status in [
-            "chatMemberStatusMember",
-            "chatMemberStatusRestricted",
-            "chatMemberStatusLeft",
-            "chatMemberStatusBanned",
-        ] {
-            assert!(!member_is_admin(&json!({ "status": { "@type": status } })));
-        }
-        assert!(!member_is_admin(&json!({})));
-    }
-}
+#[path = "../tests/unit/commands.rs"]
+mod tests;

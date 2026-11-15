@@ -7,7 +7,7 @@
 //! [plugin.fuyubot.help]
 //! title = "可用命令"
 //! description = "FuyuBot · 一张图看完所有命令"
-//! tips = "发送 /help 随时刷新"
+//! tips = "可使用 /help t 获取文本版本"
 //! table_desc = "共 {count} 条命令"
 //! image = "https://files.catbox.moe/py80s6.jpg"  # 置空则不画头图
 //! width = 760
@@ -43,8 +43,8 @@ pub const DEFAULT_TITLE: &str = "可用命令";
 /// 默认副标题。
 pub const DEFAULT_DESCRIPTION: &str = "FuyuBot · 一张图看完所有命令";
 
-/// 默认底部提示。
-pub const DEFAULT_TIPS: &str = "发送 /help 随时刷新";
+/// 默认底部提示：告诉用户还有文字版可看。
+pub const DEFAULT_TIPS: &str = "可使用 /help t 获取文本版本";
 
 /// 默认分组说明（每组 = 一个登记命令的插件），支持 `{count}` / `{plugins}` / `{version}`。
 pub const DEFAULT_TABLE_DESC: &str = "共 {count} 条命令";
@@ -225,30 +225,5 @@ fn normalize_format(text: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn defaults_are_sane() {
-        let config = Config::default();
-        assert_eq!(config.width, 760);
-        assert_eq!(config.scale, 2.0);
-        assert_eq!(config.format, "jpg");
-        assert!(config.fallback_text);
-        assert!(!config.image.is_empty());
-    }
-
-    #[test]
-    fn placeholders_expand() {
-        let config = Config::default();
-        let text = config.expand("{count} 条 / {plugins} 个插件 / {version}", 7, 3);
-        assert_eq!(text, format!("7 条 / 3 个插件 / {}", version_label()));
-    }
-
-    #[test]
-    fn format_aliases() {
-        assert_eq!(normalize_format("JPEG").as_deref(), Some("jpg"));
-        assert_eq!(normalize_format(" png ").as_deref(), Some("png"));
-        assert_eq!(normalize_format("webp"), None);
-    }
-}
+#[path = "../tests/unit/config.rs"]
+mod tests;

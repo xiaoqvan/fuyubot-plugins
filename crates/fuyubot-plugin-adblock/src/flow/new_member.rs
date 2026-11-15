@@ -58,7 +58,7 @@ pub async fn handle_chat_member(rt: &Runtime, update: &Value) {
     else {
         return;
     };
-    let Ok(user) = rt.td.user(user_id).await else {
+    let Some(user) = rt.td.user(user_id).await else {
         return;
     };
     let full = rt.td.user_full(user_id).await.ok();
@@ -215,7 +215,9 @@ pub async fn mute_new_member(
     if let Some(channel) = config.log_channel {
         let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
         let body = format!(
-            "#Mute #welcome\n**User**: {user_mention}({user_id})\n**Chat**: {chat_mention}({chat_id})\n**Action**: 资料疑似广告，已禁言待复审\n**Confidence**: {}\n**Reason**: {reason}\n**Deadline**: 1小时内需修改并通过复审",
+            "#Mute #welcome\n**User**: {}\n**Chat**: {}\n**Action**: 资料疑似广告，已禁言待复审\n**Confidence**: {}\n**Reason**: {reason}\n**Deadline**: 1小时内需修改并通过复审",
+            text::with_id(&user_mention, user_id),
+            text::with_id(&chat_mention, chat_id),
             text::confidence_percent(confidence)
         );
         let _ = rt
@@ -274,7 +276,9 @@ pub async fn ban_new_member(
         let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
         let user_mention = rt.td.sender_mention(sender, true).await;
         let body = format!(
-            "#Ban #welcome\n**ID**: {user_mention}({user_id})\n**Chat**: {chat_mention}({chat_id})\n**Reason**: Spam detected\n**Detail**:\n - Type: profile_ad\n - Reason: {reason} ({})",
+            "#Ban #welcome\n**ID**: {}\n**Chat**: {}\n**Reason**: Spam detected\n**Detail**:\n - Type: profile_ad\n - Reason: {reason} ({})",
+            text::with_id(&user_mention, user_id),
+            text::with_id(&chat_mention, chat_id),
             text::confidence_percent(confidence)
         );
         let buttons: Vec<Vec<ReplyButton>> = vec![callback_row(
