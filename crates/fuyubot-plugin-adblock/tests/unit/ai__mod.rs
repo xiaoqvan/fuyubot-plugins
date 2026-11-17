@@ -41,6 +41,26 @@ fn quoted_ad_forces_detection() {
 }
 
 #[test]
+fn contact_ad_alone_counts_as_ad() {
+    // 联系人消息只置 contact_ad（正文为空、ad_detected=false）也必须算广告，
+    // 否则会出现「AI 判了、Bot 不处置」—— 这是真机上漏拦截联系人卡片的直接原因。
+    let mut value = complete_result();
+    value["ad_detected"] = json!(false);
+    value["Reason"] = json!("联系人名称含获利与联系方式");
+    value["contact"] = json!({ "contact_ad": true });
+    let result = ModerationResult::from_ai_json(&value).expect("合法结果");
+    assert!(!result.ad_detected);
+    assert!(result.contact.contact_ad);
+    assert!(result.is_ad());
+
+    // 三个标记都为 false 才算「不是广告」。
+    let mut clean = complete_result();
+    clean["ad_detected"] = json!(false);
+    let clean = ModerationResult::from_ai_json(&clean).expect("合法结果");
+    assert!(!clean.is_ad());
+}
+
+#[test]
 fn failure_reasons_are_recognized() {
     assert!(is_failure_reason("AI服务3次调用均失败: timeout"));
     assert!(is_failure_reason("该群未配置AI接口"));

@@ -39,3 +39,37 @@ pub fn warnf(host: &HostApi, args: std::fmt::Arguments<'_>) {
 pub fn infof(host: &HostApi, args: std::fmt::Arguments<'_>) {
     info(host, args.to_string());
 }
+
+/// 「整群级别的跳过」：同一 `(chat_id, 原因)` 每 5 分钟只打一次 INFO，其余降为 DEBUG。
+///
+/// Bot 没管理员权限、chat 不是群这类问题会命中**每一条**消息：不节流会把日志刷爆，
+/// 完全不记又会让「为什么这条没检查」永远查不出来。per-sender 的跳过（管理员、
+/// 白名单）直接用 [`debug`]，那是正常现象。
+pub fn skip(host: &HostApi, chat_id: i64, reason: &'static str, message: &str) {
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(300);
+    static SEEN: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<(i64, &'static str), std::time::Instant>>,
+    > = std::sync::OnceLock::new();
+
+    let seen = SEEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let now = std::time::Instant::now();
+    let first = {
+        // 锁中毒说明上一次记录时 panic 过；这里恢复数据继续用，不能因为日志把业务搞挂。
+        let mut guard = match seen.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match guard.get(&(chat_id, reason)) {
+            Some(at) if now.duration_since(*at) < WINDOW => false,
+            _ => {
+                guard.insert((chat_id, reason), now);
+                true
+            }
+        }
+    };
+    if first {
+        info(host, message);
+    } else {
+        debug(host, message);
+    }
+}

@@ -833,12 +833,22 @@ impl Db {
     // ── 群配置 ────────────────────────────────────────────────────
 
     pub async fn config(&self, chat_id: i64) -> Option<GroupConfig> {
-        self.mongo
+        match self
+            .mongo
             .find_one(collections::CONFIG, json!({ "chat_id": chat_id }))
             .await
-            .ok()
-            .flatten()
-            .map(|doc| GroupConfig::from_doc(&doc))
+        {
+            Ok(doc) => doc.map(|doc| GroupConfig::from_doc(&doc)),
+            Err(error) => {
+                // 读失败会退化成 GroupConfig::default()：AI 关闭、ban 降级成 mute。
+                // 不记下来，这类「偶发不检查」永远对不上账。
+                log::warn(
+                    &self.host,
+                    format!("读 adb_config（{chat_id}）失败，本次按默认配置处理：{error}"),
+                );
+                None
+            }
+        }
     }
 
     pub async fn config_or_default(&self, chat_id: i64) -> GroupConfig {

@@ -521,7 +521,7 @@ async fn report_message(
 
     // ── 分支 ─────────────────────────────────────────────────
     let target_id = target.id();
-    if result.ad_detected && result.confidence > 0.8 {
+    if result.is_ad() && result.confidence > 0.8 {
         if let Some(tips_id) = tips_id {
             let _ = rt
                 .td
@@ -572,7 +572,7 @@ async fn report_message(
         return;
     }
 
-    if result.ad_detected && result.confidence < 0.75 {
+    if result.is_ad() && result.confidence < 0.75 {
         if let Some(tips_id) = tips_id {
             let member = member_param(target);
             let buttons: Vec<Vec<ReplyButton>> =

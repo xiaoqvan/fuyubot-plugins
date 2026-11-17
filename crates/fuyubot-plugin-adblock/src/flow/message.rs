@@ -88,18 +88,50 @@ async fn check(rt: &Runtime, message: &Value) {
     let Some(message_id) = message.get("id").and_then(Value::as_i64) else {
         return;
     };
+    // 下面每一处 return 都**必须**留痕：这条链路没有任何别的「检查过/没检查」日志，
+    // 静默 return 就是「消息进了日志插件、广告插件毫无动静」的唯一来源。
     if !flow::is_group(rt, chat_id).await {
+        log::skip(
+            &rt.host,
+            chat_id,
+            "not_group",
+            &format!("[检查跳过] 群 {chat_id} 不是群 / 取不到 chat 信息，msg={message_id}"),
+        );
         return;
     }
     if !flow::am_i_admin(rt, chat_id).await {
+        log::skip(
+            &rt.host,
+            chat_id,
+            "no_rights",
+            &format!(
+                "[检查跳过] 群 {chat_id} Bot 缺「删除消息 + 封禁用户」权限（或拿不到自身 id），msg={message_id}"
+            ),
+        );
         return;
     }
     let Some(sender) = message_sender(message) else {
+        log::debug(
+            &rt.host,
+            format!("[检查跳过] 群 {chat_id} 取不到发送者，msg={message_id}"),
+        );
         return;
     };
     let details = flow::sender_details(rt, chat_id, sender).await;
     let is_white = rt.db.is_whitelisted(chat_id, sender.id()).await;
     if details.is_admin || is_white {
+        log::debug(
+            &rt.host,
+            format!(
+                "[检查跳过] 群 {chat_id} 发送者 {} 是{}",
+                sender.id(),
+                if details.is_admin {
+                    "群管理员"
+                } else {
+                    "白名单用户"
+                }
+            ),
+        );
         return;
     }
 
@@ -128,6 +160,14 @@ async fn check(rt: &Runtime, message: &Value) {
 
     let mut hit = content_hit;
     let config = rt.db.config_or_default(chat_id).await;
+    if !hit.matched && !config.ai_review_enabled {
+        log::debug(
+            &rt.host,
+            format!(
+                "[检查跳过] 群 {chat_id} 未开启 ai_review_enabled，msg={message_id} 只走本地规则"
+            ),
+        );
+    }
     if !hit.matched
         && config.ai_review_enabled
         && let Some(ai_hit) =
@@ -414,12 +454,17 @@ async fn review_with_ai(
 
     // ── 结果落库 + 判定 ───────────────────────────────────────
     let confidence_high = result.confidence > 0.9;
-    let is_ad = result.ad_detected || result.quoted_message.has_ad;
+    // 联系人广告只置 `contact_ad` 也算命中（见 `ModerationResult::is_ad`）。
+    let is_ad = result.is_ad();
     let mut hit = None;
 
     if is_ad {
         let mut reason = if result.reason.is_empty() {
-            "检测到广告内容".to_owned()
+            if result.contact.contact_ad && !result.ad_detected {
+                "联系人名称/号码含广告信息".to_owned()
+            } else {
+                "检测到广告内容".to_owned()
+            }
         } else {
             result.reason.clone()
         };

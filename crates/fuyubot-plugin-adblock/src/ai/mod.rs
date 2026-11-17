@@ -269,6 +269,16 @@ impl ModerationResult {
             || self.ad_detected
     }
 
+    /// 这条消息算不算广告：正文判定、引用广告、联系人广告，任一命中即算。
+    ///
+    /// `contact_ad` 必须算进来。`prompts/context/contact.md` 要求联系人广告只置
+    /// `contact_ad = true`（联系人消息没有正文，模型通常不会再把 `ad_detected` 置真），
+    /// 漏掉它就会出现「AI 已经判了广告、Bot 却不处置」，而且
+    /// `flow/message.rs` 里「保存联系人名称 / vCard」的落库分支也永远进不去。
+    pub fn is_ad(&self) -> bool {
+        self.ad_detected || self.quoted_message.has_ad || self.contact.contact_ad
+    }
+
     /// 从模型返回的 JSON 解析。
     ///
     /// 校验与 TS 版 `isValidModerationResult`（`aiAdReview.ts`:219-234）逐条对齐：
@@ -869,7 +879,7 @@ async fn write_log(
     };
     let status = if ok {
         match result {
-            Some(result) if result.ad_detected => "✅ 成功 · 判定为广告",
+            Some(result) if result.is_ad() => "✅ 成功 · 判定为广告",
             _ => "✅ 成功 · 未判定为广告",
         }
     } else {
