@@ -28,6 +28,25 @@ fn rights_are_checked() {
 }
 
 #[test]
+fn chat_permissions_keep_speaking_when_only_reactions_are_banned() {
+    let muted = chat_permissions(false);
+    assert_eq!(muted["can_send_basic_messages"], json!(false));
+    assert_eq!(muted["can_react_to_messages"], json!(false));
+
+    // 「只封禁回应」：发言相关的权限全部保留，只有回应被关掉。
+    let reactions_only = chat_permissions(true);
+    for right in [
+        "can_send_basic_messages",
+        "can_send_photos",
+        "can_send_videos",
+        "can_add_link_previews",
+    ] {
+        assert_eq!(reactions_only[right], json!(true), "{right} 应保持开启");
+    }
+    assert_eq!(reactions_only["can_react_to_messages"], json!(false));
+}
+
+#[test]
 fn display_names_are_trimmed_and_fall_back() {
     assert_eq!(display_name("Ada", "Lovelace"), Some("Ada Lovelace".into()));
     assert_eq!(display_name("Ada", ""), Some("Ada".into()));

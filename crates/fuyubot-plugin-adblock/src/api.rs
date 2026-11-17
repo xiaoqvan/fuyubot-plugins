@@ -486,6 +486,23 @@ impl Td {
     /// 字段名照 `td_api.tl` 的 `chatPermissions`（1.8.69 的 `can_send_basic_messages`
     /// 而不是老的 `can_send_messages`）。
     pub async fn restrict(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
+        self.set_restricted(chat_id, sender, false).await
+    }
+
+    /// 只封禁「回应」权限（`can_react_to_messages = false`），发言权限全部照常。
+    ///
+    /// 自动点赞机器人的默认处置：点表情的机器人不该被禁言，但也不该继续刷回应。
+    pub async fn restrict_reactions(&self, chat_id: i64, sender: Sender) -> Result<(), ApiError> {
+        self.set_restricted(chat_id, sender, true).await
+    }
+
+    /// `restrict` / `restrict_reactions` 的共同实现：`can_send` 决定发言权限开不开。
+    async fn set_restricted(
+        &self,
+        chat_id: i64,
+        sender: Sender,
+        can_send: bool,
+    ) -> Result<(), ApiError> {
         self.call_ok(
             "setChatMemberStatus",
             json!({
@@ -495,25 +512,7 @@ impl Td {
                     "@type": "chatMemberStatusRestricted",
                     "is_member": true,
                     "restricted_until_date": 0,
-                    "permissions": {
-                        "@type": "chatPermissions",
-                        "can_send_basic_messages": false,
-                        "can_send_audios": false,
-                        "can_send_documents": false,
-                        "can_send_photos": false,
-                        "can_send_videos": false,
-                        "can_send_video_notes": false,
-                        "can_send_voice_notes": false,
-                        "can_send_polls": false,
-                        "can_send_other_messages": false,
-                        "can_add_link_previews": false,
-                        "can_react_to_messages": false,
-                        "can_edit_tag": false,
-                        "can_change_info": false,
-                        "can_invite_users": false,
-                        "can_pin_messages": false,
-                        "can_create_topics": false,
-                    },
+                    "permissions": chat_permissions(can_send),
                 },
             }),
         )
@@ -917,6 +916,33 @@ fn display_name(first: &str, last: &str) -> Option<String> {
     let name = format!("{} {}", first.trim(), last.trim());
     let name = name.trim();
     (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// `chatPermissions`：`can_send = false` 时关掉全部发言权限（禁言）；
+/// `can_send = true` 时保留发言，只把 `can_react_to_messages` 关掉（只封禁回应）。
+///
+/// 字段名照 `td_api.tl` 的 `chatPermissions`（1.8.69 的 `can_send_basic_messages`
+/// 而不是老的 `can_send_messages`）。
+fn chat_permissions(can_send: bool) -> Value {
+    json!({
+        "@type": "chatPermissions",
+        "can_send_basic_messages": can_send,
+        "can_send_audios": can_send,
+        "can_send_documents": can_send,
+        "can_send_photos": can_send,
+        "can_send_videos": can_send,
+        "can_send_video_notes": can_send,
+        "can_send_voice_notes": can_send,
+        "can_send_polls": can_send,
+        "can_send_other_messages": can_send,
+        "can_add_link_previews": can_send,
+        "can_react_to_messages": false,
+        "can_edit_tag": can_send,
+        "can_change_info": can_send,
+        "can_invite_users": can_send,
+        "can_pin_messages": can_send,
+        "can_create_topics": can_send,
+    })
 }
 
 /// 管理员状态是否覆盖这些权限（空列表 = 只要是管理员就行）。

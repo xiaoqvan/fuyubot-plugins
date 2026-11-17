@@ -4,6 +4,8 @@ use super::*;
 fn short_aliases_normalize() {
     assert_eq!(config_key("like_guard"), "like_guard_enabled");
     assert_eq!(config_key("like_guard_enabled"), "like_guard_enabled");
+    assert_eq!(config_key("like_mode"), "like_guard_mode");
+    assert_eq!(config_key("like_guard_mode"), "like_guard_mode");
     assert_eq!(config_key("join"), "delete_join_message");
     assert_eq!(
         config_key("join_community"),
@@ -14,6 +16,22 @@ fn short_aliases_normalize() {
     assert_eq!(config_key("unpin_channel"), "unpin_channel_pins");
     assert_eq!(config_key("delay"), "delay");
     assert_eq!(config_key(""), "");
+}
+
+#[test]
+fn like_guard_mode_values() {
+    assert_eq!(
+        like_guard_mode_of(Some("reactions")),
+        Some(LikeGuardMode::Reactions)
+    );
+    assert_eq!(
+        like_guard_mode_of(Some("REACT")),
+        Some(LikeGuardMode::Reactions)
+    );
+    assert_eq!(like_guard_mode_of(Some("ad")), Some(LikeGuardMode::Ad));
+    assert_eq!(like_guard_mode_of(Some("follow")), Some(LikeGuardMode::Ad));
+    assert_eq!(like_guard_mode_of(Some("ban")), None);
+    assert_eq!(like_guard_mode_of(None), None);
 }
 
 #[test]

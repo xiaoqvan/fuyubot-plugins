@@ -11,7 +11,7 @@ use crate::api::{Sender, url_row};
 use crate::flow;
 use crate::log;
 use crate::runtime::Runtime;
-use crate::store::{GroupConfig, LimitMode};
+use crate::store::{GroupConfig, LikeGuardMode, LimitMode};
 
 /// 一个 `/adconfig` 开关：名字、说明、开启 / 关闭回执，以及读 / 写函数。
 ///
@@ -54,7 +54,7 @@ const TOGGLES: [Toggle; 8] = [
     },
     Toggle {
         name: "like_guard_enabled",
-        description: "自动点赞机器人：连续回应 5 条消息的账号会被封禁回应权限",
+        description: "自动点赞机器人：连续回应 5 条消息的账号默认只被封禁回应权限（可改为跟随广告）",
         on: "✅ 自动点赞机器人拦截已开启",
         off: "❌ 自动点赞机器人拦截已关闭",
         get: |config: &GroupConfig| config.like_guard_enabled,
@@ -101,6 +101,8 @@ const TOGGLES: [Toggle; 8] = [
 fn config_key(word: &str) -> &str {
     match word {
         "like_guard" => "like_guard_enabled",
+        // 自动点赞的处置方式（reactions / ad）。
+        "like_mode" => "like_guard_mode",
         // 入群提示的三个开关：短别名，少敲几个字符。
         "join" => "delete_join_message",
         "join_community" => "delete_join_community_message",
@@ -108,6 +110,16 @@ fn config_key(word: &str) -> &str {
         // 取消频道置顶。
         "unpin" | "unpin_channel" => "unpin_channel_pins",
         other => other,
+    }
+}
+
+/// `/adconfig like_guard_mode` 的取值：`reactions`（默认，只封回应）/ `ad`（跟随广告）。
+fn like_guard_mode_of(word: Option<&str>) -> Option<LikeGuardMode> {
+    let word = word.map(str::to_lowercase)?;
+    match word.as_str() {
+        "reactions" | "reaction" | "react" => Some(LikeGuardMode::Reactions),
+        "ad" | "limit" | "follow" => Some(LikeGuardMode::Ad),
+        _ => None,
     }
 }
 
@@ -172,6 +184,41 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &V
         return;
     }
 
+    // 自动点赞的处置方式：默认只封回应，可改成跟随广告的禁言 / 封禁。
+    if key == "like_guard_mode" {
+        let Some(mode) = like_guard_mode_of(words.get(1).map(String::as_str)) else {
+            flow::send_tip(
+                rt,
+                chat_id,
+                &format!(
+                    "用法: /adconfig like_guard_mode reactions|ad\n当前: `{}`（{}）\n  · reactions：只封禁回应权限，发言照旧\n  · ad：跟随广告处置，按 /adconfig limit 的 ban/mute 执行",
+                    config.like_guard_mode.as_str(),
+                    config.like_guard_mode.label()
+                ),
+                reply_to,
+                10,
+            )
+            .await;
+            return;
+        };
+        rt.db
+            .update_config(chat_id, |config| config.like_guard_mode = mode)
+            .await;
+        flow::send_tip(
+            rt,
+            chat_id,
+            &format!("✅ 自动点赞处置已切换为「{}」", mode.label()),
+            reply_to,
+            10,
+        )
+        .await;
+        log::info(
+            &rt.host,
+            format!("群 {chat_id} like_guard_mode 已切换为 {}", mode.as_str()),
+        );
+        return;
+    }
+
     // 提示消息自删延时
     if key == "spam_tips_meg_delay" || key == "delay" {
         let delay = words.get(1).and_then(|word| word.parse::<u32>().ok());
@@ -218,7 +265,7 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &V
             rt,
             chat_id,
             &format!(
-                "未知配置项：{}\n可用配置：{available}、limit_mode、delay",
+                "未知配置项：{}\n可用配置：{available}、limit_mode、like_guard_mode、delay",
                 words.first().map(String::as_str).unwrap_or("")
             ),
             reply_to,
@@ -259,7 +306,11 @@ async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Valu
             if value { "开启" } else { "关闭" }
         ));
     }
-    body.push_str("ℹ️ **自动点赞判定：**\n  连续回应 5 条消息的账号会被封禁回应权限，并清理它已经点出去的回应（被删除的消息不计；同一账号 30 分钟内只处置一次）\n\n");
+    body.push_str(&format!(
+        "ℹ️ **自动点赞判定：**\n  连续回应 5 条消息的账号会被处置，并清理它已经点出去的回应（被删除的消息不计；同一账号 30 分钟内只处置一次）\n  → 处置方式: `{}`（{}，/adconfig like_guard_mode reactions|ad）\n\n",
+        config.like_guard_mode.as_str(),
+        config.like_guard_mode.label()
+    ));
     body.push_str("🤖 **AI 接口配置：**\n");
     body.push_str(&ai::ai_status_line(rt, chat_id, Some(&config)).await);
     body.push_str("\n\n🛡️ **广告处置模式：**\n");
@@ -268,7 +319,7 @@ async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Valu
         config.limit_mode.as_str(),
         config.spam_tips_meg_delay
     ));
-    body.push_str("**开关管理：**\n发送 `/adconfig <配置项>` 切换开关\n可用命令：/adconfig limit ban|mute、/adconfig delay <秒数>、/adconfig like_guard、/adconfig join|join_community|join_invite、/adconfig unpin");
+    body.push_str("**开关管理：**\n发送 `/adconfig <配置项>` 切换开关\n可用命令：/adconfig limit ban|mute、/adconfig delay <秒数>、/adconfig like_guard、/adconfig like_guard_mode reactions|ad、/adconfig join|join_community|join_invite、/adconfig unpin");
 
     // 私聊配置链接：需要 Bot 自己的用户名
     let username = crate::simplify::my_usernames(&rt.host)

@@ -1,4 +1,4 @@
-//! 自动点赞机器人：检测 + 封禁「回应权限」。
+//! 自动点赞机器人：检测 + 处置（默认只封禁「回应权限」，可改为跟随广告的禁言 / 封禁）。
 //!
 //! 数据来源是 TDLib 的 updateMessageInteractionInfo：消息的反应变化会带着
 //! messageReaction.recent_sender_ids（最多 3 个最近回应者）一起下发。每次把这些
@@ -7,21 +7,24 @@
 //! 最近消息不另存一份：cache 本来就有每群最近 20 条（recent_ids），被删除的消息
 //! 也会从那里摘掉，所以删掉的消息不会把连续段隔开。
 //!
-//! 处置做两件事：setChatMemberStatus -> chatMemberStatusRestricted（
-//! can_react_to_messages = false，见 api::Td::restrict，同时挡住发言与表情），
-//! 再把这个人已经点出去的回应一起清掉（deleteAllRecentMessageReactionsFromSender）。
-//! 管理员点提示上的「解除限制」可以恢复权限，被删掉的回应不会回来。
+//! 处置默认只关掉「回应」权限（`can_react_to_messages = false`，见
+//! `api::Td::restrict_reactions`）：发言、链接预览这些照常，只是不能再点表情；
+//! 群管理员可用 `/adconfig like_guard_mode ad` 改成跟随广告——按群配置的
+//! `limit_mode` 禁言（`api::Td::restrict`）或封禁（`api::Td::ban`）。
+//! 两种方式都会把这个已经点出去的回应一起清掉
+//! （`deleteAllRecentMessageReactionsFromSender`）。管理员点提示上的「解除限制」
+//! 可以恢复权限，被删掉的回应不会回来。
 //!
 //! 默认关闭：只有群管理员在 /adconfig 里打开 like_guard_enabled 之后才会统计与处置。
 
 use serde_json::Value;
 
 use crate::action;
-use crate::api::{Sender, callback_row, member_param};
+use crate::api::{Sender, callback_row, member_param, unban_callback};
 use crate::log;
 use crate::runtime::Runtime;
 use crate::simplify::Topic;
-use crate::store::GroupConfig;
+use crate::store::{GroupConfig, LikeGuardMode, LimitMode};
 use crate::text;
 use crate::util::now_ms;
 
@@ -99,7 +102,7 @@ pub async fn handle(rt: &Runtime, update: &Value) {
     }
 }
 
-/// 处置一个自动点赞账号：封禁回应权限 + 审计 + 三处通知。
+/// 处置一个自动点赞账号：按群配置封禁回应权限 / 禁言 / 封禁 + 审计 + 三处通知。
 async fn punish(
     rt: &Runtime,
     chat_id: i64,
@@ -122,15 +125,28 @@ async fn punish(
         return;
     }
 
-    if let Err(error) = rt.td.restrict(chat_id, sender).await {
+    // 处置方式跟群配置走：默认只关「回应」权限（发言照旧）；改成「跟随广告」后
+    // 按 limit_mode 禁言或封禁——与 action::punish 同一套语义。
+    let (record_action, action_label, result) = match config.like_guard_mode {
+        LikeGuardMode::Reactions => (
+            "restrict",
+            "已封禁回应权限（仍可发言）",
+            rt.td.restrict_reactions(chat_id, sender).await,
+        ),
+        LikeGuardMode::Ad => match config.limit_mode {
+            LimitMode::Ban => ("ban", "已封禁", rt.td.ban(chat_id, sender).await),
+            LimitMode::Mute => ("mute", "已禁言", rt.td.restrict(chat_id, sender).await),
+        },
+    };
+    if let Err(error) = result {
         log::warn(
             &rt.host,
-            format!("[自动点赞] 封禁 {user_id} 的回应权限失败（群 {chat_id}）：{error}"),
+            format!("[自动点赞] 处置 {user_id} 失败（群 {chat_id}，{action_label}）：{error}"),
         );
         return;
     }
 
-    // 封禁回应权限只是「以后不能再回应」；已经点出去的表情还挂在别人的消息上，
+    // 处置只是「以后不能再回应」；已经点出去的表情还挂在别人的消息上，
     // 一起清掉。TDLib `deleteAllRecentMessageReactionsFromSender`（1.8.69+）是
     // 管理员能力（要「删除消息」权限），只支持基础群 / 超级群；清理失败不回滚
     // 处置，记一行 debug 就够了。
@@ -151,7 +167,7 @@ async fn punish(
             chat_id,
             user_id,
             sender.type_name(),
-            "restrict",
+            record_action,
             "reaction_bot",
             &detail,
             None,
@@ -160,7 +176,7 @@ async fn punish(
     log::info(
         &rt.host,
         format!(
-            "[自动点赞] 群 {chat_id} 用户 {user_id} 已封禁回应权限（{detail}）{}",
+            "[自动点赞] 群 {chat_id} 用户 {user_id} {action_label}（{detail}）{}",
             if reactions_cleared {
                 "，并已清理其回应"
             } else {
@@ -174,16 +190,24 @@ async fn punish(
     let user_label = text::with_id(&member, user_id);
     let chat_label = text::with_id(&chat_mention, chat_id);
     let mut body = format!(
-        "#ReactionBot\n**Group**: {chat_label}\n**User**: {user_label}\n**Reason**: 自动点赞（{detail}）\n**Action**: 已封禁回应权限"
+        "#ReactionBot\n**Group**: {chat_label}\n**User**: {user_label}\n**Reason**: 自动点赞（{detail}）\n**Action**: {action_label}"
     );
     if reactions_cleared {
         body.push_str("\n**Cleanup**: 已删除该用户在本群的回应");
     }
     let member_query = member_param(sender);
-    let buttons = vec![
-        callback_row("解除限制", format!("unmute?cid={chat_id}&{member_query}")),
-        callback_row("Ban", format!("ban?cid={chat_id}&{member_query}")),
-    ];
+    // 封禁只能「解除封禁」；禁言 / 只封回应用「解除限制」，两种都能再改成 Ban。
+    let buttons = if record_action == "ban" {
+        vec![callback_row(
+            "unban+白名单",
+            unban_callback(chat_id, sender),
+        )]
+    } else {
+        vec![
+            callback_row("解除限制", format!("unmute?cid={chat_id}&{member_query}")),
+            callback_row("Ban", format!("ban?cid={chat_id}&{member_query}")),
+        ]
+    };
 
     // 全局审计（可选）与群绑定的日志频道（带按钮，之后提示会链到这条）。
     if let Some(channel) = rt.cfg.log_channel {

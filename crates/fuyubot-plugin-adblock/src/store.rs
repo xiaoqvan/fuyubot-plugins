@@ -86,6 +86,36 @@ impl LimitMode {
     }
 }
 
+/// 自动点赞命中后的处置方式。
+///
+/// 默认 [`Reactions`](Self::Reactions)：只关掉「回应」权限，发言照常——点赞机器人不该
+/// 因为点表情被禁言。群管理员可以用 `/adconfig like_guard_mode ad` 改成
+/// [`Ad`](Self::Ad)：按群配置的 `limit_mode` 禁言或封禁（与广告处置同一套语义）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LikeGuardMode {
+    #[default]
+    Reactions,
+    Ad,
+}
+
+impl LikeGuardMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reactions => "reactions",
+            Self::Ad => "ad",
+        }
+    }
+
+    /// `/adconfig` 状态页里展示的一句话说明。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Reactions => "只封禁回应权限（仍可正常发言）",
+            Self::Ad => "跟随广告处置（按广告模式禁言或封禁）",
+        }
+    }
+}
+
 /// 一个群的配置（对应 TS 版 `GroupConfig`）。
 ///
 /// 字段名与库里的键一一对应；`Whitelist` 大写、`spam_fileId` 驼峰都是**库里的原样**。
@@ -109,6 +139,9 @@ pub struct GroupConfig {
     pub check_new_member: bool,
     /// 自动点赞机器人拦截（群管理员用 `/adconfig like_guard` 开启）。默认关闭。
     pub like_guard_enabled: bool,
+    /// 自动点赞命中后的处置方式。默认只封「回应」权限（发言照旧）；
+    /// 群管理员可用 `/adconfig like_guard_mode ad` 改成跟随广告处置。
+    pub like_guard_mode: LikeGuardMode,
     /// 删除「成员加入」的入群提示（`messageChatAddMembers` / `messageChatJoinByRequest`）。
     pub delete_join_message: bool,
     /// 删除「成员通过社区加入」的入群提示（`messageChatJoinFromCommunity`）。
@@ -139,6 +172,7 @@ impl Default for GroupConfig {
             ai_review_enabled: false,
             check_new_member: false,
             like_guard_enabled: false,
+            like_guard_mode: LikeGuardMode::Reactions,
             delete_join_message: false,
             delete_join_community_message: false,
             delete_join_invite_message: false,
@@ -257,6 +291,11 @@ impl GroupConfig {
             ai_review_enabled: bool_of(doc, "ai_review_enabled").unwrap_or(false),
             check_new_member: bool_of(doc, "check_new_member").unwrap_or(false),
             like_guard_enabled: bool_of(doc, "like_guard_enabled").unwrap_or(false),
+            like_guard_mode: match doc.get("like_guard_mode").and_then(Value::as_str) {
+                Some("ad") => LikeGuardMode::Ad,
+                Some("reactions") => LikeGuardMode::Reactions,
+                _ => defaults.like_guard_mode,
+            },
             delete_join_message: bool_of(doc, "delete_join_message").unwrap_or(false),
             delete_join_community_message: bool_of(doc, "delete_join_community_message")
                 .unwrap_or(false),

@@ -14,7 +14,7 @@
 //! | 取消频道置顶 | `is_pinned` / `messagePinMessage` / `updateMessageIsPinned` | 群配置开启时撤销绑定频道被 Telegram 自动置顶的消息 |
 //! | `updateChatMember` | 新成员入群 | 名称与简介查黑名单 + AI 审核，命中即封禁或「禁言待复审」 |
 //! | `updateUser` | 入群 24h 内改资料 | 重新审核资料（带节流） |
-//! | `updateMessageInteractionInfo` | 群里有人给消息点表情 | 自动点赞统计：连续回应 5 条消息的账号封禁回应权限（群配置开启后） |
+//! | `updateMessageInteractionInfo` | 群里有人给消息点表情 | 自动点赞统计：连续回应 5 条消息的账号默认只封禁回应权限，可跟随广告禁言 / 封禁（群配置开启后） |
 //! | `updateDeleteMessages` | 消息被删 | 从索引里同步移除 |
 //! | 周期任务 | 每 5 分钟 | 扫「禁言 1 小时未复审」→ 封禁 |
 //!

@@ -25,6 +25,7 @@ fn config_parses_legacy_fields() {
         "ai_review_enabled": true,
         "check_new_member": true,
         "like_guard_enabled": true,
+        "like_guard_mode": "ad",
         "delete_join_message": true,
         "delete_join_community_message": true,
         "delete_join_invite_message": true,
@@ -43,6 +44,7 @@ fn config_parses_legacy_fields() {
     assert!(config.ai_review_enabled);
     assert!(config.check_new_member);
     assert!(config.like_guard_enabled);
+    assert_eq!(config.like_guard_mode, LikeGuardMode::Ad);
     assert!(config.delete_join_message);
     assert!(config.delete_join_community_message);
     assert!(config.delete_join_invite_message);
@@ -59,6 +61,8 @@ fn config_defaults_when_fields_missing() {
     assert!(!config.ai_review_enabled);
     // 新功能默认关闭：必须由群管理员显式打开。
     assert!(!config.like_guard_enabled);
+    // 默认只封禁回应权限，不跟随广告。
+    assert_eq!(config.like_guard_mode, LikeGuardMode::Reactions);
     assert!(!config.delete_join_message);
     assert!(!config.delete_join_community_message);
     assert!(!config.delete_join_invite_message);
