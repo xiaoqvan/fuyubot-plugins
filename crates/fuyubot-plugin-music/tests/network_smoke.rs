@@ -14,7 +14,7 @@
 use std::sync::atomic::AtomicBool;
 
 use fuyubot_plugin_music::auth::{NETEASE_USER_AGENT, NeteaseAuth, SodaAuth};
-use fuyubot_plugin_music::{http, netease, soda, soda_video};
+use fuyubot_plugin_music::{http, netease, soda, soda_video, youtube};
 
 #[tokio::test]
 #[ignore = "需要联网"]
@@ -166,6 +166,80 @@ async fn both_audio_urls_actually_download_bytes() {
     assert!(len > 100_000, "音频不该这么小：{len}");
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ── YouTube Music ──────────────────────────────────────────
+
+#[tokio::test]
+#[ignore = "需要联网"]
+async fn youtube_music_search_returns_tracks() {
+    let agent = http::agent();
+    let tracks = youtube::search(&agent, "", "Rick Astley Never Gonna Give You Up", 5)
+        .await
+        .expect("YouTube Music 搜索应当有结果");
+    assert!(!tracks.is_empty());
+    for track in &tracks {
+        println!(
+            "{} - {} (id={}, {}s, type={})",
+            track.name,
+            track.artist_text(),
+            track.id,
+            track.duration,
+            track.video_type
+        );
+        assert_eq!(track.id.len(), 11);
+        assert!(!track.name.is_empty());
+    }
+}
+
+#[tokio::test]
+#[ignore = "需要联网"]
+async fn youtube_music_stream_resolves_and_downloads() {
+    let agent = http::agent();
+    let resolved = youtube::resolve(&agent, "", "dQw4w9WgXcQ", "best")
+        .await
+        .expect("ANDROID_VR 应当能拿到音频直链");
+    println!(
+        "{} - {} / itag {} / {} kbps / {} 字节",
+        resolved.track.name,
+        resolved.track.artist_text(),
+        resolved.stream.itag,
+        resolved.stream.bitrate / 1000,
+        resolved.stream.size
+    );
+    assert!(resolved.stream.url.starts_with("https://"));
+    assert!(resolved.stream.mime.starts_with("audio/"));
+
+    let dir = std::env::temp_dir().join("fuyubot-music-smoke-yt");
+    let _ = std::fs::remove_dir_all(&dir);
+    let path = http::download_ranged(
+        &agent,
+        &resolved.stream.url,
+        &[("User-Agent", youtube::ANDROID_VR_USER_AGENT)],
+        &dir,
+        resolved.stream.extension(),
+        resolved.stream.size,
+        &AtomicBool::new(false),
+    )
+    .await
+    .expect("YouTube 音频应当能下载");
+    let len = std::fs::metadata(&path).unwrap().len();
+    println!("YouTube 下载 {len} 字节 -> {}", path.display());
+    assert!(len > 100_000, "音频不该这么小：{len}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+#[ignore = "需要联网"]
+async fn youtube_music_playlist_lists_tracks() {
+    let agent = http::agent();
+    // YouTube Music 上的公开播放列表（Popular Music Videos）。
+    let (name, tracks) = youtube::playlist(&agent, "", "PLFgquLnL59alCl_2TQvOiD5Vgm1hCaGSI", 5)
+        .await
+        .expect("播放列表应当能解析");
+    println!("播放列表 {}：{} 首", name, tracks.len());
+    assert!(!tracks.is_empty());
+    assert_eq!(tracks[0].id.len(), 11);
 }
 
 #[tokio::test]

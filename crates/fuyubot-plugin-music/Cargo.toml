@@ -1,6 +1,6 @@
 [package]
 name = "fuyubot-plugin-music"
-description = "FuyuBot 音乐解析插件：网易云音乐 / 汽水音乐，搜索、分享链接解析、指定音质，发音频"
+description = "FuyuBot 音乐解析插件：网易云 / 汽水 / YouTube Music 搜索与解析，指定音质发音频"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

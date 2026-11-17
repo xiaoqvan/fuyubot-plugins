@@ -66,6 +66,9 @@ fn usage_mentions_the_command_and_its_qualities() {
     let text = usage(Platform::Soda);
     assert!(text.contains("/soda <关键词>"), "{text}");
     assert!(text.contains("lossless"), "{text}");
+    let text = usage(Platform::YoutubeMusic);
+    assert!(text.contains("/ytmusic <关键词>"), "{text}");
+    assert!(text.contains("best"), "{text}");
 }
 
 #[test]
@@ -229,8 +232,10 @@ fn command_names_are_stable() {
     // 改了它们，用户的 /music163、/soda 就失灵了。
     assert_eq!(NETEASE_COMMAND, "music163");
     assert_eq!(SODA_COMMAND, "soda");
+    assert_eq!(YOUTUBE_COMMAND, "ytmusic");
     assert_eq!(Platform::Netease.name(), "网易云音乐");
     assert_eq!(Platform::Soda.name(), "汽水音乐");
+    assert_eq!(Platform::YoutubeMusic.name(), "YouTube Music");
 }
 
 /// `user_data` 的取址层数曾经写错过（解两层），症状是订阅从来不触发且不报错。
@@ -343,4 +348,92 @@ fn cache_keys_are_stable_and_quality_scoped() {
         cache::key(&["soda-video", "7625615883351772468"]),
         "soda-video:7625615883351772468"
     );
+    assert_eq!(
+        cache::key(&["ytmusic", "dQw4w9WgXcQ", "best"]),
+        "ytmusic:dQw4w9WgXcQ:best"
+    );
+}
+
+/// 新平台也要能认出「链接 / ID」，并且分清单曲与集合（影响频道权限与占位）。
+#[test]
+fn youtube_references_are_classified() {
+    assert!(looks_like_reference(
+        Platform::YoutubeMusic,
+        "https://music.youtube.com/watch?v=dQw4w9WgXcQ"
+    ));
+    assert!(looks_like_reference(Platform::YoutubeMusic, "dQw4w9WgXcQ"));
+    assert!(!looks_like_reference(Platform::YoutubeMusic, "晴天"));
+
+    let job = |platform: Platform, query: &str| Job {
+        platform,
+        target: Target::send(1),
+        query: query.to_owned(),
+        quality: None,
+    };
+    assert!(
+        job(
+            Platform::YoutubeMusic,
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ"
+        )
+        .needs_media()
+    );
+    assert!(
+        !job(
+            Platform::YoutubeMusic,
+            "https://music.youtube.com/playlist?list=PL123"
+        )
+        .needs_media(),
+        "播放列表只回文本"
+    );
+}
+
+/// 新增音质别名不能把普通关键词吃掉。
+#[test]
+fn youtube_qualities_are_split_only_after_a_reference() {
+    assert_eq!(
+        split_args(
+            Platform::YoutubeMusic,
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ low"
+        ),
+        (
+            "https://music.youtube.com/watch?v=dQw4w9WgXcQ".to_owned(),
+            Some("low")
+        )
+    );
+    assert_eq!(
+        split_args(Platform::YoutubeMusic, "晴天 best"),
+        ("晴天 best".to_owned(), None)
+    );
+}
+
+/// 聊天里的 YouTube Music 链接要能自动识别。
+#[test]
+fn auto_detection_covers_youtube_music() {
+    let message = |text: &str| {
+        let update = serde_json::json!({
+            "@type": "updateNewMessage",
+            "message": {
+                "@type": "message",
+                "id": 1,
+                "chat_id": -100888_i64,
+                "is_outgoing": false,
+                "content": {
+                    "@type": "messageText",
+                    "text": {"@type": "formattedText", "text": text, "entities": []}
+                }
+            }
+        });
+        message_of(&update).unwrap()
+    };
+    let youtube = auto_job(&message("https://music.youtube.com/watch?v=dQw4w9WgXcQ")).unwrap();
+    assert_eq!(youtube.platform, Platform::YoutubeMusic);
+    // 普通 YouTube 视频链接不自动抢；只有 /ytmusic 显式解析。
+    assert!(
+        auto_job(&message("https://youtu.be/dQw4w9WgXcQ")).is_none(),
+        "普通 youtu.be 不该被音乐插件自动处理"
+    );
+    assert!(looks_like_reference(
+        Platform::YoutubeMusic,
+        "https://youtu.be/dQw4w9WgXcQ"
+    ));
 }

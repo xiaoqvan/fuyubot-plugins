@@ -1,14 +1,15 @@
-//! FuyuBot 音乐解析插件：网易云音乐 + 汽水音乐。
+//! FuyuBot 音乐解析插件：网易云音乐 + 汽水音乐 + YouTube Music。
 //!
 //! 只做三件事，别的都不做：
 //!
 //! | 能力 | 入口 |
 //! | --- | --- |
-//! | 搜索 | `/music163 关键词`、`/soda 关键词` |
-//! | 解析分享链接 / 歌曲 ID | `/music163 <链接或 ID> [音质]`、`/soda <链接或 ID> [音质]` |
+//! | 搜索 | `/music163 关键词`、`/soda 关键词`、`/ytmusic 关键词` |
+//! | 解析分享链接 / 歌曲 ID | 三个命令都支持 `<链接或 ID> [音质]` |
 //! | 指定音质取流 → 发音频 | 同上，第二段参数是音质 |
 //!
-//! 消息里出现两家平台的分享链接时也会自动解析（`/` 开头的不抢）。
+//! 消息里出现三家平台的分享链接时也会自动解析（`/` 开头的不抢）。
+//! YouTube Music 走 InnerTube（多客户端回退）直接拿直链。
 //!
 //! ## 执行模型：全异步
 //!
@@ -43,6 +44,8 @@
 //! | [`soda`] | 汽水：搜索 / 分享链接 / 取流 / 音质 |
 //! | [`soda_crypto`] | 汽水 `play_auth`（spade）还原 + MP4/CENC（AES-128-CTR）解密 |
 //! | [`soda_sign`] | 汽水 App 端点的逐请求签名（外部签名器接缝） |
+//! | [`youtube`] | YouTube Music：WEB_REMIX 搜索 + ANDROID_VR 取流 + 匹配打分 |
+//! | [`url`] | 分享链接提取 / host 判定 / 百分号编码 |
 //! | [`commands`] | 命令、自动识别、异步处理链、缓存命中 / 回落 |
 //! | [`send`] | 发音频 / 视频 / 文本 |
 //!
@@ -71,6 +74,8 @@ pub mod soda;
 pub mod soda_crypto;
 pub mod soda_sign;
 pub mod soda_video;
+pub mod url;
+pub mod youtube;
 
 use fuyubot_abi::define_plugin;
 

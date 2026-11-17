@@ -72,6 +72,8 @@ pub const CONFIG_SODA_USER_AGENT: &str = "soda_user_agent";
 pub const CONFIG_SODA_SIGNER_URL: &str = "soda_signer_url";
 /// 汽水签名器 Bearer token（可选）。
 pub const CONFIG_SODA_SIGNER_TOKEN: &str = "soda_signer_token";
+/// YouTube：整段 Cookie 头字符串（可选；遇到「Sign in to confirm you're not a bot」时配）。
+pub const CONFIG_YOUTUBE: &str = "youtube";
 
 /// 网易云 cookie 的默认项（官方 PC 客户端形状）。
 ///
@@ -147,11 +149,29 @@ impl SodaAuth {
     }
 }
 
+/// YouTube 的鉴权材料（可选）。
+///
+/// YouTube 的公开接口不需要登录；配置 cookie 只为了绕开数据中心 IP 上常见的
+/// 「Sign in to confirm you're not a bot」验证。
+#[derive(Debug, Clone, Default)]
+pub struct YoutubeAuth {
+    /// 整段 Cookie 头（浏览器里复制即可）。
+    pub cookie: String,
+}
+
+impl YoutubeAuth {
+    pub fn is_configured(&self) -> bool {
+        !self.cookie.trim().is_empty()
+    }
+}
+
 /// 一次加载的全部鉴权材料。
 #[derive(Debug, Clone, Default)]
 pub struct Auth {
     pub netease: Option<NeteaseAuth>,
     pub soda: Option<SodaAuth>,
+    /// YouTube cookie（可选）。
+    pub youtube: Option<YoutubeAuth>,
     pub dir: PathBuf,
 }
 
@@ -162,6 +182,7 @@ pub fn load(host: HostApi, plugins_dir: &Path) -> Auth {
     let dir = plugins_dir.join("music");
     let netease = load_netease(host, &dir);
     let soda = load_soda(host, &dir);
+    let youtube = load_youtube(host);
 
     match &netease {
         Some(auth) if auth.is_logged_in() => {
@@ -203,7 +224,19 @@ pub fn load(host: HostApi, plugins_dir: &Path) -> Auth {
         )),
     }
 
-    Auth { netease, soda, dir }
+    match &youtube {
+        Some(auth) if auth.is_configured() => {
+            crate::log::info("YouTube：已读取 cookie（取流遇到机器人校验时会带上）")
+        }
+        _ => crate::log::info("YouTube：匿名取流（数据中心 IP 上可能触发登录验证）"),
+    }
+
+    Auth {
+        netease,
+        soda,
+        youtube,
+        dir,
+    }
 }
 
 /// 网易云：配置优先，没配才回退 `163cookie.json`。
@@ -259,6 +292,12 @@ fn load_soda(host: HostApi, dir: &Path) -> Option<SodaAuth> {
         path.display()
     ));
     Some(parse_soda(&value))
+}
+
+/// YouTube：只从配置段读 cookie（没有旧文件）。
+fn load_youtube(host: HostApi) -> Option<YoutubeAuth> {
+    let cookie = config_string(host, CONFIG_YOUTUBE)?;
+    Some(YoutubeAuth { cookie })
 }
 
 /// 读一个平铺配置项：宿主返回 JSON 文本，值**必须是字符串**。

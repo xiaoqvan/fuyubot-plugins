@@ -11,13 +11,15 @@ FuyuBot 的广告拦截插件：一条消息进来，按「关键词 / 文件 / 
 | 入口 | 说明 |
 | --- | --- |
 | 消息检测 | 文本（含富消息）、图片、视频、联系人、贴纸；广告关键词组按 **AND** 匹配 |
-| 自动点赞机器人 | 群管理员在 `/adconfig` 打开后，连续回应 5 条消息的账号会被封禁其**回应权限**（禁言 + 禁止表情回应）；中间被删除的消息不计 |
+| 自动点赞机器人 | 群管理员在 `/adconfig` 打开后，连续回应 5 条消息的账号会被封禁其**回应权限**（禁言 + 禁止表情回应），并清掉它已经点出去的回应；中间被删除的消息不计 |
 | 处置 | 撤回触发消息 + 该用户 48 小时内的历史消息；按群配置 **禁言**（默认）或 **封禁** |
 | 通知 | 群内提示（可配置自删延时）、群绑定的日志频道（带 `unban` / `unmute` / `Ban` 按钮）、可选的全局审计频道 |
 | 话题群 | 群内提示 / 处置通知跟着触发消息回到**同一条话题**；日志频道的 topic 可配（`log_topic` / `ai_log_topic` / `ai_db_topic`） |
 | 转发黑名单 | 来自黑名单频道/超级群的消息一律处置；AI 判定后自动把来源加进去 |
 | AI 审核 | OpenAI 兼容接口；群可自定义接口，也可由 Bot 主人给「内置接口」授权 |
 | 入群检查 | 新成员按名称 / 简介 / 主页挂载频道查黑名单与 AI；高危直接封，存疑先禁言并给「重新审查」按钮 |
+| 入群提示 | 三个开关分别删除「成员加入」「通过社区加入」「通过邀请链接加入」的入群提示消息 |
+| 取消频道置顶 | 群绑定频道自动转发到群并被 Telegram 自动置顶的消息，自动取消置顶 |
 | 24h 监视 | 入群后改资料会触发复检；复审通过后不再因弱信号被禁言；正常发言超过 4 条自动解除监视 |
 | 超时兜底 | 禁言 1 小时内没通过复审 → 自动封禁（每 5 分钟扫一次） |
 | 人工举报 | `/spam` 可对消息、用户、`@用户名` 做一次 AI 判定，并把结果沉淀成规则 |
@@ -165,6 +167,7 @@ admins = [987654321]     # 全局管理员：/qadid /delad /addkw /editkw /addfw
 开启后，插件拿该群**最近 20 条消息**（cache 里本来就有）当基准，看某个账号是否**连续回应了 5 条**；判定时被删除的消息已经从最近消息里摘掉，所以「A B C(已删) D E F」会连成 A B D E F，不会被删掉的那条打断。命中后封禁它的「回应权限」——`setChatMemberStatus` 设为受限成员，`can_send_basic_messages` 与 `can_react_to_messages` 全部关掉，发言和表情一起停掉：
 
 - 写一条 `ban_records`（`spam_type = reaction_bot`）；
+- 清掉它在本群已经点出去的全部回应（`deleteAllRecentMessageReactionsFromSender`，需要「删除消息」权限；失败只记日志，不回滚处置）；
 - 群里发一条 `#ReactionBot` 提示（`**User ID**: 小王` + `**Reason**: reaction_bot 连续回应 5 条消息`），带「解除限制」/「Ban」按钮，删除时间与其它提示共用 `spam_tips_meg_delay`（`spam_tips` 关闭时提示常驻）；
 - 群绑定的日志频道同步一份（带「解除限制」按钮），配了全局审计频道时也写一条。
 
@@ -173,6 +176,30 @@ admins = [987654321]     # 全局管理员：/qadid /delad /addkw /editkw /addfw
 > 检测依赖 TDLib 的 `updateMessageInteractionInfo`：`recent_sender_ids` 每种表情最多只给 3 个最近的点赞者。同一条消息被 4 个以上账号点同一种表情时，这一轮可能只看得到 3 个——处置掉之后，剩下的账号会在后续消息里浮现。
 >
 > Bot 需要「限制成员」权限；没有权限时不会统计，也不会动作。
+
+## 入群提示消息
+
+群管理员可以在 `/adconfig` 里分别关闭三种入群提示（默认都保留）：
+
+```text
+/adconfig join            # 成员加入（被添加 / 审批通过）
+/adconfig join_community  # 成员通过社区加入
+/adconfig join_invite     # 成员通过邀请链接加入
+```
+
+对应的群配置项是 `delete_join_message` / `delete_join_community_message` / `delete_join_invite_message`。打开后，插件收到对应的服务消息（TDLib 的 `messageChatAddMembers`、`messageChatJoinByRequest`、`messageChatJoinFromCommunity`、`messageChatJoinByLink`）就撤回；Bot 需要群的「删除消息」权限。
+
+> 能不能收到这条服务消息由 Telegram 决定：不同账号类型 / 入群方式可能不下发，收不到就删不了。
+
+## 取消频道置顶
+
+群绑定（linked）的频道发帖后，Telegram 会把帖子系统转发到群里并**自动置顶**。打开这个开关后，插件会把这类置顶撤掉：
+
+```text
+/adconfig unpin          # 打开 / 关闭（别名，等同 /adconfig unpin_channel_pins）
+```
+
+判定只认**本群绑定的那个频道**（`linked_chat_id`）：频道帖子本身被置顶、频道身份执行的置顶、以及 `updateMessageIsPinned` 里绑定频道的消息，都会 `unpinChatMessage`。需要 Bot 有群的「置顶消息」权限。配置项：`unpin_channel_pins`，默认关闭。
 
 ## 数据
 

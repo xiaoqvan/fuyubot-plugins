@@ -25,6 +25,10 @@ fn config_parses_legacy_fields() {
         "ai_review_enabled": true,
         "check_new_member": true,
         "like_guard_enabled": true,
+        "delete_join_message": true,
+        "delete_join_community_message": true,
+        "delete_join_invite_message": true,
+        "unpin_channel_pins": true,
         "ai_api_key": "k",
         "ai_base_url": "https://x",
         "ai_model": "m"
@@ -39,6 +43,10 @@ fn config_parses_legacy_fields() {
     assert!(config.ai_review_enabled);
     assert!(config.check_new_member);
     assert!(config.like_guard_enabled);
+    assert!(config.delete_join_message);
+    assert!(config.delete_join_community_message);
+    assert!(config.delete_join_invite_message);
+    assert!(config.unpin_channel_pins);
     assert!(config.has_custom_ai());
 }
 
@@ -51,6 +59,10 @@ fn config_defaults_when_fields_missing() {
     assert!(!config.ai_review_enabled);
     // 新功能默认关闭：必须由群管理员显式打开。
     assert!(!config.like_guard_enabled);
+    assert!(!config.delete_join_message);
+    assert!(!config.delete_join_community_message);
+    assert!(!config.delete_join_invite_message);
+    assert!(!config.unpin_channel_pins);
 }
 
 #[test]

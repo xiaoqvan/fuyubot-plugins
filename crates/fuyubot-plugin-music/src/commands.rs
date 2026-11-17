@@ -55,14 +55,18 @@ use crate::simplify::{
 use crate::soda;
 use crate::soda_crypto;
 use crate::soda_video;
+use crate::youtube;
 
 /// 网易云命令名。
 pub const NETEASE_COMMAND: &str = "music163";
 /// 汽水命令名。
 pub const SODA_COMMAND: &str = "soda";
+/// YouTube Music 命令名。
+pub const YOUTUBE_COMMAND: &str = "ytmusic";
 
 const NETEASE_DESCRIPTION: &str = "网易云音乐：搜索 / 解析链接或 ID，发音频";
 const SODA_DESCRIPTION: &str = "汽水音乐：搜索 / 解析链接或 ID，发音频";
+const YOUTUBE_DESCRIPTION: &str = "YouTube Music：搜索 / 解析链接或 ID，发音频";
 
 /// 宿主预置的**命令能力表**（`register` / `list`）。
 ///
@@ -85,6 +89,7 @@ const MAX_VIDEO_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 enum Platform {
     Netease,
     Soda,
+    YoutubeMusic,
 }
 
 impl Platform {
@@ -92,6 +97,7 @@ impl Platform {
         match self {
             Self::Netease => "网易云音乐",
             Self::Soda => "汽水音乐",
+            Self::YoutubeMusic => "YouTube Music",
         }
     }
 
@@ -99,6 +105,7 @@ impl Platform {
         match self {
             Self::Netease => netease::DEFAULT_QUALITY,
             Self::Soda => soda::DEFAULT_QUALITY,
+            Self::YoutubeMusic => youtube::DEFAULT_QUALITY,
         }
     }
 
@@ -106,6 +113,7 @@ impl Platform {
         match self {
             Self::Netease => netease::quality_help(),
             Self::Soda => soda::quality_help(),
+            Self::YoutubeMusic => youtube::quality_help(),
         }
     }
 
@@ -113,6 +121,7 @@ impl Platform {
         match self {
             Self::Netease => netease::parse_quality(name),
             Self::Soda => soda::parse_quality(name),
+            Self::YoutubeMusic => youtube::parse_quality(name),
         }
     }
 }
@@ -150,6 +159,8 @@ impl Plugin for MusicPlugin {
                 Platform::Netease
             } else if command.is(SODA_COMMAND) {
                 Platform::Soda
+            } else if command.is(YOUTUBE_COMMAND) {
+                Platform::YoutubeMusic
             } else {
                 return;
             };
@@ -171,6 +182,7 @@ impl Plugin for MusicPlugin {
         // ③ 登记进 `/help`（软依赖：没装 help 也能用）。
         register_help(host, NETEASE_COMMAND, NETEASE_DESCRIPTION);
         register_help(host, SODA_COMMAND, SODA_DESCRIPTION);
+        register_help(host, YOUTUBE_COMMAND, YOUTUBE_DESCRIPTION);
 
         // ④ SQL 缓存异步初始化（`spawn_blocking`；失败绝不影响 start）。
         //    第一条命令若比这更快到，`cache_get` 里还会补一次 init（幂等、带锁）。
@@ -179,7 +191,9 @@ impl Plugin for MusicPlugin {
         });
 
         self.runtime = Some(runtime);
-        crate::log::info("已就绪：/music163、/soda 与分享链接自动识别都已挂上（tokio 异步执行）");
+        crate::log::info(
+            "已就绪：/music163、/soda、/ytmusic 与分享链接自动识别都已挂上（tokio 异步执行）",
+        );
         Ok(())
     }
 
@@ -214,7 +228,14 @@ struct Job {
 impl Job {
     /// 这个任务最终要发媒体（音频 / 视频），还是只回文本（搜索结果 / 用法 / 报错）。
     fn needs_media(&self) -> bool {
-        !self.query.trim().is_empty() && looks_like_reference(self.platform, &self.query)
+        let query = self.query.trim();
+        if query.is_empty() {
+            return false;
+        }
+        match self.platform {
+            Platform::Netease | Platform::Soda => looks_like_reference(self.platform, query),
+            Platform::YoutubeMusic => youtube::video_id_of(query).is_some(),
+        }
     }
 }
 
@@ -281,6 +302,7 @@ async fn run(runtime: &Runtime, job: &Job) -> Result<(), String> {
     match job.platform {
         Platform::Netease => run_netease(runtime, job).await,
         Platform::Soda => run_soda(runtime, job).await,
+        Platform::YoutubeMusic => run_youtube(runtime, job).await,
     }
 }
 
@@ -354,6 +376,180 @@ async fn run_soda(runtime: &Runtime, job: &Job) -> Result<(), String> {
         soda::DEFAULT_QUALITY
     ));
     send::send_text(runtime, &job.target, &lines.join("\n")).await
+}
+
+/// 配置里的 YouTube cookie；没配就是匿名。
+fn youtube_cookie(runtime: &Runtime) -> &str {
+    runtime
+        .auth
+        .youtube
+        .as_ref()
+        .map(|auth| auth.cookie.as_str())
+        .unwrap_or("")
+}
+
+/// 秒 → m:ss / h:mm:ss。
+fn clock(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    if seconds >= 3600 {
+        format!(
+            "{}:{:02}:{:02}",
+            seconds / 3600,
+            (seconds % 3600) / 60,
+            seconds % 60
+        )
+    } else {
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
+// ── YouTube Music：InnerTube 取流 ────────────────────────────────────
+
+async fn run_youtube(runtime: &Runtime, job: &Job) -> Result<(), String> {
+    let cookie = youtube_cookie(runtime);
+    if let Some(id) = youtube::video_id_of(&job.query) {
+        let quality = job.quality.unwrap_or(youtube::DEFAULT_QUALITY);
+        return send_youtube(runtime, &job.target, &id, quality).await;
+    }
+    if let Some(list) = youtube::playlist_id_of(&job.query) {
+        return send_youtube_playlist(runtime, &job.target, &list).await;
+    }
+
+    let tracks = youtube::search(&runtime.http, cookie, &job.query, SEARCH_LIMIT).await?;
+    let mut lines = vec![format!("🎵 YouTube Music · 「{}」", job.query)];
+    for (index, track) in tracks.iter().take(SEARCH_LIMIT).enumerate() {
+        let duration = if track.duration > 0 {
+            format!(" [{}]", clock(track.duration))
+        } else {
+            String::new()
+        };
+        lines.push(format!(
+            "{}. {} - {}{}\n   {}",
+            index + 1,
+            track.name,
+            track.artist_text(),
+            duration,
+            track.link()
+        ));
+    }
+    lines.push(format!(
+        "发送 /{YOUTUBE_COMMAND} <链接或 ID> [音质] 获取音频\n音质：{}（默认 {}）",
+        youtube::quality_help(),
+        youtube::DEFAULT_QUALITY
+    ));
+    send::send_text(runtime, &job.target, &lines.join("\n")).await
+}
+
+async fn send_youtube(
+    runtime: &Runtime,
+    target: &Target,
+    id: &str,
+    quality: &str,
+) -> Result<(), String> {
+    let key = cache::key(&["ytmusic", id, quality]);
+    if let Some(doc) = runtime.cache_get(&key).await {
+        match send_cached_audio(runtime, target, &doc).await {
+            Ok(()) => {
+                crate::log::debug(&format!(
+                    "YouTube {id} 缓存命中（{quality}，跳过解析与下载）"
+                ));
+                return Ok(());
+            }
+            Err(error) => {
+                crate::log::warn(&format!(
+                    "YouTube {id} 缓存命中但发送失败，删缓存回落完整流程：{error}"
+                ));
+                runtime.cache_remove(&key).await;
+            }
+        }
+    }
+
+    let cookie = youtube_cookie(runtime);
+    let resolved = youtube::resolve(&runtime.http, cookie, id, quality).await?;
+    let dir = runtime.cache_dir()?;
+    let mut temp = TempFiles::default();
+
+    let headers = [
+        ("User-Agent", youtube::ANDROID_VR_USER_AGENT),
+        ("Accept", "*/*"),
+    ];
+    let extension = youtube::extension_of(&resolved.stream.mime);
+    crate::log::debug(&format!(
+        "YouTube {} 下载音频（{} 字节，{}，itag {}）",
+        id, resolved.stream.size, extension, resolved.stream.itag
+    ));
+    let file = http::download_ranged(
+        &runtime.http,
+        &resolved.stream.url,
+        &headers,
+        &dir,
+        extension,
+        resolved.stream.size,
+        &runtime.cancel,
+    )
+    .await?;
+    temp.push(file.clone());
+
+    let cover = download_cover(
+        runtime,
+        &resolved.track.cover,
+        &[("User-Agent", youtube::BROWSER_USER_AGENT)],
+        &dir,
+        &mut temp,
+    )
+    .await;
+
+    let size = std::fs::metadata(&file)
+        .map(|meta| meta.len())
+        .unwrap_or(resolved.stream.size);
+    let meta = AudioMeta {
+        title: resolved.track.name.clone(),
+        performer: resolved.track.artist_text(),
+        album: resolved.track.album.clone(),
+        link: resolved.track.link(),
+        quality: youtube::stream_label(&resolved.stream),
+        bitrate: resolved.stream.bitrate,
+        size,
+        duration: resolved.track.duration,
+        trial: false,
+    };
+    let result = send::send_audio(
+        runtime,
+        target,
+        InputFile::local(file.to_string_lossy()),
+        cover.map(|cover| InputFile::local(cover.to_string_lossy())),
+        &meta,
+    )
+    .await?;
+    store_audio_cache(runtime, &key, &meta, &result).await;
+    Ok(())
+}
+
+async fn send_youtube_playlist(
+    runtime: &Runtime,
+    target: &Target,
+    list: &str,
+) -> Result<(), String> {
+    let cookie = youtube_cookie(runtime);
+    let (name, tracks) = youtube::playlist(&runtime.http, cookie, list, 10).await?;
+    let mut lines = vec![format!("🎵 YouTube Music · {name}")];
+    for (index, track) in tracks.iter().enumerate() {
+        lines.push(format!(
+            "{}. {} - {} [{}]\n   {}",
+            index + 1,
+            track.name,
+            track.artist_text(),
+            clock(track.duration),
+            track.link()
+        ));
+    }
+    if tracks.len() >= 10 {
+        lines.push("… 只列前 10 首".to_owned());
+    }
+    lines.push(format!(
+        "发送 /{YOUTUBE_COMMAND} <单曲链接> [音质] 获取音频"
+    ));
+    send::send_text(runtime, target, &lines.join("\n")).await
 }
 
 // ── 网易云：缓存命中 / 完整流程 ─────────────────────────────────────
@@ -784,6 +980,7 @@ fn audio_extension(format: &str) -> &'static str {
         "wav" => "wav",
         "m4a" | "mp4" | "aac" | "alac" => "m4a",
         "ogg" | "opus" => "ogg",
+        "webm" | "weba" => "webm",
         "mp3" | "" => "mp3",
         _ => "mp3",
     }
@@ -839,12 +1036,17 @@ fn usage(platform: Platform) -> String {
             platform.quality_help(),
             platform.default_quality()
         ),
+        Platform::YoutubeMusic => format!(
+            "用法：\n/ytmusic <关键词> — 搜索\n/ytmusic <链接或 ID> [音质] — 发音频\n音质：{}（默认 {}）\n例：/ytmusic https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+            platform.quality_help(),
+            platform.default_quality()
+        ),
     }
 }
 
 /// 一条命令在宿主命令表里的登记入参。
 ///
-/// 两个命令都是普通用户命令，私聊 / 群 / 频道都能用；频道里命令消息本身就是原帖，
+/// 三个命令都是普通用户命令，私聊 / 群 / 频道都能用；频道里命令消息本身就是原帖，
 /// 解析结果用编辑接口写回去。
 fn registration_payload(name: &str, description: &str) -> serde_json::Value {
     serde_json::json!({
@@ -903,6 +1105,11 @@ fn looks_like_reference(platform: Platform, text: &str) -> bool {
             netease::song_id_of(text).is_some() || netease::first_link(text).is_some()
         }
         Platform::Soda => soda::track_id_of(text).is_some() || soda::first_link(text).is_some(),
+        Platform::YoutubeMusic => {
+            youtube::video_id_of(text).is_some()
+                || youtube::playlist_id_of(text).is_some()
+                || youtube::first_link(text).is_some()
+        }
     }
 }
 
@@ -966,6 +1173,8 @@ fn auto_job(message: &Message) -> Option<Job> {
     }
     let (platform, link) = if let Some(link) = netease::first_link(&message.text) {
         (Platform::Netease, link)
+    } else if let Some(link) = youtube::first_music_link(&message.text) {
+        (Platform::YoutubeMusic, link)
     } else {
         (Platform::Soda, soda::first_link(&message.text)?)
     };

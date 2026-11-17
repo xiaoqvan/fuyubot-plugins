@@ -384,6 +384,20 @@ impl Td {
             .unwrap_or_else(|| chat_id.to_string())
     }
 
+    /// 群绑定的频道 id（`supergroupFullInfo.linked_chat_id`）。
+    ///
+    /// 没绑定频道（或不是超级群）时是 `None`；TDLib 用 0 表示「没绑定」。
+    pub async fn linked_channel_id(&self, chat_id: i64) -> Option<i64> {
+        let chat = self.chat(chat_id).await?;
+        let supergroup_id = chat
+            .pointer("/type/supergroup_id")
+            .and_then(Value::as_i64)?;
+        let full = self.supergroup_full(supergroup_id).await.ok()?;
+        full.get("linked_chat_id")
+            .and_then(Value::as_i64)
+            .filter(|id| *id != 0)
+    }
+
     /// 聊天成员的 `status.@type`（`chatMemberStatusMember` / `…Administrator` / …）。
     pub async fn member_status(&self, chat_id: i64, sender: Sender) -> Option<String> {
         self.chat_member(chat_id, sender).await.and_then(|member| {
@@ -502,6 +516,35 @@ impl Td {
                     },
                 },
             }),
+        )
+        .await
+    }
+
+    /// 删除某个发送者在群里最近的**全部回应**。
+    ///
+    /// TDLib 1.8.69+ 的 `deleteAllRecentMessageReactionsFromSender`：只支持基础群 /
+    /// 超级群，调用者需要「删除消息」管理员权限（`can_delete_messages`）。失败说明
+    /// 权限不够或对象不是群——调用方按「尽力而为」处理，因为处置本身已经生效。
+    pub async fn delete_reactions_from_sender(
+        &self,
+        chat_id: i64,
+        sender: Sender,
+    ) -> Result<(), ApiError> {
+        self.call_ok(
+            "deleteAllRecentMessageReactionsFromSender",
+            json!({
+                "chat_id": chat_id,
+                "sender_id": sender.to_json(),
+            }),
+        )
+        .await
+    }
+
+    /// 取消置顶（`unpinChatMessage`）：基础群 / 超级群需要「置顶消息」权限。
+    pub async fn unpin(&self, chat_id: i64, message_id: i64) -> Result<(), ApiError> {
+        self.call_ok(
+            "unpinChatMessage",
+            json!({ "chat_id": chat_id, "message_id": message_id }),
         )
         .await
     }

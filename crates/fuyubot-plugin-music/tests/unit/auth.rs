@@ -342,6 +342,27 @@ fn config_string_is_used_as_the_cookie() {
 }
 
 #[test]
+fn youtube_cookie_is_read() {
+    let _guard = AUTH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    clear_config();
+    let dir = temp_plugins_dir("third-platforms");
+
+    set_config(CONFIG_YOUTUBE, r#""SAPISID=abc; SID=def""#);
+    let auth = load(fake_host(), &dir);
+    let youtube = auth.youtube.expect("youtube cookie 应当读出来");
+    assert!(youtube.is_configured());
+    assert_eq!(youtube.cookie, "SAPISID=abc; SID=def");
+
+    // 旧文件不影响这几家：没配就是匿名。
+    clear_config();
+    let auth = load(fake_host(), &dir);
+    assert!(auth.youtube.is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn non_string_config_is_ignored_and_falls_back() {
     let _guard = AUTH_TEST_LOCK
         .lock()

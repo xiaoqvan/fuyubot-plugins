@@ -11,45 +11,103 @@ use crate::api::{Sender, url_row};
 use crate::flow;
 use crate::log;
 use crate::runtime::Runtime;
-use crate::store::LimitMode;
+use crate::store::{GroupConfig, LimitMode};
 
-/// 四个开关的展示文案。
-const TOGGLES: [(&str, &str, &str, &str); 4] = [
-    (
-        "ai_review_enabled",
-        "AI深度审核：对未部分命中关键词的消息进行AI审查",
-        "✅ AI深度审核已开启",
-        "❌ AI深度审核已关闭",
-    ),
-    (
-        "check_new_member",
-        "新用户检查：新成员加入时使用AI检查名称和简介是否含广告",
-        "✅ 新用户检查已开启",
-        "❌ 新用户检查已关闭",
-    ),
-    (
-        "spam_tips",
-        "垃圾信息提示：检测到广告时在群内发送提示消息",
-        "✅ 垃圾信息提示已开启",
-        "❌ 垃圾信息提示已关闭",
-    ),
-    (
-        "like_guard_enabled",
-        "自动点赞机器人：连续回应 5 条消息的账号会被封禁回应权限",
-        "✅ 自动点赞机器人拦截已开启",
-        "❌ 自动点赞机器人拦截已关闭",
-    ),
+/// 一个 `/adconfig` 开关：名字、说明、开启 / 关闭回执，以及读 / 写函数。
+///
+/// 用函数指针而不是 `match`，是为了新增开关时只改这一张表——状态页、切换、
+/// 「未知配置项」里的可用列表都从它来，不会再出现「加了开关忘了改 match」。
+struct Toggle {
+    name: &'static str,
+    description: &'static str,
+    on: &'static str,
+    off: &'static str,
+    get: fn(&GroupConfig) -> bool,
+    set: fn(&mut GroupConfig, bool),
+}
+
+/// 全部开关（顺序就是 `/adconfig` 状态页的顺序）。
+const TOGGLES: [Toggle; 8] = [
+    Toggle {
+        name: "ai_review_enabled",
+        description: "AI深度审核：对未部分命中关键词的消息进行AI审查",
+        on: "✅ AI深度审核已开启",
+        off: "❌ AI深度审核已关闭",
+        get: |config: &GroupConfig| config.ai_review_enabled,
+        set: |config: &mut GroupConfig, value| config.ai_review_enabled = value,
+    },
+    Toggle {
+        name: "check_new_member",
+        description: "新用户检查：新成员加入时使用AI检查名称和简介是否含广告",
+        on: "✅ 新用户检查已开启",
+        off: "❌ 新用户检查已关闭",
+        get: |config: &GroupConfig| config.check_new_member,
+        set: |config: &mut GroupConfig, value| config.check_new_member = value,
+    },
+    Toggle {
+        name: "spam_tips",
+        description: "垃圾信息提示：检测到广告时在群内发送提示消息",
+        on: "✅ 垃圾信息提示已开启",
+        off: "❌ 垃圾信息提示已关闭",
+        get: |config: &GroupConfig| config.spam_tips,
+        set: |config: &mut GroupConfig, value| config.spam_tips = value,
+    },
+    Toggle {
+        name: "like_guard_enabled",
+        description: "自动点赞机器人：连续回应 5 条消息的账号会被封禁回应权限",
+        on: "✅ 自动点赞机器人拦截已开启",
+        off: "❌ 自动点赞机器人拦截已关闭",
+        get: |config: &GroupConfig| config.like_guard_enabled,
+        set: |config: &mut GroupConfig, value| config.like_guard_enabled = value,
+    },
+    Toggle {
+        name: "delete_join_message",
+        description: "入群提示·成员加入：删除「成员加入」的服务消息（被添加 / 审批通过）",
+        on: "✅ 已开启：成员加入的提示会被删除",
+        off: "❌ 已关闭：成员加入的提示会保留",
+        get: |config: &GroupConfig| config.delete_join_message,
+        set: |config: &mut GroupConfig, value| config.delete_join_message = value,
+    },
+    Toggle {
+        name: "delete_join_community_message",
+        description: "入群提示·社区加入：删除「成员通过社区加入」的服务消息",
+        on: "✅ 已开启：通过社区加入的提示会被删除",
+        off: "❌ 已关闭：通过社区加入的提示会保留",
+        get: |config: &GroupConfig| config.delete_join_community_message,
+        set: |config: &mut GroupConfig, value| config.delete_join_community_message = value,
+    },
+    Toggle {
+        name: "delete_join_invite_message",
+        description: "入群提示·邀请链接加入：删除「成员通过邀请链接加入」的服务消息",
+        on: "✅ 已开启：通过邀请链接加入的提示会被删除",
+        off: "❌ 已关闭：通过邀请链接加入的提示会保留",
+        get: |config: &GroupConfig| config.delete_join_invite_message,
+        set: |config: &mut GroupConfig, value| config.delete_join_invite_message = value,
+    },
+    Toggle {
+        name: "unpin_channel_pins",
+        description: "取消频道置顶：群绑定频道自动转发并被 Telegram 自动置顶时取消置顶",
+        on: "✅ 已开启：绑定频道的置顶会被自动取消",
+        off: "❌ 已关闭：绑定频道的置顶会保留",
+        get: |config: &GroupConfig| config.unpin_channel_pins,
+        set: |config: &mut GroupConfig, value| config.unpin_channel_pins = value,
+    },
 ];
 
 /// 把 `/adconfig` 的参数归一化成配置键。
 ///
-/// `like_guard` 是 `like_guard_enabled` 的短别名（少敲几个字符），
-/// 其余参数原样交给下面的匹配。
+/// 短别名（`like_guard`、`join` / `join_community` / `join_invite` …）在这里
+/// 归一化成完整配置键，其余参数原样交给下面的匹配。
 fn config_key(word: &str) -> &str {
-    if word == "like_guard" {
-        "like_guard_enabled"
-    } else {
-        word
+    match word {
+        "like_guard" => "like_guard_enabled",
+        // 入群提示的三个开关：短别名，少敲几个字符。
+        "join" => "delete_join_message",
+        "join_community" => "delete_join_community_message",
+        "join_invite" => "delete_join_invite_message",
+        // 取消频道置顶。
+        "unpin" | "unpin_channel" => "unpin_channel_pins",
+        other => other,
     }
 }
 
@@ -149,11 +207,11 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &V
         return;
     }
 
-    // 三个开关
-    let Some((name, _, on, off)) = TOGGLES.iter().find(|(name, _, _, _)| *name == key) else {
+    // 开关：`TOGGLES` 里没有的名字就是未知配置项。
+    let Some(toggle) = TOGGLES.iter().find(|toggle| toggle.name == key) else {
         let available = TOGGLES
             .iter()
-            .map(|(name, _, _, _)| *name)
+            .map(|toggle| toggle.name)
             .collect::<Vec<_>>()
             .join("、");
         flow::send_tip(
@@ -169,43 +227,39 @@ pub async fn handle(rt: &Runtime, command: &Command, sender: Sender, message: &V
         .await;
         return;
     };
-    let current = match *name {
-        "ai_review_enabled" => config.ai_review_enabled,
-        "check_new_member" => config.check_new_member,
-        "like_guard_enabled" => config.like_guard_enabled,
-        _ => config.spam_tips,
-    };
-    let next = !current;
+    let next = !(toggle.get)(&config);
     rt.db
-        .update_config(chat_id, |config| match *name {
-            "ai_review_enabled" => config.ai_review_enabled = next,
-            "check_new_member" => config.check_new_member = next,
-            "like_guard_enabled" => config.like_guard_enabled = next,
-            _ => config.spam_tips = next,
-        })
+        .update_config(chat_id, |config| (toggle.set)(config, next))
         .await;
-    flow::send_tip(rt, chat_id, if next { on } else { off }, reply_to, 10).await;
-    log::info(&rt.host, format!("群 {chat_id} {name} 已切换为 {next}"));
+    flow::send_tip(
+        rt,
+        chat_id,
+        if next { toggle.on } else { toggle.off },
+        reply_to,
+        10,
+    )
+    .await;
+    log::info(
+        &rt.host,
+        format!("群 {chat_id} {} 已切换为 {next}", toggle.name),
+    );
 }
 
 /// 状态页。
 async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Value) {
     let config = rt.db.config_or_default(chat_id).await;
     let mut body = String::from("📋 **当前广告屏蔽配置：**\n\n");
-    for (name, description, _, _) in TOGGLES {
-        let value = match name {
-            "ai_review_enabled" => config.ai_review_enabled,
-            "check_new_member" => config.check_new_member,
-            "like_guard_enabled" => config.like_guard_enabled,
-            _ => config.spam_tips,
-        };
+    for toggle in &TOGGLES {
+        let value = (toggle.get)(&config);
         body.push_str(&format!(
-            "{} `{name}`\n  {description}\n  → 当前: {}\n\n",
+            "{} `{}`\n  {}\n  → 当前: {}\n\n",
             if value { "✅" } else { "⬜" },
+            toggle.name,
+            toggle.description,
             if value { "开启" } else { "关闭" }
         ));
     }
-    body.push_str("ℹ️ **自动点赞判定：**\n  连续回应 5 条消息的账号会被封禁回应权限（被删除的消息不计；同一账号 30 分钟内只处置一次）\n\n");
+    body.push_str("ℹ️ **自动点赞判定：**\n  连续回应 5 条消息的账号会被封禁回应权限，并清理它已经点出去的回应（被删除的消息不计；同一账号 30 分钟内只处置一次）\n\n");
     body.push_str("🤖 **AI 接口配置：**\n");
     body.push_str(&ai::ai_status_line(rt, chat_id, Some(&config)).await);
     body.push_str("\n\n🛡️ **广告处置模式：**\n");
@@ -214,7 +268,7 @@ async fn show_status(rt: &Runtime, chat_id: i64, _sender: Sender, message: &Valu
         config.limit_mode.as_str(),
         config.spam_tips_meg_delay
     ));
-    body.push_str("**开关管理：**\n发送 `/adconfig <配置项>` 切换开关\n可用命令：/adconfig limit ban|mute、/adconfig delay <秒数>、/adconfig like_guard");
+    body.push_str("**开关管理：**\n发送 `/adconfig <配置项>` 切换开关\n可用命令：/adconfig limit ban|mute、/adconfig delay <秒数>、/adconfig like_guard、/adconfig join|join_community|join_invite、/adconfig unpin");
 
     // 私聊配置链接：需要 Bot 自己的用户名
     let username = crate::simplify::my_usernames(&rt.host)

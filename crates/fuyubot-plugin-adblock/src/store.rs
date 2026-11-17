@@ -109,6 +109,14 @@ pub struct GroupConfig {
     pub check_new_member: bool,
     /// 自动点赞机器人拦截（群管理员用 `/adconfig like_guard` 开启）。默认关闭。
     pub like_guard_enabled: bool,
+    /// 删除「成员加入」的入群提示（`messageChatAddMembers` / `messageChatJoinByRequest`）。
+    pub delete_join_message: bool,
+    /// 删除「成员通过社区加入」的入群提示（`messageChatJoinFromCommunity`）。
+    pub delete_join_community_message: bool,
+    /// 删除「成员通过邀请链接加入」的入群提示（`messageChatJoinByLink`）。
+    pub delete_join_invite_message: bool,
+    /// 取消群绑定频道的自动置顶（`/adconfig unpin`）。默认关闭。
+    pub unpin_channel_pins: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_api_key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -131,6 +139,10 @@ impl Default for GroupConfig {
             ai_review_enabled: false,
             check_new_member: false,
             like_guard_enabled: false,
+            delete_join_message: false,
+            delete_join_community_message: false,
+            delete_join_invite_message: false,
+            unpin_channel_pins: false,
             ai_api_key: None,
             ai_base_url: None,
             ai_model: None,
@@ -245,6 +257,11 @@ impl GroupConfig {
             ai_review_enabled: bool_of(doc, "ai_review_enabled").unwrap_or(false),
             check_new_member: bool_of(doc, "check_new_member").unwrap_or(false),
             like_guard_enabled: bool_of(doc, "like_guard_enabled").unwrap_or(false),
+            delete_join_message: bool_of(doc, "delete_join_message").unwrap_or(false),
+            delete_join_community_message: bool_of(doc, "delete_join_community_message")
+                .unwrap_or(false),
+            delete_join_invite_message: bool_of(doc, "delete_join_invite_message").unwrap_or(false),
+            unpin_channel_pins: bool_of(doc, "unpin_channel_pins").unwrap_or(false),
             ai_api_key: doc
                 .get("ai_api_key")
                 .and_then(Value::as_str)

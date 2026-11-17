@@ -100,7 +100,9 @@ impl Agent {
             // 大文件在慢速链路上会被硬切断。分项限制见常量。
             .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
             .read_timeout(DOWNLOAD_READ_TIMEOUT)
-            .gzip(true)
+            // 媒体下载不开 gzip：Range 的字节偏移必须和服务器一致，
+            // 而且 googlevideo 偶尔会给一个解不开的 Content-Encoding。
+            .gzip(false)
             .build()?;
         Ok(Self { api, download })
     }
@@ -129,18 +131,48 @@ pub fn agent() -> Agent {
     }
 }
 
+/// GET 的总尝试次数（含首次）。
+///
+/// 只对**建连阶段**的失败重试：DNS 抖动、建连超时、TLS 握手被掐断。
+/// 短链解析整条链路上就这一次请求，一次抖动就让用户只看到「❌ 请求失败」太脆。
+const GET_ATTEMPTS: u32 = 2;
+
 /// GET，带一组请求头，4xx/5xx 也当正常响应返回。
 pub async fn get(agent: &Agent, url: &str, headers: &[(&str, &str)]) -> Result<Reply, String> {
+    let mut attempt = 1;
+    loop {
+        match get_once(agent, url, headers).await {
+            Ok(reply) => return Ok(reply),
+            Err(error) => {
+                // 已经收到响应之后的失败不重放：body 读了一半没法重来。
+                let retryable = error.is_connect() || error.is_timeout();
+                if !retryable || attempt >= GET_ATTEMPTS {
+                    return Err(format!("请求失败：{}", describe(&error)));
+                }
+                crate::log::warn(&format!(
+                    "← GET 失败（第 {attempt} 次），重试：{}",
+                    describe(&error)
+                ));
+                tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt))).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// 发一次 GET（不重试）。
+async fn get_once(
+    agent: &Agent,
+    url: &str,
+    headers: &[(&str, &str)],
+) -> Result<Reply, reqwest::Error> {
     crate::log::debug(&format!("→ GET {}", crate::log::redact_url(url)));
     let started = std::time::Instant::now();
     let mut request = agent.api.get(url);
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|error| format!("请求失败：{error}"))?;
+    let response = request.send().await?;
     let reply = read(response).await;
     crate::log::debug(&format!(
         "← {}（{} ms，{} 字节）",
@@ -149,6 +181,25 @@ pub async fn get(agent: &Agent, url: &str, headers: &[(&str, &str)]) -> Result<R
         reply.body.len()
     ));
     Ok(reply)
+}
+
+/// 把 `reqwest::Error` 的整条 `source()` 链摊平。
+///
+/// `Display` 只有「error sending request for url (…)」这一句，真正的失败原因
+/// （DNS 解析失败 / 建连超时 / TLS 握手失败 / 连接被重置）全都藏在 `source()` 里。
+/// 不摊开的话，用户看到的和日志里留的都只是一句没有信息量的话。
+fn describe(error: &reqwest::Error) -> String {
+    let mut text = error.to_string();
+    let mut cause = std::error::Error::source(error);
+    while let Some(inner) = cause {
+        let detail = inner.to_string();
+        if !detail.is_empty() && !text.contains(detail.as_str()) {
+            text.push('：');
+            text.push_str(&detail);
+        }
+        cause = inner.source();
+    }
+    crate::log::shorten(&text, 280)
 }
 
 /// POST 表单（网易云 eapi 固定是 `params=<hex>`）。
@@ -168,7 +219,7 @@ pub async fn post_form(
         .form(form)
         .send()
         .await
-        .map_err(|error| format!("请求失败：{error}"))?;
+        .map_err(|error| format!("请求失败：{}", describe(&error)))?;
     let reply = read(response).await;
     crate::log::debug(&format!(
         "← {}（{} ms，{} 字节）",
@@ -179,18 +230,32 @@ pub async fn post_form(
     Ok(reply)
 }
 
-/// POST 原始 JSON 体。
+/// POST 原始 JSON 体（20 秒总超时）。
 pub async fn post_json(
     agent: &Agent,
     url: &str,
     body: &[u8],
     headers: &[(&str, &str)],
 ) -> Result<Reply, String> {
+    post_json_timeout(agent, url, body, headers, TIMEOUT).await
+}
+
+/// POST 原始 JSON 体，可覆盖总超时。
+///
+/// 需要长超时的 JSON POST（例如外部进程要下载几十秒到几分钟）。
+pub async fn post_json_timeout(
+    agent: &Agent,
+    url: &str,
+    body: &[u8],
+    headers: &[(&str, &str)],
+    timeout: Duration,
+) -> Result<Reply, String> {
     crate::log::debug(&format!("→ POST(json) {}", crate::log::redact_url(url)));
     let started = std::time::Instant::now();
     let mut request = agent
         .api
         .post(url)
+        .timeout(timeout)
         .header("Content-Type", "application/json; charset=utf-8");
     for (name, value) in headers {
         request = request.header(*name, *value);
@@ -199,7 +264,7 @@ pub async fn post_json(
         .body(body.to_vec())
         .send()
         .await
-        .map_err(|error| format!("请求失败：{error}"))?;
+        .map_err(|error| format!("请求失败：{}", describe(&error)))?;
     let reply = read(response).await;
     crate::log::debug(&format!(
         "← {}（{} ms，{} 字节）",
@@ -394,6 +459,143 @@ pub fn candidate_dirs(plugins_dir: &Path) -> Vec<PathBuf> {
         dirs.push(temp);
     }
     dirs
+}
+
+/// googlevideo 的整段请求会被限速到 ~10 KB/s，Range 分段则正常（实测 250 KB/s）。
+/// 每段 2 MiB：3 分钟的 m4a 大约 3~4 个请求，既快又不会把单请求拖太久。
+const RANGE_CHUNK: u64 = 2 * 1024 * 1024;
+
+/// 分段下载：按 Range 一块一块拉，边拉边写。
+///
+/// YouTube 的音频直链没有 ratebypass，一次要完整文件会被限速；普通音频
+/// 普通链接用 download 就行。总大小由 player 的 contentLength 给（0 表示未知，
+/// 这时退回整段下载）。
+pub async fn download_ranged(
+    agent: &Agent,
+    url: &str,
+    headers: &[(&str, &str)],
+    dir: &Path,
+    extension: &str,
+    total: u64,
+    cancel: &AtomicBool,
+) -> Result<PathBuf, String> {
+    if total == 0 {
+        return download(agent, url, headers, dir, extension, cancel).await;
+    }
+    crate::log::debug(&format!(
+        "→ 分段下载 {}（{total} 字节）",
+        crate::log::redact_url(url)
+    ));
+    let started = std::time::Instant::now();
+    tokio::fs::create_dir_all(dir)
+        .await
+        .map_err(|error| format!("建不了缓存目录 {}：{error}", dir.display()))?;
+    let (path, mut file) = create_unique(dir, url, extension).await?;
+    let mut written = 0u64;
+    while written < total {
+        if cancel.load(Ordering::SeqCst) {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err("插件正在停止，下载已取消".to_owned());
+        }
+        let end = written.saturating_add(RANGE_CHUNK - 1).min(total - 1);
+        let range = format!("bytes={written}-{end}");
+        let mut request = agent.download.get(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = match request.header("Range", range.as_str()).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err(format!("分段请求失败：{error}"));
+            }
+        };
+        let status = response.status().as_u16();
+        if status != 206 && status != 200 {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err(format!("分段下载被拒：HTTP {status}"));
+        }
+        if status == 200 && written > 0 {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err("服务器忽略了 Range 请求，无法续传".to_owned());
+        }
+        let mut response = response;
+        let before = written;
+        loop {
+            if cancel.load(Ordering::SeqCst) {
+                drop(file);
+                let _ = tokio::fs::remove_file(&path).await;
+                return Err("插件正在停止，下载已取消".to_owned());
+            }
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Err(error) = file.write_all(&chunk).await {
+                        drop(file);
+                        let _ = tokio::fs::remove_file(&path).await;
+                        return Err(format!("写 {} 失败：{error}", path.display()));
+                    }
+                    written += chunk.len() as u64;
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    drop(file);
+                    let _ = tokio::fs::remove_file(&path).await;
+                    return Err(format!("读分段流失败：{error}"));
+                }
+            }
+        }
+        if written == before {
+            drop(file);
+            let _ = tokio::fs::remove_file(&path).await;
+            return Err("分段下载返回了空响应".to_owned());
+        }
+        // 服务器不接受 Range、直接回整份文件时，这一轮已经写完了。
+        if status == 200 {
+            break;
+        }
+    }
+    drop(file);
+    let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+    if size != total {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(format!("下载不完整：{size}/{total} 字节"));
+    }
+    crate::log::debug(&format!(
+        "← 分段下载完成 {}（{} ms）",
+        path.display(),
+        started.elapsed().as_millis()
+    ));
+    Ok(path)
+}
+
+/// 在 dir 下建一个不撞名的文件。
+async fn create_unique(
+    dir: &Path,
+    url: &str,
+    extension: &str,
+) -> Result<(PathBuf, tokio::fs::File), String> {
+    let mut last = String::from("未知错误");
+    for attempt in 0..UNIQUE_ATTEMPTS {
+        let name = match attempt {
+            0 => cache_name(url, extension),
+            n => with_suffix(&cache_name(url, extension), extension, n),
+        };
+        let path = dir.join(name);
+        match tokio::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .await
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) => last = format!("建 {} 失败：{error}", path.display()),
+        }
+    }
+    Err(last)
 }
 
 #[cfg(test)]

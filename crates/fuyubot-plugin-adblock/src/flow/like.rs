@@ -7,9 +7,10 @@
 //! 最近消息不另存一份：cache 本来就有每群最近 20 条（recent_ids），被删除的消息
 //! 也会从那里摘掉，所以删掉的消息不会把连续段隔开。
 //!
-//! 处置只做一件事：setChatMemberStatus -> chatMemberStatusRestricted，并且
-//! can_react_to_messages = false（见 api::Td::restrict）。它同时挡住发言与表情，
-//! 也就是需求里的「回应权限封禁」；管理员点提示上的「解除限制」可以恢复。
+//! 处置做两件事：setChatMemberStatus -> chatMemberStatusRestricted（
+//! can_react_to_messages = false，见 api::Td::restrict，同时挡住发言与表情），
+//! 再把这个人已经点出去的回应一起清掉（deleteAllRecentMessageReactionsFromSender）。
+//! 管理员点提示上的「解除限制」可以恢复权限，被删掉的回应不会回来。
 //!
 //! 默认关闭：只有群管理员在 /adconfig 里打开 like_guard_enabled 之后才会统计与处置。
 
@@ -129,6 +130,21 @@ async fn punish(
         return;
     }
 
+    // 封禁回应权限只是「以后不能再回应」；已经点出去的表情还挂在别人的消息上，
+    // 一起清掉。TDLib `deleteAllRecentMessageReactionsFromSender`（1.8.69+）是
+    // 管理员能力（要「删除消息」权限），只支持基础群 / 超级群；清理失败不回滚
+    // 处置，记一行 debug 就够了。
+    let reactions_cleared = match rt.td.delete_reactions_from_sender(chat_id, sender).await {
+        Ok(()) => true,
+        Err(error) => {
+            log::debug(
+                &rt.host,
+                format!("[自动点赞] 清理 {user_id} 的回应失败（群 {chat_id}）：{error}"),
+            );
+            false
+        }
+    };
+
     let detail = hit.detail();
     rt.db
         .add_ban_record(
@@ -143,16 +159,26 @@ async fn punish(
         .await;
     log::info(
         &rt.host,
-        format!("[自动点赞] 群 {chat_id} 用户 {user_id} 已封禁回应权限（{detail}）"),
+        format!(
+            "[自动点赞] 群 {chat_id} 用户 {user_id} 已封禁回应权限（{detail}）{}",
+            if reactions_cleared {
+                "，并已清理其回应"
+            } else {
+                ""
+            }
+        ),
     );
 
     let member = rt.td.sender_mention(sender, true).await;
     let chat_mention = rt.td.sender_mention(Sender::Chat(chat_id), true).await;
     let user_label = text::with_id(&member, user_id);
     let chat_label = text::with_id(&chat_mention, chat_id);
-    let body = format!(
+    let mut body = format!(
         "#ReactionBot\n**Group**: {chat_label}\n**User**: {user_label}\n**Reason**: 自动点赞（{detail}）\n**Action**: 已封禁回应权限"
     );
+    if reactions_cleared {
+        body.push_str("\n**Cleanup**: 已删除该用户在本群的回应");
+    }
     let member_query = member_param(sender);
     let buttons = vec![
         callback_row("解除限制", format!("unmute?cid={chat_id}&{member_query}")),
@@ -183,6 +209,9 @@ async fn punish(
         && let Some(link) = rt.td.message_link(channel, id).await
     {
         tips.push_str(&format!("\n**LOG CHANNEL**: [Link]({link})"));
+    }
+    if reactions_cleared {
+        tips.push_str("\n**Cleanup**: 已删除该用户在本群的回应");
     }
     let delete_after =
         (config.spam_tips && config.spam_tips_meg_delay > 0).then_some(config.spam_tips_meg_delay);

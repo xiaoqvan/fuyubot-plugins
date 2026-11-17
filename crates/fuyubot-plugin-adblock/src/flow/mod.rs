@@ -8,9 +8,11 @@
 //! 即可（`&Arc<T>` 会自动降级成 `&T`）。
 
 pub mod gky;
+pub mod join;
 pub mod like;
 pub mod message;
 pub mod new_member;
+pub mod pin;
 pub mod profile;
 pub mod records;
 pub mod sweeper;

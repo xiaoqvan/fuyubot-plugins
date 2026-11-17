@@ -36,3 +36,4 @@ fuyubot.toml
 /docs/
 crates/vue-template-html/docs/
 crates/fuyubot-plugin-html2img/docs/
+qishui_qr*.png

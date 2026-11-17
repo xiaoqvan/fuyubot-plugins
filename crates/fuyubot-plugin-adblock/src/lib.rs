@@ -10,6 +10,8 @@
 //! | `updateNewMessage` | 群里的每条消息 | 记录消息索引 + 缓存历史 → 命中关键词 / 文件 / 贴纸 / 转发黑名单 → 删除并禁言或封禁 |
 //! | | `messageContact` / 引用 / 全局触发词 | 交给 AI 深度审核（OpenAI 兼容接口） |
 //! | `updateNewCallbackQuery` | 日志频道里的按钮 | unban / unmute / ban / 贴纸集 / 文件 / 图片 / 复审 |
+//! | 入群提示 | `messageChatAddMembers` / `messageChatJoin*` | 群配置开启时撤回入群提示（与广告检测无关） |
+//! | 取消频道置顶 | `is_pinned` / `messagePinMessage` / `updateMessageIsPinned` | 群配置开启时撤销绑定频道被 Telegram 自动置顶的消息 |
 //! | `updateChatMember` | 新成员入群 | 名称与简介查黑名单 + AI 审核，命中即封禁或「禁言待复审」 |
 //! | `updateUser` | 入群 24h 内改资料 | 重新审核资料（带节流） |
 //! | `updateMessageInteractionInfo` | 群里有人给消息点表情 | 自动点赞统计：连续回应 5 条消息的账号封禁回应权限（群配置开启后） |
@@ -182,6 +184,10 @@ impl Plugin for AdblockPlugin {
             "updateMessageInteractionInfo",
             |rt, update| async move { flow::like::handle(&rt, &update).await },
         )?;
+
+        self.listen(&runtime, "updateMessageIsPinned", |rt, update| async move {
+            flow::pin::handle_pinned_update(&rt, &update).await
+        })?;
 
         // 周期扫描 + 启动时立即来一轮（原版 `immediate: true`）。
         let sweeper = Arc::clone(&runtime);

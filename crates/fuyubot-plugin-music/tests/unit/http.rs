@@ -119,3 +119,17 @@ async fn a_cancelled_download_leaves_no_partial_file() {
     assert!(!error.is_empty());
     let _ = tokio::fs::remove_dir_all(&dir).await;
 }
+#[tokio::test]
+async fn connect_failure_keeps_its_cause_in_the_message() {
+    // 127.0.0.1:1 一定连不上（连接被拒绝），不需要外网。
+    let error = match get(&agent(), "http://127.0.0.1:1/x", &[]).await {
+        Ok(reply) => panic!("连不上不该成功：HTTP {}", reply.status),
+        Err(error) => error,
+    };
+    assert!(error.starts_with("请求失败："), "{error}");
+    // 不能只剩「error sending request for url (...)」：起因要摊平在冒号后面。
+    assert!(
+        error.len() > "请求失败：error sending request for url (http://127.0.0.1:1/x)".len(),
+        "错误里没有带上真实起因：{error}"
+    );
+}

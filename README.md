@@ -12,7 +12,7 @@
 | [fuyubot-plugin-html2img](crates/fuyubot-plugin-html2img/) | `fuyubot.html2img` | HTML / Vue 转图片服务：把 HTML、CSS 或 Vue 模板渲染成 PNG / JPEG（默认 JPEG）并返回本地文件路径（hyper-render，纯 Rust，无 Chromium） |
 | [fuyubot-plugin-help](crates/fuyubot-plugin-help/) | `fuyubot.help` | **替代框架内置 `/help`**：读取宿主命令表（`fuyubot.host.commands`）**按插件分组**渲染成图片发送（`/help text` 出文字版），按命令的 `role` / `scopes` / `hidden` 过滤；同 id；**硬依赖 `fuyubot.html2img`** |
 | [fuyubot-plugin-douyin](crates/fuyubot-plugin-douyin/) | `fuyubot.douyin` | 抖音解析：`/dy` 命令 + 聊天里自动识别分享链接，发去水印视频 / 图集；**可选** `fuyubot.sqlite` 缓存文件 id |
-| [fuyubot-plugin-music](crates/fuyubot-plugin-music/) | `fuyubot.music` | 网易云 / 汽水音乐：`/music163`、`/soda` 搜索与解析，按音质发音频（汽水 UGC 发视频）；**可选** `fuyubot.sqlite` 缓存文件 id |
+| [fuyubot-plugin-music](crates/fuyubot-plugin-music/) | `fuyubot.music` | 网易云 / 汽水 / **YouTube Music**：`/music163`、`/soda`、`/ytmusic` 搜索与解析，按音质发音频（汽水 UGC 发视频）；**可选** `fuyubot.sqlite` 缓存文件 id |
 | [fuyubot-plugin-message-log](crates/fuyubot-plugin-message-log/) | `fuyubot.message-log` | 消息日志：订阅 `updateNewMessage`，把文本 / 媒体 / 回复 / 转发 / 话题拼成一行交给宿主日志（控制台 / 日志页 / `logs/fuyubot.log`） |
 
 库 crate（不是插件、不依赖 `fuyubot-abi`）：

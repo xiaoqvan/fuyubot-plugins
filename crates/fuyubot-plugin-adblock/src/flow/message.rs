@@ -47,6 +47,19 @@ pub async fn handle(rt: &Runtime, update: &Value) {
         return;
     }
 
+    // 入群提示：群配置要求删除时直接撤回，不再进索引 / 命令 / 检测链路。
+    if flow::join::handle(rt, message).await {
+        return;
+    }
+
+    // 群绑定频道自动转发过来的帖子：Telegram 会自动置顶，这里撤掉。
+    flow::pin::handle_channel_post(rt, message).await;
+
+    // 置顶服务消息：绑定频道的置顶同样撤掉。
+    if flow::pin::handle_pin_message(rt, message).await {
+        return;
+    }
+
     // 私聊里的 AI 配置流程：命中就消费掉这条消息。
     if flow::is_private(chat_id) && crate::commands::ai_config::consume_private(rt, message).await {
         return;

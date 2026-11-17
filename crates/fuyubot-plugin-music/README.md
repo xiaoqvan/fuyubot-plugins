@@ -1,9 +1,9 @@
 # fuyubot-plugin-music
 
-FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音乐**，只做三件事——
-搜索、解析分享链接、按指定音质发音频；汽水还支持 **UGC 音乐视频**分享
-（发视频，文案格式与抖音插件一致）。本仓库（`fuyubot-plugins`）把它和其余七个
-插件一起按 **ABI v6** 编译、打成 bundle。
+FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音乐 + YouTube Music**，
+只做三件事——搜索、解析分享链接、按指定音质发音频；汽水还支持
+**UGC 音乐视频**分享（发视频，文案格式与抖音插件一致）。YouTube Music 走 InnerTube 直接取流。
+本仓库（`fuyubot-plugins`）把它和其余七个插件一起按 **ABI v6** 编译、打成 bundle。
 
 ```
 /music163 晴天              ──▶ 搜索结果列表（带 ID）
@@ -11,14 +11,20 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 /soda     <链接|ID> lossless ──▶ 取流 ──▶ （加密则解密）──▶ 发音频
 /soda     <UGC 视频链接>       ──▶ 分享页 ──▶ 发视频
 
-聊天里的分享链接（music.163.com / 163cn.tv / qishui.com / qishui.douyin.com）
+/ytmusic  <链接|ID> [音质]    ──▶ InnerTube 取流 ──▶ 发音频
+
+聊天里的分享链接（music.163.com / 163cn.tv / qishui.com / qishui.douyin.com /
+music.youtube.com）
         ──▶ 自动按默认音质解析
+
+普通的 youtu.be / youtube.com 视频链接不会自动抢，用 /ytmusic 显式解析
 ```
 
 - 插件 id：`fuyubot.music`，**ABI v6**（`fuyubot-abi` 0.1.3+ / FuyuBot 0.1.4+）
 - 产出：`fuyubot_plugin_music.{dll,so,dylib}`
 - 只在**鉴权**与**解密**上花力气：网易云 eapi（AES-128-ECB + MD5），
-  汽水 `play_auth`（spade）+ MP4/CENC（AES-128-CTR）
+  汽水 `play_auth`（spade）+ MP4/CENC（AES-128-CTR）；YouTube 用 InnerTube
+  的 ANDROID_VR 客户端（无 PO token / 无签名解密）。
 - **全异步**：插件自带 tokio 多线程 runtime，HTTP 走 reqwest 0.13 async，下载流式落盘
 - **软依赖 `fuyubot.sqlite`**：装了就把发送成功后的 TDLib 文件 id 缓存下来，
   同一个「音乐 id + 音质」下次直接用文件 id 发，不再请求接口、不再下载
@@ -79,6 +85,8 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 | 汽水歌曲 | `soda:<track ID>:<请求音质>` |
 | 汽水 UGC 视频 | `soda-video:<ugc_video_id>` |
 
+| YouTube Music | `ytmusic:<video ID>:<请求音质>` |
+
 - 音质用**用户请求的档位 key**（默认 `exhigh` / `best`），不是接口降级后的实际档位。
 - 发送成功后从 `sendMessage` 的结果里取 `file.id` / 封面 `file.id`，连同标题、歌手、
   专辑、链接、音质文案、码率、大小、时长等文本信息写进 `media_cache`。
@@ -96,9 +104,13 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 | `/music163 <链接或 ID> [音质]` | 解析网易云作品并发音频 | 私聊 / 群 / 频道 | 所有人 |
 | `/soda <关键词>` | 搜汽水，回前 8 条（带 track ID） | 私聊 / 群 / 频道 | 所有人 |
 | `/soda <链接或 ID> [音质]` | 单曲发音频；UGC 视频发视频 | 私聊 / 群 / 频道 | 所有人 |
+| `/ytmusic <关键词>` | 搜 YouTube Music，回前 8 条 | 私聊 / 群 / 频道 | 所有人 |
+| `/ytmusic <链接或 ID> [音质]` | 单曲发音频；播放列表回列表 | 私聊 / 群 / 频道 | 所有人 |
 
-聊天里贴 `music.163.com` / `163cn.tv` / `qishui.com` / `qishui.douyin.com` 的分享链接
-也会自动按默认音质解析；`/` 开头的消息不抢，媒体说明文字里的链接不解析。
+聊天里贴 `music.163.com` / `163cn.tv` / `qishui.com` / `qishui.douyin.com` /
+`music.youtube.com` 的分享链接会自动按默认音质
+解析；普通 `youtu.be` / `youtube.com` 视频链接不自动抢，发 `/ytmusic <链接>` 才解析；
+`/` 开头的消息不抢，媒体说明文字里的链接不解析。
 
 链接支持：完整分享链接、短链（`163cn.tv` / `qishui.douyin.com`，会跟一次重定向）、
 汽水短链的落地页（`music.douyin.com/qishui/share/track?track_id=…` 或
@@ -114,6 +126,7 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 | --- | --- | --- |
 | 网易云 | `standard` / `higher` / `exhigh` / `lossless` / `hires` / `jymaster` / `sky` | `exhigh` |
 | 汽水 | `best` / `hires` / `lossless` / `dolby` / `highest` / `medium` / `low` | `best` |
+| YouTube Music | `best` / `medium` / `low` | `best` |
 
 别名也认：`sq`、`flac`、`无损`、`hr`、`320k`、`hq`、`母带` …
 接口实际给的档位可能比请求的低（版权 / 会员限制），文案里显示的是**实际档位**。
@@ -124,6 +137,19 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 - 汽水的 `medium` / `low` 不会反向给出比请求更高的档位；没有更低档位时取最接近的一档，
   而不是直接跳到最高。
 
+## YouTube Music
+
+- 单曲：`/ytmusic <链接|ID> [音质]`，支持 `music.youtube.com/watch?v=`、
+  `youtu.be/`、`youtube.com/watch?v=`、`/shorts/`、`/live/` 与裸 11 位 ID。
+- 搜索：`/ytmusic <关键词>` 走 music.youtube.com 的 WEB_REMIX 搜索。
+- 播放列表：只回前 10 首的列表（带链接），不发整个列表。
+- 取流按 **ANDROID_VR → IOS → ANDROID** 三个 InnerTube 客户端依次尝试
+  （与 yt-dlp 的多 player_client 策略一致）：不需要 PO token / 签名解密，直接拿
+  itag 139/140 的 m4a 直链。同一 IP 被风控时换客户端也无效，仍需 cookie 或换网络。
+  YouTube 对整段下载会限速到 ~10 KB/s，插件按 2 MiB 分段 `Range` 下载（实测 250 KB/s）。
+- 数据中心 IP 上常见 `Sign in to confirm you're not a bot`：可以配
+  `youtube = "SAPISID=…; …"`（浏览器 Cookie 头）；住宅网络一般不用配。
+
 ## 装
 
 本仓库统一打 bundle（`plugin.json` + `bin/`，`plugin.json` 里 `"abi": 6`）：
@@ -131,8 +157,8 @@ FuyuBot 的音乐解析插件（Rust，cdylib）：**网易云音乐 + 汽水音
 ```bash
 cargo build -p fuyubot-plugin-music --release
 python scripts/package.py --plugin fuyubot-plugin-music \
-    --platform windows-x86_64 --version 0.1.3
-# 解压 dist/fuyubot.music-0.1.3-windows-x86_64.zip 到 plugins/fuyubot.music/
+    --platform windows-x86_64 --version 0.2.0
+# 解压 dist/fuyubot.music-0.2.0-windows-x86_64.zip 到 plugins/fuyubot.music/
 ```
 
 也可以直接装裸动态库：`fuyubot plugin install target/release/fuyubot_plugin_music.dll`。
@@ -142,7 +168,7 @@ python scripts/package.py --plugin fuyubot-plugin-music \
 - **编译期只有 `fuyubot-abi`**：本仓库根 `Cargo.toml` 统一给 path 依赖，并带
   `version = "0.1.3"` 守卫（0.1.2 是 ABI v5，硬不兼容）。
 - **运行期软依赖**：只有 `fuyubot.sqlite`（文件 id 缓存）；没装时插件照常工作。
-  命令表由宿主预置（`fuyubot.host.commands`），两个命令按 `role = user`、
+  命令表由宿主预置（`fuyubot.host.commands`），三个命令按 `role = user`、
   `scopes = private + group + channel` 登记。
 
 **刻意不依赖 `fuyubot-simplify`**（它 `publish = false`，外部插件只能走 path）：
@@ -158,6 +184,9 @@ python scripts/package.py --plugin fuyubot-plugin-music \
 `plugin_start` 的 config 里给——旧文件就从它下面的 `music/` 找。
 
 ## 鉴权
+
+完整的登录 / cookie 获取步骤（YouTube、网易云、汽水扫码）见
+[`LOGIN.md`](LOGIN.md)。汽水扫码登录：`python scripts/qishui_qr_login.py`（抖音 App 扫码，输出 `soda` cookie）。
 
 ### 配置（推荐）
 
@@ -178,6 +207,9 @@ soda_x_medusa = "静态抓包的 x-medusa（可选）"
 soda_user_agent = "LunaPC/3.3.0(359450208)"
 soda_signer_url = "http://127.0.0.1:8899/sign"
 soda_signer_token = "可选：签名器的 Bearer token"
+
+# YouTube（可选）：只为绕开「Sign in to confirm you are not a bot」
+youtube = "SAPISID=…; SID=…; …"
 ```
 
 - `netease` / `soda` → 当成 **Cookie 头**（`MUSIC_U=…; os=pc` 这种）。
@@ -190,7 +222,7 @@ soda_signer_token = "可选：签名器的 Bearer token"
 | 键 | 默认 | 一句话 |
 | --- | --- | --- |
 | `netease` | 空 | 网易云 Cookie 头，不填只能拿匿名可播曲目 |
-| `soda` | 空 | 汽水 Cookie 头，不填只走 Web 侧接口 |
+| `soda` | 空 | 汽水 Cookie 头（用 `scripts/qishui_qr_login.py` 扫码获取） |
 | `soda_device_id` | 自动生成 | 汽水设备号，要和抓包那台机器一致 |
 | `soda_iid` | 自动生成 | 汽水安装 id，同上 |
 | `soda_fp` | 同 `soda_device_id` | 汽水设备指纹 |
@@ -199,6 +231,9 @@ soda_signer_token = "可选：签名器的 Bearer token"
 | `soda_user_agent` | `LunaPC/3.3.0(359450208)` | 汽水客户端 UA |
 | `soda_signer_url` | 空 | 外部签名器地址，比静态头更稳 |
 | `soda_signer_token` | 空 | 签名器的 Bearer token |
+| `youtube` | 空 | YouTube Cookie 头，只为绕开机器人校验 |
+
+
 
 ### 旧文件格式（兼容，建议迁移到上面）
 
@@ -313,10 +348,11 @@ plugins/
 
 ### 大文件
 
-- **下载只落盘，不进内存**：`http::download` 用 reqwest 的 `response.chunk().await`
-  分块写 `tokio::fs` 文件，峰值内存与视频/音频大小无关；块与块之间检查取消标志，
-  `stop` 时能及时中断。建连 15s / 单次读 2h 分项限时，不用「整次传输 5 分钟」的
-  总预算把大文件硬切断。
+- **下载只落盘，不进内存**：`http::download` / `http::download_ranged` 用 reqwest 的
+  `response.chunk().await` 分块写 `tokio::fs` 文件，峰值内存与视频/音频大小无关；
+  块与块之间检查取消标志，`stop` 时能及时中断。建连 15s / 单次读 2h 分项限时，
+  不用「整次传输 5 分钟」的总预算把大文件硬切断。YouTube 音频按 2 MiB 的
+  `Range` 分段下载（整段请求会被 googlevideo 限速），媒体客户端不开 gzip。
 - **加密音频流式解密**：只把 `mdat` 之前的前导 box（几十 KB）读进内存，
   `mdat` 按样本逐块读、解、写；`moov` 在 `mdat` 之后的少数文件才退回整份解密。
   解密整体放 `spawn_blocking`，逐样本检查取消标志。
