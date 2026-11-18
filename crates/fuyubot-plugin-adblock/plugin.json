@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "id": "fuyubot.adblock",
+  "id": "xiaoqvan.adblock",
   "name": "Adblock",
   "version": "0.1.6",
   "kind": "native",
@@ -16,7 +16,7 @@
     "android-x86_64"
   ],
   "depends": [
-    "storage.mongo"
+    "fuyubot.mongo"
   ],
   "description": "广告拦截：关键词 / 文件 / 贴纸 / 转发来源 / AI 审核 / 自动点赞机器人（默认只封禁回应权限，可跟随广告禁言 / 封禁），命中即删除、禁言或封禁，并写入日志频道；可删三种入群提示、取消绑定频道的自动置顶。数据全部存在 MongoDB。",
   "license": "MIT OR Apache-2.0",

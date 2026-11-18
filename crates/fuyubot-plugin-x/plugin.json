@@ -18,6 +18,9 @@
   "optional_depends": [
     "fuyubot.html2img"
   ],
+  "provides": [
+    "xiaoqvan.x.render"
+  ],
   "description": "X / Twitter 文章解析：/x 命令与自动识别链接，图片视频按 Telegram 相册每 10 个一组发送；纯文本文章交给 fuyubot.html2img 出 X 风格卡片，没装就发纯文本。",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/xiaoqvan/fuyubot-plugins/tree/main/crates/fuyubot-plugin-x"

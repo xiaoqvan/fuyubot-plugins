@@ -11,8 +11,8 @@
 #
 # 本仓库一个仓库八个插件，版本各自独立，所以默认按**单插件 tag** 发布：
 #
-#   fuyubot.adblock-v0.1.2     只构建 / 发布 fuyubot-plugin-adblock，版本取 0.1.2
-#   fuyubot.help-v0.1.3        只构建 / 发布 fuyubot-plugin-help，版本取 0.1.3
+#   xiaoqvan.adblock-v0.1.2     只构建 / 发布 fuyubot-plugin-adblock，版本取 0.1.2
+#   xiaoqvan.help-v0.1.3        只构建 / 发布 fuyubot-plugin-help，版本取 0.1.3
 #
 # 旧的整体 tag `v0.1.2` 仍然兼容：该 tag 里的插件全部按 0.1.2 打包，挂到同一个 Release。
 # 单插件 tag 的插件 id → crate 目录由 `crates/*/plugin.json` 里的 `id` 现场匹配；
@@ -33,19 +33,33 @@
 # 就可能换一套 glibc，产物的最低 glibc 基线跟着变。要换基线就显式改这两行。
 # 现状：Linux x86_64 / aarch64 产物的 glibc 基线都是 2.39（Ubuntu 24.04）。
 #
-# ## 只重建某几个平台 / 替换已发布 Release 的资产
+# ## 不可变 Release + 发布 attestation
 #
-# `workflow_dispatch` 三个输入（从 main 派发，用**本文件**的步骤编旧的 tag）：
+# 仓库开了 **immutable releases**（官方商店的上架准则要求「不可变 Release + 发布 attestation」）。
+# 发布姿势固定为：
 #
-#   tag          发布目标 tag。留空 = 触发该运行的 ref。给已有 tag 时只 `--clobber`
-#                覆盖这次产出的同名 zip，Release 上的其它资产与说明不动。
+#   建 draft → 传齐全部平台的 zip → 发布 → `gh release verify <tag>` 自查
+#
+# 发布之后该 tag 的资产与 tag 就锁死，GitHub 同时自动生成发布 attestation。
+# 所以**同一个版本发布后不能再覆盖资产**：要改内容只能升版本号、重新打 tag 再发。
+# 准则生效前的旧 Release（immutable=false）仍允许盖同名 zip，走老路径。
+#
+# ## workflow_dispatch 三个输入
+#
+# 从 main 派发，用**本文件**的步骤编旧 tag 的产物：
+#
+#   tag          发布目标 tag。留空 = 触发该运行的 ref。tag 必须已经在仓库里，
+#                否则 `gh release create` 会把 tag 建在默认分支的错误提交上（脚本先拦一次）。
 #   targets      只建这些平台，逗号分隔，可写精确平台名（`linux-x86_64`）或前缀
 #                （`linux` / `windows` / `macos` / `android` / `desktop`）。留空 = 全部。
+#                选了部分平台时产物只传进 **draft**、不发布：发布后资产补不回来，
+#                等其它平台也建好（再 dispatch 一次，仍落到同一个 draft）再发布。
 #   fuyubot_ref  FuyuBot（运行时仓库）checkout 的 ref，留空 = `master`（它的默认分支）。重建老 ABI 的旧版本
 #                时要给对应 tag，否则旧插件源码编不到新 ABI 上。
 #
-# 例（把某插件 Release 上的 Linux zip 用 Ubuntu 24.04 重编并覆盖）：
-#   gh workflow run release.yml -f tag=fuyubot.help-v0.1.3 -f targets=linux
+# 例（只建 Linux 产物，留在 draft 里等其它平台）：
+#   gh workflow run release.yml -f tag=xiaoqvan.help-v0.1.5 -f targets=linux
+
 name: release
 
 on:
@@ -54,7 +68,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "发布目标 tag（例：fuyubot.help-v0.1.3 / v0.1.1）。留空 = 触发该运行的 ref"
+        description: "发布目标 tag（例：xiaoqvan.help-v0.1.3 / v0.1.1）。留空 = 触发该运行的 ref"
         required: false
         type: string
         default: ""
@@ -85,6 +99,7 @@ jobs:
       plugins: ${{ steps.scope.outputs.plugins }}
       matrix: ${{ steps.scope.outputs.matrix }}
       android: ${{ steps.scope.outputs.android }}
+      full: ${{ steps.scope.outputs.full }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -170,6 +185,8 @@ jobs:
           if not rows:
               rows = [{"platform": "none", "os": "ubuntu-24.04"}]
           android = "true" if keep("android") else "false"
+          # 没选 targets = 全部平台，才允许直接发布；选子集时只进 draft。
+          full = "true" if not selected else "false"
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"tag={tag}\n")
@@ -177,8 +194,9 @@ jobs:
               out.write(f"plugins={plugins}\n")
               out.write(f"matrix={json.dumps(rows)}\n")
               out.write(f"android={android}\n")
+              out.write(f"full={full}\n")
           print(f"发布范围：{plugins}，版本 {version}，tag {tag}")
-          print(f"平台：{[row['platform'] for row in rows]}，android={android}")
+          print(f"平台：{[row['platform'] for row in rows]}，android={android}，full={full}")
           PY
 
   build:
@@ -303,8 +321,7 @@ jobs:
 
   release:
     needs: [prepare, build, android]
-    # 只在这轮**请求的平台全绿**时发：缺平台的半成品不该挂上去（同名 --clobber 会覆盖
-    # 上一次的好产物）。
+    # 只在这轮**请求的平台全绿**时发：缺平台的半成品不该挂上去。
     if: ${{ !cancelled() && needs.build.result == 'success' && (needs.prepare.outputs.android != 'true' || needs.android.result == 'success') }}
     runs-on: ubuntu-24.04
     steps:
@@ -312,13 +329,17 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      # 用 gh 而不是 action-gh-release：已有 Release **只覆盖同名 zip**（--clobber），
-      # 说明、其它平台资产、latest 标记都不动。`targets=linux` 重建时就是这条路径。
+      # 发布按「不可变 Release」的姿势走：建 draft → 传齐资产 → 发布 → 自查 attestation。
+      # 不用 action-gh-release：它没有 draft→publish 这道闸，也没有 `gh release verify`。
       - name: Publish
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          PLUGINS: ${{ needs.prepare.outputs.plugins }}
+          FULL: ${{ needs.prepare.outputs.full }}
+          ANDROID: ${{ needs.prepare.outputs.android }}
+          TARGETS_INPUT: ${{ inputs.targets }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -327,9 +348,57 @@ jobs:
             echo "::error::没有可发布的 zip"
             exit 1
           fi
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$TAG" "${assets[@]}" --title "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --notes "FuyuBot 插件 bundle（契约 v1）：一个插件一个 zip，解压后 plugin.json 在根、动态库在 bin/。"
+
+          # tag 必须已经存在：没有同名 tag 时 `gh release create` 会把 tag 建在默认分支上，
+          # dispatch 重建老版本时那等于把资产挂到一个错误的提交。
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::仓库里没有 tag $TAG：先把 tag 推上去再发布"
+            exit 1
           fi
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            if [[ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isImmutable -q .isImmutable)" == "true" ]]; then
+              echo "::error::$TAG 是不可变 Release，资产与 tag 已锁死；要改内容就升版本号重新打 tag"
+              exit 1
+            fi
+            # 准则生效前的旧 Release（immutable=false）还能盖同名 zip，保持原来的行为。
+            gh release upload "$TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+            echo "::notice::$TAG 是准则生效前的 Release（immutable=false），只覆盖了同名资产，没有 attestation"
+            exit 0
+          fi
+
+          gh release create "$TAG" --draft --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" --notes "FuyuBot 插件 bundle（契约 v1）：一个插件一个 zip，解压后 plugin.json 在根、动态库在 bin/。"
+          gh release upload "$TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+
+          if [[ "$FULL" != "true" ]]; then
+            echo "::notice::只建了部分平台（$TARGETS_INPUT），$TAG 保持 draft：资产补齐后再发布，发布后不可变"
+            exit 0
+          fi
+
+          per_plugin=5
+          if [[ "$ANDROID" == "true" ]]; then per_plugin=7; fi
+          expected=$(( $(wc -w <<< "$PLUGINS") * per_plugin ))
+          if (( ${#assets[@]} != expected )); then
+            echo "::error::资产数 ${#assets[@]} 与预期 $expected 不符（每个插件 $per_plugin 个平台），不发布"
+            exit 1
+          fi
+
+          # 发布这一刻资产与 tag 变不可变，GitHub 同时生成发布 attestation。
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+
+          # 自查一次，别让商店那边的初审才发现 attestation 没生成（偶尔要等几秒）。
+          verified=0
+          for _ in 1 2 3 4 5; do
+            if gh release verify "$TAG" --repo "$GITHUB_REPOSITORY"; then
+              verified=1
+              break
+            fi
+            sleep 10
+          done
+          if (( verified != 1 )); then
+            echo "::error::$TAG 发布后没通过 gh release verify（attestation 缺失或无效）"
+            exit 1
+          fi
+          echo "::notice::$TAG 已发布：不可变 Release + 发布 attestation 自查通过"
+

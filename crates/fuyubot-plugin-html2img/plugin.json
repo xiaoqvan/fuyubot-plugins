@@ -15,6 +15,9 @@
     "android-aarch64",
     "android-x86_64"
   ],
+  "provides": [
+    "fuyubot.html2img"
+  ],
   "description": "提供 fuyubot.html2img 跨插件服务（方法 render）：把 HTML / CSS 或 Vue 模板渲染成 PNG / JPEG（默认 JPEG；hyper-render，纯 Rust，无 Chromium），返回本地文件路径。",
   "license": "MIT OR Apache-2.0",
   "homepage": "https://github.com/CatMoeCircle/fuyubot-plugins"
