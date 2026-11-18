@@ -11,13 +11,13 @@
 cargo build -p fuyubot-plugin-music --release
 python scripts/package.py --plugin fuyubot-plugin-music \
     --platform windows-x86_64 --version 0.2.0
-# 解压 dist/fuyubot.music-0.2.0-windows-x86_64.zip 到 plugins/fuyubot.music/
+# 解压 dist/xiaoqvan.music-0.2.0-windows-x86_64.zip 到 plugins/xiaoqvan.music/
 ```
 
 所有凭据都写在全局配置文件的**本插件段**，一个根段、键平铺：
 
 ```toml
-[plugin.fuyubot.music]
+[plugin.xiaoqvan.music]
 netease = "MUSIC_U=...; os=pc; appver=3.1.28.205001"
 soda = "sessionid=...; sid_tt=..."
 youtube = "SAPISID=...; SID=...; HSID=..."
@@ -133,7 +133,7 @@ python scripts/qishui_qr_login.py
 soda = "sessionid=...; sid_tt=...; uid_tt=...; ..."
 ```
 
-把它贴进 `[plugin.fuyubot.music]`，重启宿主。
+把它贴进 `[plugin.xiaoqvan.music]`，重启宿主。
 
 无图形界面时：
 

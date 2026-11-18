@@ -186,7 +186,7 @@ impl Plugin for DouyinPlugin {
 /// 处理一条 `/dy` 命令（已在 tokio 任务里）。
 async fn handle_command(rt: &Runtime, command: Command) {
     // ⚠️ 不走 `first_url`：文本里同时有汽水与抖音链接时，要解析的是抖音那条。
-    // 汽水音乐归 `fuyubot.music`，抢过来只会 HEAD 一趟然后发一条 ❌。
+    // 汽水音乐归 `xiaoqvan.music`，抢过来只会 HEAD 一趟然后发一条 ❌。
     //
     // 频道里 `/dy` 也走编辑：命令消息本身就是那条频道帖，不再新发（与 TS 版一致）。
     let target = Target::of(&command);
@@ -197,7 +197,7 @@ async fn handle_command(rt: &Runtime, command: Command) {
         Selection::Qishui(link) => {
             // 记一条日志：用户报「/dy 发了但没反应」时，这里能直接看出是被让给了音乐插件。
             crate::log::info(&format!(
-                "让出汽水音乐链接（由 fuyubot.music 处理）：{}",
+                "让出汽水音乐链接（由 xiaoqvan.music 处理）：{}",
                 crate::log::redact_url(&link)
             ));
             // 汽水音乐的短链**没有作品 id**，抖音解析器认不出来。
@@ -276,7 +276,7 @@ async fn reply_with_video(rt: &Runtime, target: &Target, link: &str, source_text
 async fn try_reply(rt: &Runtime, target: &Target, link: &str) -> Result<(), String> {
     if rt.cookie.is_empty() {
         return Err(
-            "插件没读到 cookie：在 fuyubot.toml 的 [plugin.fuyubot.douyin] 段配              cookies = \"…\"（旧 cookies.json 仍兼容）再重启"
+            "插件没读到 cookie：在 fuyubot.toml 的 [plugin.xiaoqvan.douyin] 段配              cookies = \"…\"（旧 cookies.json 仍兼容）再重启"
                 .to_owned(),
         );
     }
@@ -565,7 +565,7 @@ enum Route {
     /// 抖音作品：本插件处理。
     Douyin,
     /// 汽水音乐（`qishui.douyin.com` / `qishui.com` / `music.douyin.com/qishui/…`）：
-    /// 归 `fuyubot.music`。
+    /// 归 `xiaoqvan.music`。
     Qishui,
     /// 其它域名：不是抖音的东西。
     Foreign,

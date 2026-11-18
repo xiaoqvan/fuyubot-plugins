@@ -478,6 +478,14 @@ async fn report_message(
         }
     };
 
+    // 自定义 emoji：占位文本进 message，像「用 emoji 当字」时再出联系表。
+    let prepared = crate::custom_emoji::prepare(
+        rt,
+        spam_message.get("content").unwrap_or(&Value::Null),
+        &mut input,
+    )
+    .await;
+
     input.profile = Some(Profile {
         name: Some(name.clone()),
         bio: Some(bio.clone()),
@@ -517,7 +525,17 @@ async fn report_message(
         message_type: Some(content_type.to_owned()),
         force_default: true,
     };
-    let result = ai::review(rt, &input, image_path.as_deref(), Some(chat_id), &meta).await;
+    // 真的照片 / 贴纸优先于联系表：只有 emoji 图案的时候才看联系表。
+    let review_image = image_path.as_deref().or_else(|| {
+        prepared
+            .as_ref()
+            .and_then(|prepared| prepared.image.as_deref())
+            .and_then(std::path::Path::to_str)
+    });
+    let result = ai::review(rt, &input, review_image, Some(chat_id), &meta).await;
+    if let Some(prepared) = prepared {
+        prepared.cleanup();
+    }
 
     // ── 分支 ─────────────────────────────────────────────────
     let target_id = target.id();
@@ -720,6 +738,18 @@ async fn persist_ai_result(
             inserted.push(("forward_blacklist".to_owned(), id));
         }
     }
+    // 「用 emoji 当字」的广告：把这张图 / 这个集合直接拉黑，下次不必再花 AI。
+    if result.ad_detected
+        && result.confidence > 0.9
+        && let Some(content) = spam_message.get("content")
+        && let Some(report) = crate::custom_emoji::report(content)
+        && report.is_glyph_art()
+    {
+        for (collection, id) in crate::custom_emoji::blacklist(rt, &report).await {
+            inserted.push((collection, id));
+        }
+    }
+
     if result.ad_detected
         && result.confidence > 0.9
         && spam_message

@@ -27,7 +27,7 @@ pub const SERVICE: &str = "fuyubot.sqlite";
 /// ABI v6 起调用者身份由宿主判定（服务方用 `current_plugin()` 取）。这里仍然
 /// **显式声明自己是谁**：sqlite 服务会拿它和真实调用者比对（冒用别人的名字返回
 /// `caller_mismatch`），宿主自己调的时候也靠这个字段选库。v5 时代它是唯一来源。
-pub const PLUGIN: &str = "fuyubot.douyin";
+pub const PLUGIN: &str = "xiaoqvan.douyin";
 
 /// `migrate` 要用的模板：`document` 就是 `key` PK / `doc` TEXT / `updated_at`。
 const TEMPLATE: &str = "document";

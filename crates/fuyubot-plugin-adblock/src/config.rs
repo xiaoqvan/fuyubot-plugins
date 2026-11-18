@@ -1,4 +1,4 @@
-//! 插件级配置：`[plugin.fuyubot.adblock]` 那一段。
+//! 插件级配置：`[plugin.xiaoqvan.adblock]` 那一段。
 //!
 //! TS 版把这些写死在代码里（Bot 主人的判断靠框架的 permission，总日志频道 / AI Key
 //! 是硬编码常量）。这里全部改成配置项，理由有三个：
@@ -9,15 +9,16 @@
 //! 3. **主人 / 管理员归宿主**——`[roles].owners` / `[roles].admins`，插件不再自己存名单。
 //!
 //! ```toml
-//! [plugin.fuyubot.adblock]                  # 只有这一个段，全部平铺
+//! [plugin.xiaoqvan.adblock]                  # 只有这一个段，全部平铺
 //! db = "fuyubot"                            # 覆盖 storage.mongo 的默认库
+//! chat_allowlist = [-1001234567890]         # 可选：只在这些群生效；空 = 所有群
 //! log_channel = -1001234567890              # 可选：全局封禁审计频道
 //! log_topic = 1622                          # 可选：论坛群的话题 id
 //! ai_api_key = "sk-…"                       # 可选：内置默认 AI 接口
 //! ai_base_url = "https://api.openai.com/v1"
 //! ai_model = "gpt-4o-mini"
 //! ai_token_limit = 2000000                  # 默认接口每日 token 上限；0 = 不限制
-//! ai_fallback_api_key = "sk-…"              # 可选：备用接口
+//! ai_fallback_api_key = "sk-…"              # 可选：备用接口（只服务内置默认接口）
 //! ai_fallback_base_url = "https://api.deepseek.com/v1"
 //! ai_fallback_model = "deepseek-chat"
 //! ai_log_channel = -1001234567890           # 可选：AI 审查总日志
@@ -32,7 +33,7 @@ use serde_json::Value;
 use crate::log;
 
 /// 插件名（`define_plugin!` 里那个），也是配置段名。
-pub const PLUGIN_NAME: &str = "fuyubot.adblock";
+pub const PLUGIN_NAME: &str = "xiaoqvan.adblock";
 pub const CONFIG_SECTION: &str = PLUGIN_NAME;
 
 /// 默认 AI 接口（OpenAI 兼容）。`api_key` 为空 = 没有默认接口。
@@ -71,6 +72,12 @@ pub struct PluginConfig {
     /// `/spam` 判定后写库的通知（对应 TS 版的 topic 3034）。
     pub ai_db_channel: Option<i64>,
     pub ai_db_topic: Option<i32>,
+    /// **只在这些群里生效**（数组；空 = 不限制）。
+    ///
+    /// 一个 bot 服务很多群、但广告插件只接管其中几个时用：不在列表里的群完全跳过
+    /// （消息检测 / 入群检查 / 自动点赞 / 取消置顶 / 日志按钮 / 群命令）。
+    /// 私聊不在此列：`/start aiConfig_…` 与管理命令仍要能私聊操作。
+    pub chat_allowlist: Vec<i64>,
 }
 
 impl PluginConfig {
@@ -89,6 +96,7 @@ impl PluginConfig {
             .filter(|db| !db.is_empty())
             .map(str::to_owned);
         config.log_topic = topic_of(get(host, "log_topic"));
+        config.chat_allowlist = id_array_of(host, "chat_allowlist");
 
         // 内置默认 AI 接口：三项平铺（不再有 `.ai` 子表）。
         let api_key = string_of(host, "ai_api_key").unwrap_or_default();
@@ -150,7 +158,21 @@ impl PluginConfig {
             Some(db) => format!("库 {db}"),
             None => "用 storage.mongo 的默认库".to_owned(),
         };
-        format!("{db}；{ai}；{audit}")
+        let scope = if self.chat_allowlist.is_empty() {
+            "所有群".to_owned()
+        } else {
+            format!("仅 {} 个群（chat_allowlist）", self.chat_allowlist.len())
+        };
+        format!("{db}；{ai}；{audit}；生效范围：{scope}")
+    }
+
+    /// 本插件是否在这个 chat 生效。
+    ///
+    /// - `chat_allowlist` 为空 → 不限制（默认行为）；
+    /// - 私聊（`chat_id > 0`）→ 放行：`/start aiConfig_…`、私聊管理命令要能用；
+    /// - 群 / 频道 → 必须在列表里。
+    pub fn chat_allowed(&self, chat_id: i64) -> bool {
+        self.chat_allowlist.is_empty() || chat_id > 0 || self.chat_allowlist.contains(&chat_id)
     }
 }
 
@@ -174,6 +196,35 @@ fn as_i64(value: &Value) -> Option<i64> {
         Value::String(text) => text.parse().ok(),
         _ => None,
     }
+}
+
+/// 读一个 chat id 数组（`[-100…, "-100…"]`）：不是数组 / 条目非法时告警并跳过。
+fn id_array_of(host: &HostApi, key: &str) -> Vec<i64> {
+    let Some(value) = get(host, key) else {
+        return Vec::new();
+    };
+    let Some(items) = value.as_array() else {
+        log::warnf(
+            host,
+            format_args!("配置项 {key} 必须是 chat id 数组（如 [-1001234567890]），已忽略"),
+        );
+        return Vec::new();
+    };
+    let mut ids = Vec::new();
+    for item in items {
+        match as_i64(item) {
+            Some(id) if id != 0 => {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+            _ => log::warnf(
+                host,
+                format_args!("配置项 {key} 里的 {item} 不是合法 chat id，已跳过"),
+            ),
+        }
+    }
+    ids
 }
 
 /// 取一个字符串项（去首尾空白；空串当没配）。

@@ -24,7 +24,7 @@
 //! ## cookie 从哪来
 //!
 //! **配置优先**：`fuyubot.toml` 里本插件自己的段
-//! `[plugin.fuyubot.douyin] cookies = "ttwid=…; msToken=…"`（别名 `cookie` 也认）。
+//! `[plugin.xiaoqvan.douyin] cookies = "ttwid=…; msToken=…"`（别名 `cookie` 也认）。
 //! 没配才回退旧文件 `plugins/douyin/cookies.json`（格式同 TS 版，仍兼容）。
 //! 读取逻辑见 [`read_cookies`]。
 
@@ -77,7 +77,7 @@ pub async fn get_douyin(
     ));
     if crate::commands::is_qishui_url(share_link) {
         crate::log::info(&format!(
-            "跳过汽水音乐链接（由 fuyubot.music 处理）：{}",
+            "跳过汽水音乐链接（由 xiaoqvan.music 处理）：{}",
             crate::log::redact_url(share_link)
         ));
         return Err(ParseError(
@@ -601,10 +601,10 @@ fn num_at(value: Option<&Value>, key: &str) -> Option<i64> {
 /// 旧格式的 cookie 文件名（`plugins_dir/douyin/cookies.json`，仅作后备）。
 const COOKIES_FILE: &str = "cookies.json";
 
-/// 本插件在全局配置里的**段名**（`[plugin.fuyubot.douyin]` 去掉 `plugin.` 前缀）。
+/// 本插件在全局配置里的**段名**（`[plugin.xiaoqvan.douyin]` 去掉 `plugin.` 前缀）。
 ///
 /// 与 `define_plugin!` 里的插件名一致；`HostApi::get_config` 的 `section` 就是插件名。
-const CONFIG_SECTION: &str = "fuyubot.douyin";
+const CONFIG_SECTION: &str = "xiaoqvan.douyin";
 
 /// 配置里的主键。
 const CONFIG_KEY: &str = "cookies";
@@ -678,7 +678,7 @@ fn read_cookies_file(plugins_dir: &Path) -> Result<Option<String>, ParseError> {
 /// 读 cookie：**配置优先**，旧 `plugins/douyin/cookies.json` 只作后备。
 ///
 /// 顺序：
-/// 1. `[plugin.fuyubot.douyin] cookies = "…"`（别名 `cookie` 也认）；
+/// 1. `[plugin.xiaoqvan.douyin] cookies = "…"`（别名 `cookie` 也认）；
 /// 2. 都没有 → 旧文件 `plugins/douyin/cookies.json`（格式同 TS 版 `{"cookies": "…"}`）；
 /// 3. 两者都没有 → 报错，并在错误里写清「该在 fuyubot.toml 里怎么配」。
 ///

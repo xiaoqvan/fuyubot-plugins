@@ -1342,6 +1342,8 @@ version = "0.1.2"
 dependencies = [
  "chrono",
  "fuyubot-abi",
+ "image",
+ "image-webp",
  "serde",
  "serde_json",
  "tokio",
@@ -1431,6 +1433,22 @@ dependencies = [
  "fuyubot-abi",
  "rusqlite",
  "serde_json",
+]
+
+[[package]]
+name = "fuyubot-plugin-x"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "fuyubot-abi",
+ "hyper-render",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tokio",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]

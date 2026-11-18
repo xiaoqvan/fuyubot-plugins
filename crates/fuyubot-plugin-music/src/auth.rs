@@ -1,12 +1,12 @@
 //! 鉴权材料的读取：两家平台的 cookie / 设备指纹 / 应用签名头。
 //!
-//! ## 从 `fuyubot.toml` 的 `[plugin.fuyubot.music]` 读（推荐）
+//! ## 从 `fuyubot.toml` 的 `[plugin.xiaoqvan.music]` 读（推荐）
 //!
 //! **只用一个根段，所有键平铺**（没有二级子表）。宿主的 `get_config(section, key)`
 //! 返回 JSON 文本；这里的值一律要求是**字符串**：
 //!
 //! ```toml
-//! [plugin.fuyubot.music]
+//! [plugin.xiaoqvan.music]
 //! # 整段 Cookie 头字符串
 //! netease = "MUSIC_U=…; os=pc; appver=3.1.28.205001"
 //! soda = "sessionid=…; sid_tt=…"
@@ -48,10 +48,10 @@ use std::path::{Path, PathBuf};
 use fuyubot_abi::HostApi;
 use serde::Deserialize;
 
-/// 本插件在 `fuyubot.toml` 里的配置段（插件名点分 → `[plugin.fuyubot.music]`）。
+/// 本插件在 `fuyubot.toml` 里的配置段（插件名点分 → `[plugin.xiaoqvan.music]`）。
 ///
 /// **只用一个根段、所有键平铺**；不认二级子表。
-pub const CONFIG_SECTION: &str = "fuyubot.music";
+pub const CONFIG_SECTION: &str = "xiaoqvan.music";
 /// 网易云：整段 Cookie 头字符串。
 pub const CONFIG_NETEASE: &str = "netease";
 /// 汽水：整段 Cookie 头字符串。
@@ -175,7 +175,7 @@ pub struct Auth {
     pub dir: PathBuf,
 }
 
-/// 从 `fuyubot.toml` 的 `[plugin.fuyubot.music]` 加载；没配才回退旧文件。
+/// 从 `fuyubot.toml` 的 `[plugin.xiaoqvan.music]` 加载；没配才回退旧文件。
 ///
 /// 配置优先（推荐），旧文件只是兼容已有部署。读不到 / 配置为空都只记日志，不返回错误。
 pub fn load(host: HostApi, plugins_dir: &Path) -> Auth {

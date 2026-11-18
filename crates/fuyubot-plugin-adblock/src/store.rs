@@ -46,6 +46,9 @@ pub mod collections {
     pub const FILE_IDS: &str = "flieId_blacklist";
     pub const STICKERS: &str = "sticker_blacklist";
     pub const STICKER_SETS: &str = "sticker_set_blacklist";
+    /// 自定义 emoji 的单个 id（custom_emoji_id）。集合仍走 STICKER_SETS：
+    /// 自定义 emoji 集在 TDLib 里就是贴纸集，共用一份数据比新开一张表好查。
+    pub const CUSTOM_EMOJI: &str = "custom_emoji_blacklist";
     pub const AI_FULLTEXT: &str = "ai_fulltext_blacklist";
     pub const AI_DEFAULT_CHATS: &str = "ai_default_chats";
     /// 插件自己的设置（全局 AI 触发关键词）。TS 版放的是本地 lowdb 文件。
@@ -156,6 +159,12 @@ pub struct GroupConfig {
     pub ai_base_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_model: Option<String>,
+    /// 配置这组群自定义 AI 接口的人（私聊配置流程里的 TG 用户 id）。
+    ///
+    /// 只用于「自定义接口调用失败时私聊通知配置人」；不参与任何权限判断。
+    /// 老数据没有这个字段 → `None`，失败时只记 WARN、不发通知（重新配一次即可补上）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_configured_by: Option<i64>,
 }
 
 impl Default for GroupConfig {
@@ -180,6 +189,7 @@ impl Default for GroupConfig {
             ai_api_key: None,
             ai_base_url: None,
             ai_model: None,
+            ai_configured_by: None,
         }
     }
 }
@@ -316,6 +326,7 @@ impl GroupConfig {
                 .and_then(Value::as_str)
                 .filter(|text| !text.is_empty())
                 .map(str::to_owned),
+            ai_configured_by: i64_of(doc, "ai_configured_by"),
         }
     }
 }
@@ -444,6 +455,7 @@ pub enum Collection {
     File,
     StickerSet,
     Sticker,
+    CustomEmoji,
 }
 
 impl Collection {
@@ -458,6 +470,7 @@ impl Collection {
             Self::File => collections::FILE_IDS,
             Self::StickerSet => collections::STICKER_SETS,
             Self::Sticker => collections::STICKERS,
+            Self::CustomEmoji => collections::CUSTOM_EMOJI,
         }
     }
 }
@@ -806,6 +819,7 @@ impl Db {
             (c::CONFIG, json!({"chat_id": 1}), true, None),
             (c::ADS, json!({"keywords": 1}), false, None),
             (c::AI_FULLTEXT, json!({"text": 1}), false, None),
+            (c::CUSTOM_EMOJI, json!({"custom_emoji_id": 1}), false, None),
             (c::FORWARD, json!({"chat_id": 1}), false, None),
         ];
         let mut created = 0;
@@ -1238,6 +1252,17 @@ impl Db {
         Ok(id_string(&id))
     }
 
+    /// 拉黑单个自定义 emoji（custom_emoji_id 就是那张贴纸的 id）。
+    pub async fn add_custom_emoji(&self, custom_emoji_id: &str) -> Result<String, String> {
+        let clean = custom_emoji_id.trim();
+        if clean.is_empty() {
+            return Err("自定义 emoji id 不能为空".to_owned());
+        }
+        let doc = json!({ "custom_emoji_id": clean, "createdAt": date(now_ms()) });
+        let id = self.mongo.insert(collections::CUSTOM_EMOJI, doc).await?;
+        Ok(id_string(&id))
+    }
+
     pub async fn add_ai_fulltext(&self, text: &str) -> Result<(String, bool), String> {
         let clean = text.trim();
         if clean.is_empty() {
@@ -1405,6 +1430,22 @@ impl Db {
             .flatten()
     }
 
+    /// 一条消息里的自定义 emoji 有没有在黑名单里（一次 $in 查询）。
+    pub async fn match_custom_emoji(&self, ids: &[i64]) -> Option<Value> {
+        if ids.is_empty() {
+            return None;
+        }
+        let ids: Vec<String> = ids.iter().map(i64::to_string).collect();
+        self.mongo
+            .find_one(
+                collections::CUSTOM_EMOJI,
+                json!({ "custom_emoji_id": { "$in": ids } }),
+            )
+            .await
+            .ok()
+            .flatten()
+    }
+
     // ── 黑名单：改 / 删 / 查 ─────────────────────────────────────
 
     /// 按 `_id` 更新关键词（先 `ads_blacklist`、再 `bio_blacklist`）。
@@ -1477,6 +1518,7 @@ impl Db {
             (Collection::File, collections::FILE_IDS),
             (Collection::Sticker, collections::STICKERS),
             (Collection::StickerSet, collections::STICKER_SETS),
+            (Collection::CustomEmoji, collections::CUSTOM_EMOJI),
         ];
         for (collection, name) in collections {
             if let Ok(Some(doc)) = self.mongo.find_one(name, by_id.clone()).await {

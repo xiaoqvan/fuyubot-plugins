@@ -70,6 +70,17 @@ pub async fn dispatch(rt: &Runtime, update: &Value, sender: Sender) -> bool {
     if !command.is_for(&usernames) {
         return false;
     }
+    // `chat_allowlist`：没启用的群不响应任何群命令（私聊管理命令照常）。
+    if command.chat_id < 0 && !rt.cfg.chat_allowed(command.chat_id) {
+        log::debug(
+            &rt.host,
+            format!(
+                "忽略 /{}：群 {} 不在 chat_allowlist",
+                spec.name, command.chat_id
+            ),
+        );
+        return true;
+    }
     // scope 先于 permission：私聊命令在群里连「仅限主人」都不该说。
     if !spec.allows_scope(rt, command.chat_id).await {
         log::debug(

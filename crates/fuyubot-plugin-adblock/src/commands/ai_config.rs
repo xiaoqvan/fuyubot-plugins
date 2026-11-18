@@ -48,6 +48,17 @@ pub async fn handle_start(rt: &Runtime, command: &Command, sender: Sender, _mess
         return;
     };
 
+    if !rt.cfg.chat_allowed(target) {
+        flow::send_tip(
+            rt,
+            chat_id,
+            "❌ 该群不在 chat_allowlist 里，插件不会在这个群生效；请先把它加进 [plugin.xiaoqvan.adblock] 的 chat_allowlist 再配置 AI。",
+            reply_to,
+            30,
+        )
+        .await;
+        return;
+    }
     if !flow::is_group(rt, target).await {
         flow::send_tip(
             rt,
@@ -215,8 +226,12 @@ pub async fn consume_private(rt: &Runtime, message: &Value) -> bool {
                     config.ai_api_key = Some(api_key.clone());
                     config.ai_base_url = Some(base_url.clone());
                     config.ai_model = Some(model.clone());
+                    // 记下配置人：接口以后调用失败时私聊通知他（只用于通知，不参与权限判断）。
+                    config.ai_configured_by = Some(user_id);
                 })
                 .await;
+            // 重新配置后清掉失败通知的节流：新接口如果再失败，配置人能立刻收到提醒。
+            ai::reset_ai_failure_notify(target);
             flow::send_tip(
                 rt,
                 chat_id,

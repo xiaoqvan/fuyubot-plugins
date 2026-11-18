@@ -18,6 +18,7 @@
 
 use serde_json::Value;
 
+use crate::custom_emoji;
 use crate::runtime::Runtime;
 use crate::store::doc_id;
 use crate::text;
@@ -55,8 +56,20 @@ pub async fn detect(rt: &Runtime, message: &Value) -> SpamHit {
     };
     let kind = content.get("@type").and_then(Value::as_str).unwrap_or("");
     match kind {
-        "messageText" => check_text(rt, &text::message_text(message)).await,
-        "messageRichMessage" => check_text(rt, &text::rich_message_text(content)).await,
+        "messageText" => {
+            let hit = check_text(rt, &text::message_text(message)).await;
+            if hit.matched {
+                return hit;
+            }
+            check_custom_emoji(rt, content).await
+        }
+        "messageRichMessage" => {
+            let hit = check_text(rt, &text::rich_message_text(content)).await;
+            if hit.matched {
+                return hit;
+            }
+            check_custom_emoji(rt, content).await
+        }
         "messagePhoto" => check_photo(rt, message).await,
         "messageVideo" => check_video(rt, message).await,
         "messageContact" => check_contact(rt, content).await,
@@ -88,6 +101,11 @@ async fn check_photo(rt: &Runtime, message: &Value) -> SpamHit {
         if hit.matched {
             return hit;
         }
+    }
+
+    let emoji_hit = check_custom_emoji(rt, content).await;
+    if emoji_hit.matched {
+        return emoji_hit;
     }
 
     let ids = text::photo_unique_ids(content);
@@ -124,6 +142,11 @@ async fn check_video(rt: &Runtime, message: &Value) -> SpamHit {
         if hit.matched {
             return hit;
         }
+    }
+
+    let emoji_hit = check_custom_emoji(rt, content).await;
+    if emoji_hit.matched {
+        return emoji_hit;
     }
 
     let unique_id = content
@@ -212,6 +235,42 @@ async fn check_sticker(rt: &Runtime, message: &Value) -> SpamHit {
         && let Some(record) = rt.db.match_sticker(&unique_id).await
     {
         return SpamHit::hit("sticker", Some(doc_id(&record)), "hasSpamFileid");
+    }
+    SpamHit::none()
+}
+
+/// 自定义 emoji：先查「单个 emoji」黑名单（本地一次查询），再查所属集合。
+///
+/// 集合必须问 TDLib（getCustomEmojiStickers，进程内有缓存），所以只在
+/// Report::is_glyph_art 时才查——普通聊天里挂几个表情不值得发请求。
+async fn check_custom_emoji(rt: &Runtime, content: &Value) -> SpamHit {
+    let Some(report) = custom_emoji::report(content) else {
+        return SpamHit::none();
+    };
+    if report.ids.is_empty() {
+        return SpamHit::none();
+    }
+    if let Some(record) = rt.db.match_custom_emoji(&report.ids).await {
+        return SpamHit::hit(
+            "custom_emoji",
+            Some(doc_id(&record)),
+            format!("自定义 emoji 黑名单（{} 个）", report.count),
+        );
+    }
+    if !report.is_glyph_art() {
+        return SpamHit::none();
+    }
+    for emoji in custom_emoji::resolve(&rt.td, &report.ids).await {
+        if emoji.set_id <= 0 {
+            continue;
+        }
+        if let Some(record) = rt.db.match_sticker_set(&emoji.set_id.to_string()).await {
+            return SpamHit::hit(
+                "custom_emoji_set",
+                Some(doc_id(&record)),
+                format!("自定义 emoji 集（set_id={}）在黑名单", emoji.set_id),
+            );
+        }
     }
     SpamHit::none()
 }

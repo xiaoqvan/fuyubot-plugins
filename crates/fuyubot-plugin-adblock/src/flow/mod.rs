@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use crate::action;
 use crate::api::{Sender, message_sender};
+use crate::log;
 use crate::runtime::Runtime;
 use crate::text;
 
@@ -40,6 +41,25 @@ pub struct SenderDetails {
 /// 私聊（chat_id 为正）。
 pub fn is_private(chat_id: i64) -> bool {
     chat_id > 0
+}
+
+/// 本插件是否在这个 chat 生效（`chat_allowlist`；空 = 不限制）。
+///
+/// 不在列表里的群：打一条节流 INFO（同群 5 分钟一条），调用方直接 return。
+/// 私聊始终放行（`/start aiConfig_…` 配置流程与管理命令走私聊）。
+pub fn chat_enabled(rt: &Runtime, chat_id: i64) -> bool {
+    if rt.cfg.chat_allowed(chat_id) {
+        return true;
+    }
+    log::skip(
+        &rt.host,
+        chat_id,
+        "chat_not_allowed",
+        &format!(
+            "[检查跳过] 群 {chat_id} 不在 chat_allowlist（本插件只在指定群生效），整条更新忽略"
+        ),
+    );
+    false
 }
 
 /// 这个 chat 是不是群。

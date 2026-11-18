@@ -13,7 +13,7 @@
 - 二维码来自汽水官方 passport 接口，只用于本次登录；扫码要用**已登录的抖音 APP**，
   汽水 App 扫码通常不会完成确认（接口文案明确要求抖音）。
 - 成功后脚本只打印 cookie，不会自动改配置文件；把它贴进
-  [plugin.fuyubot.music] 的 soda = "..."，重启宿主即可。
+  [plugin.xiaoqvan.music] 的 soda = "..."，重启宿主即可。
 - 扫码登录只拿登录态（sessionid 等）；会员无损音质还需要 soda_x_helios /
   soda_x_medusa（本机签名器），这不在扫码范围内。
 """
@@ -215,7 +215,7 @@ def main() -> int:
             if not cookie:
                 print("上游确认登录了，但响应里没有 sessionid；请重试。")
                 return 2
-            print("\n登录成功。把下面这一行贴进 fuyubot.toml 的 [plugin.fuyubot.music]：\n")
+            print("\n登录成功。把下面这一行贴进 fuyubot.toml 的 [plugin.xiaoqvan.music]：\n")
             print(f'soda = "{cookie}"')
             print("\n然后重启宿主。会员无损还需要 soda_x_helios / soda_x_medusa 签名头。")
             return 0

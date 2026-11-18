@@ -79,7 +79,7 @@ fn host_extraction_handles_scheme_port_and_case() {
     assert!(!is_douyin_host("evil-douyin.com"));
     assert!(!is_douyin_host("douyin.com.evil.test"));
 
-    // 汽水音乐的链接虽然也在 *.douyin.com 下，但归 fuyubot.music 管。
+    // 汽水音乐的链接虽然也在 *.douyin.com 下，但归 xiaoqvan.music 管。
     assert!(!is_douyin_link("https://qishui.douyin.com/s/iXvvC5YV/"));
     assert!(!is_douyin_link(
         "https://music.douyin.com/qishui/share/ugc_video?ugc_video_id=1"

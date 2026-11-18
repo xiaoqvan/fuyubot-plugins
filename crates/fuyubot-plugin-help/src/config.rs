@@ -1,10 +1,10 @@
-//! 插件级配置：`[plugin.fuyubot.help]` 那一段。
+//! 插件级配置：`[plugin.xiaoqvan.help]` 那一段。
 //!
 //! 所有字段都可省略，省略就用默认值；写错的字段不会让插件起不来，只会退回默认并
 //! 打一条 warn（配置是给人改的，不值得为它拒绝加载）。
 //!
 //! ```toml
-//! [plugin.fuyubot.help]
+//! [plugin.xiaoqvan.help]
 //! title = "可用命令"
 //! description = "FuyuBot · 一张图看完所有命令"
 //! tips = "可使用 /help t 获取文本版本"
@@ -29,7 +29,7 @@ use serde::Deserialize;
 use crate::log;
 
 /// 插件名（`define_plugin!` 里那个），也是配置段名。
-pub const PLUGIN_NAME: &str = "fuyubot.help";
+pub const PLUGIN_NAME: &str = "xiaoqvan.help";
 
 /// 图片生成服务（由 `fuyubot.html2img` 插件提供，硬依赖）。
 pub const HTML2IMG_SERVICE: &str = "fuyubot.html2img";
@@ -141,7 +141,7 @@ struct Raw {
 }
 
 impl Config {
-    /// 从宿主的 `[plugin.fuyubot.help]` 段读；读不到或坏掉就用默认值。
+    /// 从宿主的 `[plugin.xiaoqvan.help]` 段读；读不到或坏掉就用默认值。
     pub fn from_host(host: &HostApi) -> Self {
         let raw: Raw = match host.get_config(PLUGIN_NAME, "") {
             Some(json) => match serde_json::from_str(&json) {

@@ -103,3 +103,31 @@ fn base_url_is_trimmed() {
         "https://api.openai.com/v1"
     );
 }
+
+#[test]
+fn backup_is_only_for_builtin_default_interface() {
+    let endpoint = |source| ResolvedAi {
+        api_key: "k".to_owned(),
+        base_url: "https://x".to_owned(),
+        model: "m".to_owned(),
+        source,
+    };
+    // 群自定义接口：无论是否 force_default，都不许用内置备用模型。
+    assert!(!may_use_backup(&endpoint(AiSource::Chat), false));
+    assert!(!may_use_backup(&endpoint(AiSource::Chat), true));
+    // 内置默认接口：主接口失败 / token 超限可以切备用。
+    assert!(may_use_backup(&endpoint(AiSource::Default), false));
+    // 完全没有可用接口：只有强制默认（/spam 等）的场景才让备用顶上。
+    assert!(!may_use_backup(&ResolvedAi::unusable(), false));
+    assert!(may_use_backup(&ResolvedAi::unusable(), true));
+}
+
+#[test]
+fn failure_notification_is_throttled_per_chat() {
+    // 独立 fake chat id，避免和其他用例共享全局节流表。
+    let chat_id = -9_999_999_001;
+    assert!(should_notify_ai_failure(chat_id));
+    assert!(!should_notify_ai_failure(chat_id), "10 分钟内只提醒一次");
+    reset_ai_failure_notify(chat_id);
+    assert!(should_notify_ai_failure(chat_id), "重新配置后应立刻可通知");
+}

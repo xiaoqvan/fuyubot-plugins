@@ -110,7 +110,7 @@ fn cookie_values_cannot_break_the_header() {
     );
 }
 
-// ── 配置段 `[plugin.fuyubot.music]` ──────────────────────────────
+// ── 配置段 `[plugin.xiaoqvan.music]` ──────────────────────────────
 //
 // 用假 `HostApi`：`get_config` 从进程内表里取「宿主返回的 JSON 文本」，
 // 其余函数一律 noop。所有配置测试共用一份表，必须串行。

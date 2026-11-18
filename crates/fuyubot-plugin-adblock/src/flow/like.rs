@@ -70,6 +70,9 @@ pub async fn handle(rt: &Runtime, update: &Value) {
     let Some(message_id) = update.get("message_id").and_then(Value::as_i64) else {
         return;
     };
+    if !crate::flow::chat_enabled(rt, chat_id) {
+        return;
+    }
     let reactors = reactors_of(update);
     if reactors.is_empty() {
         return;

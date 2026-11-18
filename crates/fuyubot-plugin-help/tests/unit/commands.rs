@@ -3,7 +3,7 @@ use super::*;
 fn commands() -> Vec<Value> {
     vec![
         json!({ "name": "start", "description": "开始使用", "plugin": "fuyubot.start" }),
-        json!({ "name": "help", "description": "这条帮助", "plugin": "fuyubot.help" }),
+        json!({ "name": "help", "description": "这条帮助", "plugin": "xiaoqvan.help" }),
     ]
 }
 
@@ -73,7 +73,7 @@ fn addressed_commands_only_answer_when_named() {
 /// 展示名映射：与宿主 `list_plugins` 报告里的 `display_name` 同形。
 fn display_names() -> BTreeMap<String, String> {
     BTreeMap::from([
-        ("fuyubot.help".to_owned(), "帮助".to_owned()),
+        ("xiaoqvan.help".to_owned(), "帮助".to_owned()),
         ("fuyubot.start".to_owned(), "启动问候".to_owned()),
     ])
 }
@@ -91,12 +91,12 @@ fn render_request_groups_by_plugin() {
     assert_eq!(stats.plugins, 2, "没有归属的那条不算来源插件");
 
     let cards = request["data"]["data"].as_array().unwrap();
-    // 组按插件名排序（help < start），「其它」永远最后。
+    // 组按插件名排序（fuyubot.start < xiaoqvan.help），「其它」永远最后。
     assert_eq!(cards.len(), 3);
-    assert_eq!(cards[0]["name"], "帮助（help）");
-    assert_eq!(cards[0]["commands"].as_array().unwrap().len(), 1);
-    assert_eq!(cards[0]["desc"], "共 1 条命令");
-    assert_eq!(cards[1]["name"], "启动问候（start）");
+    assert_eq!(cards[0]["name"], "启动问候（start）");
+    assert_eq!(cards[1]["name"], "帮助（help）");
+    assert_eq!(cards[1]["commands"].as_array().unwrap().len(), 1);
+    assert_eq!(cards[1]["desc"], "共 1 条命令");
     assert_eq!(cards[2]["name"], OTHER_GROUP);
     assert_eq!(cards[2]["commands"][0]["name"], "plugins");
 }
@@ -104,22 +104,22 @@ fn render_request_groups_by_plugin() {
 /// 组标题没有展示名时退回短名；展示名里已含短名时不重复追加。
 #[test]
 fn group_titles_fall_back_to_the_short_name() {
-    let names = BTreeMap::from([("fuyubot.adblock".to_owned(), "adblock".to_owned())]);
-    assert_eq!(group_title("fuyubot.adblock", &names), "adblock");
+    let names = BTreeMap::from([("xiaoqvan.adblock".to_owned(), "adblock".to_owned())]);
+    assert_eq!(group_title("xiaoqvan.adblock", &names), "adblock");
     assert_eq!(group_title("fuyubot.other", &names), "other");
 
     // 插件包 `plugin.json` 的 name 常见形态：英文名里已经带上了短名。
     let names = BTreeMap::from([
-        ("fuyubot.adblock".to_owned(), "Adblock".to_owned()),
-        ("fuyubot.help".to_owned(), "Help (Image)".to_owned()),
+        ("xiaoqvan.adblock".to_owned(), "Adblock".to_owned()),
+        ("xiaoqvan.help".to_owned(), "Help (Image)".to_owned()),
     ]);
-    assert_eq!(group_title("fuyubot.adblock", &names), "Adblock");
-    assert_eq!(group_title("fuyubot.help", &names), "Help (Image)");
+    assert_eq!(group_title("xiaoqvan.adblock", &names), "Adblock");
+    assert_eq!(group_title("xiaoqvan.help", &names), "Help (Image)");
 
     // 中文展示名不含短名：补一个括号，点明是哪份插件。
-    let names = BTreeMap::from([("fuyubot.adblock".to_owned(), "广告拦截".to_owned())]);
+    let names = BTreeMap::from([("xiaoqvan.adblock".to_owned(), "广告拦截".to_owned())]);
     assert_eq!(
-        group_title("fuyubot.adblock", &names),
+        group_title("xiaoqvan.adblock", &names),
         "广告拦截（adblock）"
     );
 }

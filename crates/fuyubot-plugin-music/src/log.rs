@@ -20,7 +20,7 @@ pub fn install(host: HostApi) {
 
 /// 记一条日志。宿主句柄还没装好时静默丢弃。
 ///
-/// **不加任何前缀**：宿主自己会在日志行上打来源（`[plugins - fuyubot.music]`）。
+/// **不加任何前缀**：宿主自己会在日志行上打来源（`[plugins - xiaoqvan.music]`）。
 pub fn log(level: LogLevel, message: &str) {
     if let Some(host) = HOST.get() {
         host.log(level, message);

@@ -73,6 +73,10 @@ pub async fn handle_update_user(rt: &Runtime, update: &Value) {
     let now = now_ms();
 
     for watch in watches {
+        // `chat_allowlist`：不在列表里的群直接跳过（不碰它的监视记录）。
+        if !flow::chat_enabled(rt, watch.chat_id) {
+            continue;
+        }
         // 节流：刚复检过就跳过。
         if let Some(last) = watch.last_recheck_at
             && now - last < RECHECK_THROTTLE_MS

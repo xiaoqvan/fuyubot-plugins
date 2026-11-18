@@ -19,6 +19,11 @@ tokio = { workspace = true, features = ["sync"] }
 ureq.workspace = true
 # 本地时区（TS 版日志时间口径）。只开 clock，不拖 serde。
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# 自定义 emoji → 联系表：PNG / JPEG / WebP 解码 + PNG 编码（纯 Rust，不拖 C 库）。
+# 工作区里的 image 只开了 png / jpeg，这里补一个 webp（贴纸原图与缩略图都是 WebP）。
+image = { workspace = true, features = ["webp"] }
+# 动图 WebP 取「时长中点」那一帧：image 只解首帧，逐帧要 image-webp 的 WebPDecoder。
+image-webp = "0.2"
 
 [dev-dependencies]
 # 测试里用 `Builder::new_current_thread()` / `tokio::test` 需要 rt；正常构建不带。

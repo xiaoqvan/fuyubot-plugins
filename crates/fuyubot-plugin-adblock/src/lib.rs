@@ -49,6 +49,7 @@ mod cache;
 mod callbacks;
 mod commands;
 mod config;
+mod custom_emoji;
 mod detect;
 mod flow;
 mod like;
@@ -263,4 +264,4 @@ impl AdblockPlugin {
 }
 
 // 一个 crate 只能展开一次 `define_plugin!`（导出符号名是 ABI 定死的）。
-define_plugin!(AdblockPlugin, "fuyubot.adblock");
+define_plugin!(AdblockPlugin, "xiaoqvan.adblock");

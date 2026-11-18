@@ -1,6 +1,6 @@
 [package]
 name = "fuyubot-plugin-help"
-description = "FuyuBot /help 图片版：替代内置 help（同 id），读取宿主命令表并按 role / scopes / hidden 过滤，硬依赖 fuyubot.html2img"
+description = "FuyuBot /help 图片版：替代内置 help（命令名相同），读取宿主命令表并按 role / scopes / hidden 过滤，硬依赖 fuyubot.html2img"
 version = "0.1.3"
 edition.workspace = true
 rust-version.workspace = true

@@ -46,6 +46,10 @@ pub async fn handle(rt: &Runtime, update: &Value) {
     if message.get("id").and_then(Value::as_i64).is_none() {
         return;
     }
+    // `chat_allowlist`：不在列表里的群整条更新都忽略（私聊放行，AI 配置流程照常）。
+    if !flow::chat_enabled(rt, chat_id) {
+        return;
+    }
 
     // 入群提示：群配置要求删除时直接撤回，不再进索引 / 命令 / 检测链路。
     if flow::join::handle(rt, message).await {
@@ -349,6 +353,9 @@ async fn review_with_ai(
         _ => {}
     }
 
+    // 自定义 emoji：把 [E1] 占位文本塞进 message；像「用 emoji 当字」时再出联系表。
+    let prepared = crate::custom_emoji::prepare(rt, content, &mut input).await;
+
     let quote = quote_of(message);
     if let Some((_, quote_text)) = &quote {
         input = input.with_quote(quote_text.clone());
@@ -382,8 +389,15 @@ async fn review_with_ai(
         }
     }
 
-    let should_review =
-        content_type == "messageContact" || quote.is_some() || keyword_hit || watch_hit;
+    // 「用 emoji 当字」的消息文本里一个关键词都没有，必须靠这条把它送进 AI。
+    let emoji_art = prepared
+        .as_ref()
+        .is_some_and(|prepared| prepared.report.is_glyph_art());
+    let should_review = content_type == "messageContact"
+        || quote.is_some()
+        || keyword_hit
+        || watch_hit
+        || emoji_art;
     if !should_review {
         return None;
     }
@@ -401,6 +415,10 @@ async fn review_with_ai(
             &rt.host,
             format!("[AI_FullText] 命中全文黑名单，跳过 AI 审核 msg={message_id}"),
         );
+        // 联系表已经出图的话顺手删掉，别在临时目录里留垃圾。
+        if let Some(prepared) = prepared {
+            prepared.cleanup();
+        }
         return Some(hit);
     }
 
@@ -450,7 +468,14 @@ async fn review_with_ai(
         message_type: Some(content_type.to_owned()),
         force_default: false,
     };
-    let result = ai::review(rt, &input, None, Some(chat_id), &meta).await;
+    let image = prepared
+        .as_ref()
+        .and_then(|prepared| prepared.image.as_deref())
+        .and_then(std::path::Path::to_str);
+    let result = ai::review(rt, &input, image, Some(chat_id), &meta).await;
+    if let Some(prepared) = prepared {
+        prepared.cleanup();
+    }
 
     // ── 结果落库 + 判定 ───────────────────────────────────────
     let confidence_high = result.confidence > 0.9;

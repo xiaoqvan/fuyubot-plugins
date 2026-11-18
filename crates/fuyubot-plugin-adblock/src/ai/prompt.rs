@@ -25,6 +25,7 @@ const CONTEXT_LINK_PREVIEW: &str = include_str!("prompts/context/linkPreview.md"
 const CONTEXT_HISTORY: &str = include_str!("prompts/context/history.md");
 const MEDIA_PHOTO_VIDEO: &str = include_str!("prompts/media/photoVideo.md");
 const MEDIA_STICKER: &str = include_str!("prompts/media/sticker.md");
+const MEDIA_CUSTOM_EMOJI: &str = include_str!("prompts/media/customEmoji.md");
 
 fn has_text(value: Option<&String>) -> bool {
     value.is_some_and(|text| !text.trim().is_empty())
@@ -51,6 +52,7 @@ fn needs_message_rules(input: &ModerationInput, has_image: bool) -> bool {
         || has_image
         || input.kind == "photo"
         || input.kind == "video"
+        || input.custom_emoji.is_some()
         || any_text([
             input
                 .personal_channel
@@ -141,7 +143,10 @@ pub fn build(input: &ModerationInput, has_image: bool) -> String {
         segments.push(CONTEXT_HISTORY.trim());
     }
 
-    if has_image || input.kind == "photo" || input.kind == "video" {
+    if input.custom_emoji.is_some() {
+        // 联系表是「这条消息里的 emoji 拼图」，不是普通照片：读图规则得换一套。
+        segments.push(MEDIA_CUSTOM_EMOJI.trim());
+    } else if has_image || input.kind == "photo" || input.kind == "video" {
         segments.push(MEDIA_PHOTO_VIDEO.trim());
     }
     if input.kind == "sticker"

@@ -1,10 +1,10 @@
-//! FuyuBot 消息日志插件（`fuyubot.message-log`）。
+//! FuyuBot 消息日志插件（`xiaoqvan.message-log`）。
 //!
 //! 把 `updateNewMessage` 拼成**一行**，经 `host.log(Info, …)` 打出去。宿主负责加上
 //! 时间、来源与级别，所以控制台 / TUI 日志页 / `logs/fuyubot.log` 里看到的是：
 //!
 //! ```text
-//! 2026-11-11 13:45:00 [plugins - fuyubot.message-log] INFO  [开发群(id:-1001234567890)][张三(id:123456)]: 你好
+//! 2026-11-11 13:45:00 [plugins - xiaoqvan.message-log] INFO  [开发群(id:-1001234567890)][张三(id:123456)]: 你好
 //! ```
 //!
 //! 这不只是「换个输出通道」：TS 版自带 pino + 按日轮转的 `logs/message.*.log`，
@@ -23,13 +23,14 @@
 //! ## 线程模型
 //!
 //! 宿主回调只 `try_send` 一条更新（非阻塞），工作线程用 current-thread tokio
-//! runtime 顺序处理：名字缓存未命中时 `getChat` / `getUser`，然后打一行日志。
+//! runtime 顺序处理：标题 / 名字先查 `updateNewChat` / `updateChatTitle` / `updateUser`
+//! 攒下来的缓存，没见过的 id 才 `getChat` / `getUser`，然后打一行日志。
 //! `stop()` 先退订，再处理完手上这一条并 `join`（队列里的积压直接丢弃）。细节见 [`worker`]。
 //!
 //! ## 配置
 //!
 //! ```toml
-//! [plugin.fuyubot.message-log]
+//! [plugin.xiaoqvan.message-log]
 //! enabled = true
 //! ignore_outgoing = false
 //! max_text_chars = 4096
@@ -42,14 +43,17 @@ mod subscribe;
 mod td;
 mod worker;
 
+use std::sync::{Arc, Mutex};
+
 use fuyubot_abi::{HostApi, Plugin, ResponseRouter, define_plugin};
 
 /// 插件状态。
 pub struct MessageLogPlugin {
     host: HostApi,
-    /// 事件订阅：drop 就退订。**必须声明在 `worker` 前面**——Rust 按声明顺序
-    /// drop 字段，订阅闭包先放手，工作线程才能看到所有发送端都断开。
-    subscription: Option<subscribe::EventSubscription>,
+    /// 事件订阅：`updateNewMessage` + 名字 / 标题更新（`updateNewChat` /
+    /// `updateChatTitle` / `updateUser`）。drop 就退订。**必须声明在 `worker` 前面**——
+    /// Rust 按声明顺序 drop 字段，订阅闭包先放手，工作线程才能看到所有发送端都断开。
+    subscriptions: Vec<subscribe::EventSubscription>,
     worker: Option<worker::Worker>,
     /// `start()` 是否真正跑完过：宿主探测插件时也会调 `plugin_stop`，
     /// 那时不该打「已停止」误导人。
@@ -61,7 +65,7 @@ impl Plugin for MessageLogPlugin {
         log::info(&host, "消息日志插件初始化");
         Ok(Self {
             host,
-            subscription: None,
+            subscriptions: Vec::new(),
             worker: None,
             started: false,
         })
@@ -69,7 +73,7 @@ impl Plugin for MessageLogPlugin {
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
         // `config_json` 是宿主给的环境信息（plugins_dir / spawn …），不是本插件配置；
-        // 自己的配置在 `[plugin.fuyubot.message-log]`，由 `Config::from_host` 读。
+        // 自己的配置在 `[plugin.xiaoqvan.message-log]`，由 `Config::from_host` 读。
         let _ = config_json;
         let config = config::Config::from_host(&self.host);
 
@@ -86,7 +90,29 @@ impl Plugin for MessageLogPlugin {
         // 之后在工作线程上发的请求才能归属到本插件名下。
         let router =
             ResponseRouter::new(self.host).map_err(|error| format!("建响应路由器失败：{error}"))?;
-        let worker = worker::Worker::start(self.host, router, config.clone())?;
+
+        // 标题 / 名字优先从更新里攒：`updateNewChat` / `updateChatTitle` / `updateUser`
+        // 在宿主接收循环上顺手写进 `Book`，工作线程不用为此再发 TDLib 请求——
+        // 也就不会因为一次 `getChat` 超时把日志打成「未知聊天」。
+        // 订不上不致命：`getChat` / `getUser` 兜底还在。
+        let book = Arc::new(Mutex::new(td::Book::new()));
+        let mut subscriptions = Vec::new();
+        for event in td::NAME_UPDATES {
+            let book = Arc::clone(&book);
+            match subscribe::subscribe(self.host, event, None, move |update| {
+                book.lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .absorb(update);
+            }) {
+                Some(subscription) => subscriptions.push(subscription),
+                None => log::warn(
+                    &self.host,
+                    format!("订阅 {event} 失败：标题 / 名字只能靠 getChat / getUser"),
+                ),
+            }
+        }
+
+        let worker = worker::Worker::start(self.host, router, config.clone(), Arc::clone(&book))?;
 
         // 回调只做一次非阻塞投递；真正的活在工作线程里。
         let handle = worker.handle();
@@ -102,8 +128,9 @@ impl Plugin for MessageLogPlugin {
                 }
             };
 
+        subscriptions.push(subscription);
         self.worker = Some(worker);
-        self.subscription = Some(subscription);
+        self.subscriptions = subscriptions;
         self.started = true;
         log::info(&self.host, format!("消息日志已就绪：{}", config.summary()));
         Ok(())
@@ -112,7 +139,7 @@ impl Plugin for MessageLogPlugin {
     fn stop(&mut self) {
         // 先断输入，再等线程：反过来会留下「线程还在跑、新消息又进来」的窗口。
         let started = std::mem::replace(&mut self.started, false);
-        self.subscription = None;
+        self.subscriptions.clear();
         let recorded = self
             .worker
             .take()
@@ -136,7 +163,7 @@ impl Plugin for MessageLogPlugin {
 }
 
 // 一个 crate 只能展开一次 `define_plugin!`（七个导出符号名是 ABI 定死的）。
-define_plugin!(MessageLogPlugin, "fuyubot.message-log");
+define_plugin!(MessageLogPlugin, "xiaoqvan.message-log");
 
 #[cfg(test)]
 #[path = "../tests/unit/lib.rs"]

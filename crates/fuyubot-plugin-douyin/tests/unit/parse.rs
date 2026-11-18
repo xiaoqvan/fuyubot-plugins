@@ -345,7 +345,7 @@ fn config_cookie_is_parsed_from_json_text() {
 fn config_cookie_prefers_cookies_then_the_cookie_alias() {
     let read = |section: &str, key: &str| -> Option<String> {
         assert_eq!(section, CONFIG_SECTION, "段名必须是插件名");
-        assert_eq!(CONFIG_SECTION, "fuyubot.douyin");
+        assert_eq!(CONFIG_SECTION, "xiaoqvan.douyin");
         match key {
             "cookies" => Some("\"from-cookies\"".to_owned()),
             "cookie" => Some("\"from-alias\"".to_owned()),
@@ -426,7 +426,7 @@ fn missing_everything_reports_how_to_configure() {
     let dir = cookie_dir("missing", None);
     let error = read_cookies_with(&|_s, _k| None, &dir).expect_err("两者都没有必须报错");
     let text = error.to_string();
-    assert!(text.contains("[plugin.fuyubot.douyin]"), "{text}");
+    assert!(text.contains("[plugin.xiaoqvan.douyin]"), "{text}");
     assert!(text.contains("cookies"), "{text}");
     assert!(text.contains("cookies.json"), "要提到旧文件仍兼容：{text}");
     let _ = std::fs::remove_dir_all(&dir);

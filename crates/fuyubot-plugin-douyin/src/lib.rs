@@ -41,7 +41,7 @@
 //! 配在全局配置文件里本插件自己的段（**配置优先**）：
 //!
 //! ```toml
-//! [plugin.fuyubot.douyin]
+//! [plugin.xiaoqvan.douyin]
 //! cookies = "ttwid=…; msToken=…; odin_tt=…"
 //! ```
 //!
@@ -66,4 +66,4 @@ use fuyubot_abi::define_plugin;
 pub use commands::DouyinPlugin;
 
 // 一个 crate 只能展开一次 `define_plugin!`（七个导出符号名是 ABI 定死的）。
-define_plugin!(DouyinPlugin, "fuyubot.douyin");
+define_plugin!(DouyinPlugin, "xiaoqvan.douyin");

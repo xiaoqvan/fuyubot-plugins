@@ -37,7 +37,7 @@
 //! | [`log`] | 进程级日志槽（解析层拿不到 `HostApi`） |
 //! | [`runtime`] | tokio 执行引擎 + 响应路由 + HTTP 客户端 + SQL 缓存 |
 //! | [`http`] | reqwest async 请求 + 流式下载落盘 |
-//! | [`auth`] | 从 `fuyubot.toml` 的 `[plugin.fuyubot.music]` 读 cookie / 设备指纹（旧文件兼容） |
+//! | [`auth`] | 从 `fuyubot.toml` 的 `[plugin.xiaoqvan.music]` 读 cookie / 设备指纹（旧文件兼容） |
 //! | [`cache`] | SQL 文件 id 缓存（软依赖 `fuyubot.sqlite`） |
 //! | [`simplify`] | 内联的裁剪版 simplify（参数 → TDLib JSON、命令解析、取已发送文件 id） |
 //! | [`netease`] | eapi（AES-128-ECB 签名）+ 搜索 / 详情 / 取流 |
@@ -56,7 +56,7 @@
 //! fuyubot plugin install target/release/fuyubot_plugin_music.dll
 //! ```
 //!
-//! cookie 与设备指纹放在 `fuyubot.toml` 的 `[plugin.fuyubot.music]` 配置段
+//! cookie 与设备指纹放在 `fuyubot.toml` 的 `[plugin.xiaoqvan.music]` 配置段
 //! （旧版 `plugins/music/*.json` 仍兼容），格式见 `README.md`。
 //! 插件是 cdylib，算不出宿主工作目录，所以 `plugins_dir` 由宿主在
 //! `plugin_start` 的 config 里给——旧文件从它下面的 `music/` 找。
@@ -99,4 +99,4 @@ pub fn now_millis() -> u64 {
 }
 
 // 一个 crate 只能展开一次 `define_plugin!`（七个导出符号名是 ABI 定死的）。
-define_plugin!(MusicPlugin, "fuyubot.music");
+define_plugin!(MusicPlugin, "xiaoqvan.music");

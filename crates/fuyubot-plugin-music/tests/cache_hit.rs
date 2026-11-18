@@ -137,7 +137,7 @@ unsafe extern "C" fn service_migrate(
     }
     *MIGRATED.lock().unwrap() = true;
     reply(
-        r#"{"ok":true,"plugin":"fuyubot.music","applied":[{"template":"document","table":"media_cache","created":true,"statements":1}]}"#,
+        r#"{"ok":true,"plugin":"xiaoqvan.music","applied":[{"template":"document","table":"media_cache","created":true,"statements":1}]}"#,
     )
 }
 

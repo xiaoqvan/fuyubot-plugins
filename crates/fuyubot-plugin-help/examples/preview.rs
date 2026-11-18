@@ -29,9 +29,9 @@ fn main() -> Result<(), String> {
         ..Config::default()
     };
     let names = BTreeMap::from([
-        ("fuyubot.adblock".to_owned(), "广告拦截".to_owned()),
-        ("fuyubot.help".to_owned(), "Help (Image)".to_owned()),
-        ("fuyubot.douyin".to_owned(), "抖音解析".to_owned()),
+        ("xiaoqvan.adblock".to_owned(), "广告拦截".to_owned()),
+        ("xiaoqvan.help".to_owned(), "Help (Image)".to_owned()),
+        ("xiaoqvan.douyin".to_owned(), "抖音解析".to_owned()),
     ]);
 
     let (request, _stats) = build_render_request(&config, &demo_commands(), &names);
@@ -112,35 +112,35 @@ fn demo_commands() -> Vec<Value> {
     vec![
         json!({
             "name": "start", "description": "Bot 启动指令（配置 AI 接口）",
-            "plugin": "fuyubot.adblock", "role": "user", "scopes": ["private", "group"],
+            "plugin": "xiaoqvan.adblock", "role": "user", "scopes": ["private", "group"],
         }),
         json!({
             "name": "adaiadd", "description": "AI 判断广告文本，关键词 > 3 则入黑名单并返回 ID（仅 Bot 主人）",
-            "plugin": "fuyubot.adblock", "role": "owner", "scopes": ["private"],
+            "plugin": "xiaoqvan.adblock", "role": "owner", "scopes": ["private"],
         }),
         json!({
             "name": "adaiset", "description": "管理内置 AI 授权群（仅 Bot 主人）",
-            "plugin": "fuyubot.adblock", "role": "owner", "scopes": ["private"],
+            "plugin": "xiaoqvan.adblock", "role": "owner", "scopes": ["private"],
         }),
         json!({
             "name": "adconfig", "description": "配置广告屏蔽功能（仅本群管理）",
-            "plugin": "fuyubot.adblock", "role": "chat_admin", "scopes": ["group"],
+            "plugin": "xiaoqvan.adblock", "role": "chat_admin", "scopes": ["group"],
         }),
         json!({
             "name": "setlogchannel", "description": "设置日志频道（仅本群管理）",
-            "plugin": "fuyubot.adblock", "role": "chat_admin", "scopes": ["group"],
+            "plugin": "xiaoqvan.adblock", "role": "chat_admin", "scopes": ["group"],
         }),
         json!({
             "name": "addkw", "description": "向 ads / bio 黑名单添加关键词",
-            "plugin": "fuyubot.adblock", "role": "chat_admin", "scopes": ["group"],
+            "plugin": "xiaoqvan.adblock", "role": "chat_admin", "scopes": ["group"],
         }),
         json!({
             "name": "qadid", "description": "查询广告 ID",
-            "plugin": "fuyubot.adblock", "role": "user", "scopes": ["private", "group", "channel"],
+            "plugin": "xiaoqvan.adblock", "role": "user", "scopes": ["private", "group", "channel"],
         }),
         json!({
             "name": "spam", "description": "AI 检测垃圾信息（Bot 需群管权限）",
-            "plugin": "fuyubot.adblock", "role": "user", "scopes": ["group", "channel"],
+            "plugin": "xiaoqvan.adblock", "role": "user", "scopes": ["group", "channel"],
         }),
         json!({
             "name": "plugins", "description": "看看装了哪些插件",
@@ -148,15 +148,15 @@ fn demo_commands() -> Vec<Value> {
         }),
         json!({
             "name": "help", "description": "这条帮助（/help text 出文字版）",
-            "plugin": "fuyubot.help", "role": "user", "scopes": ["private", "group", "channel"],
+            "plugin": "xiaoqvan.help", "role": "user", "scopes": ["private", "group", "channel"],
         }),
         json!({
             "name": "douyin", "description": "解析抖音分享链接",
-            "plugin": "fuyubot.douyin", "role": "user", "scopes": ["private", "group", "channel"],
+            "plugin": "xiaoqvan.douyin", "role": "user", "scopes": ["private", "group", "channel"],
         }),
         json!({
             "name": "dyadmin", "description": "抖音解析管理（管理员）",
-            "plugin": "fuyubot.douyin", "role": "admin", "scopes": ["private"],
+            "plugin": "xiaoqvan.douyin", "role": "admin", "scopes": ["private"],
         }),
     ]
 }

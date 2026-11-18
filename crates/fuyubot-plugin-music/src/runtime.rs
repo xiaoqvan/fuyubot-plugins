@@ -106,7 +106,7 @@ impl Runtime {
         }
         crate::log::debug(&format!("插件目录：{}", plugins_dir.display()));
 
-        // 鉴权材料：优先 `fuyubot.toml` 的 `[plugin.fuyubot.music]`，没配才回退旧文件。
+        // 鉴权材料：优先 `fuyubot.toml` 的 `[plugin.xiaoqvan.music]`，没配才回退旧文件。
         let auth = auth::load(host, &plugins_dir);
 
         // 响应路由器必须在插件 `start` 里建：宿主作用域栈顶此刻是本插件，

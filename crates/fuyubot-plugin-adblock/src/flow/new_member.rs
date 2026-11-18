@@ -40,6 +40,9 @@ pub async fn handle_chat_member(rt: &Runtime, update: &Value) {
     let Some(chat_id) = update.get("chat_id").and_then(Value::as_i64) else {
         return;
     };
+    if !flow::chat_enabled(rt, chat_id) {
+        return;
+    }
     if !flow::is_group(rt, chat_id).await {
         return;
     }

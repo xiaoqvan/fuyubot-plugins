@@ -8,10 +8,15 @@
 #   owners = [123456789]   # 主人：/adkew /admatch /adaiadd /adaiset …
 #   admins = [987654321]   # 全局管理员：/qadid /delad /addkw /editkw /addfwdbl /rmfwdbl
 
-[plugin.fuyubot.adblock]
+[plugin.xiaoqvan.adblock]
 # 覆盖 mongo 插件的默认库。留空 / 删掉 = 用 mongo 插件的 db。
 # 想接 TS 版的老库，把这里指到 TS 版用的库名即可。
 db = "fuyubot"
+
+# 只在下列群生效（chat id 数组）。留空 / 删掉 = 所有群都生效。
+# 不在列表里的群完全跳过：消息检测、入群检查、自动点赞、取消置顶、
+# 日志按钮、群命令都不工作（私聊管理命令与 /start 配置流程不受影响）。
+# chat_allowlist = [-1001234567890, -1009876543210]
 
 # 全局封禁审计频道（可选）。原 TS 版写死了一个频道 + 话题，
 # 这里默认不配：换个人部署就会往别人群里灌消息。
@@ -27,7 +32,8 @@ ai_model = "gpt-4o-mini"
 # 用量按本地日期（不是 UTC）每天 0 点自动归零。
 ai_token_limit = 2000000
 
-# 备用 AI 接口（可选）：默认接口 token 超限，或调用失败时切过去。
+# 备用 AI 接口（可选）：内置默认接口 token 超限，或调用失败时切过去。
+# 群自定义接口失败时**不会**切到这里（只私聊通知配置人）。
 # 三项都配齐才生效；模型不写默认 gpt-4o-mini。
 # ai_fallback_api_key = "sk-yyyyyyyyyyyyyyyy"
 # ai_fallback_base_url = "https://api.deepseek.com/v1"

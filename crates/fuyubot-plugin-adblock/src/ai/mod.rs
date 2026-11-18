@@ -3,7 +3,7 @@
 //! TS 版用 `openai` SDK、客户端里写死两把 Key（已进仓库）。这一版：
 //!
 //! - **任何密钥都不进源码**：接口地址 / Key / 模型来自
-//!   `[plugin.fuyubot.adblock]` 的 `ai_api_key` / `ai_base_url`（默认接口）或各群
+//!   `[plugin.xiaoqvan.adblock]` 的 `ai_api_key` / `ai_base_url`（默认接口）或各群
 //!   `/adconfig` 配的自定义接口；
 //! - HTTP 用 `ureq`（同步阻塞），只在工作线程里发——回调线程一秒都不能停；
 //! - 提示词用 `include_str!` 嵌进动态库（见 [`prompt`]）；
@@ -13,8 +13,14 @@
 //! 失败语义：**永远返回一个 [`ModerationResult`]**，`ad_detected=false` 且
 //! `Reason` 里写清失败原因。上层据此区分「AI 说不是广告」与「AI 没跑成」，
 //! 后者不会触发任何处置。
+//!
+//! 群自定义接口失败时**不会**回退到内置备用接口，并会私聊通知「配置这组接口的人」
+//! （同一群 10 分钟最多一条，见 [`notify_chat_ai_failure`]）；内置默认接口失败才允许切备用。
 
 pub mod prompt;
+
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -59,6 +65,29 @@ pub struct ModerationInput {
     pub mentioned_username: Option<Mention>,
     #[serde(rename = "historyMessages", skip_serializing_if = "Option::is_none")]
     pub history_messages: Option<Vec<String>>,
+    /// 自定义 emoji（「用 emoji 当字」的广告）：占位文本在 message 里，联系表见附图。
+    #[serde(rename = "customEmoji", skip_serializing_if = "Option::is_none")]
+    pub custom_emoji: Option<CustomEmoji>,
+}
+
+/// 自定义 emoji 的使用情况（真实实体数量 + 所属集合）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CustomEmoji {
+    /// 出现次数（含重复）。
+    pub count: usize,
+    /// 最长连排段（中间没有文本）：触发线就卡在这个数上。
+    pub run: usize,
+    /// 不同的 emoji 个数（也就是联系表里的张数）。
+    pub unique: usize,
+    /// 是否像「用 emoji 当字」的图案（本地启发式，仅供参考）。
+    pub glyph_art: bool,
+    /// 出现过的 custom_emoji_id（排查 / 手动拉黑用）。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ids: Vec<i64>,
+    /// 所属集合的标题。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sets: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -460,6 +489,108 @@ fn resolve_fallback(rt: &Runtime) -> Option<ResolvedAi> {
         .map(|endpoint| ResolvedAi::from_endpoint(endpoint, AiSource::Default))
 }
 
+/// 本次审核能不能用「插件内置备用接口」。
+///
+/// 规则：
+/// - 用内置默认接口 → 可以（主接口失败 / token 超限时切备用）；
+/// - **群自定义接口 → 不可以**：自定义接口失败就按失败处理，由配置人自己修，
+///   不能悄悄切到插件（主人）配置的备用模型；
+/// - 没有可用接口、且调用方强制默认（/spam 等）→ 由备用接口顶上。
+fn may_use_backup(primary: &ResolvedAi, force_default: bool) -> bool {
+    match primary.source {
+        AiSource::Default => true,
+        AiSource::Chat => false,
+        AiSource::None => force_default,
+    }
+}
+
+/// 群自定义接口失败通知的节流窗口（同一群 10 分钟内最多一条）。
+const AI_FAILURE_NOTIFY_WINDOW_MS: i64 = 10 * 60 * 1000;
+
+/// 进程内的「上次通知时间」；进程重启后从头算。
+fn ai_failure_seen() -> &'static Mutex<HashMap<i64, i64>> {
+    static SEEN: OnceLock<Mutex<HashMap<i64, i64>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 这次失败该不该给配置人发通知（同一群限流）。true = 可以发。
+fn should_notify_ai_failure(chat_id: i64) -> bool {
+    let now = crate::util::now_ms();
+    let mut seen = match ai_failure_seen().lock() {
+        Ok(seen) => seen,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    seen.retain(|_, at| now - *at < AI_FAILURE_NOTIFY_WINDOW_MS);
+    match seen.get(&chat_id) {
+        Some(at) if now - *at < AI_FAILURE_NOTIFY_WINDOW_MS => false,
+        _ => {
+            seen.insert(chat_id, now);
+            true
+        }
+    }
+}
+
+/// 群重新配置接口后清掉节流：新配置如果再失败，能立刻通知配置人。
+pub(crate) fn reset_ai_failure_notify(chat_id: i64) {
+    if let Ok(mut seen) = ai_failure_seen().lock() {
+        seen.remove(&chat_id);
+    }
+}
+
+/// 群自定义接口调用失败：私聊通知「配置这组接口的人」。
+///
+/// 不通知群（避免刷屏），也不回退内置备用模型（见 may_use_backup）。
+/// 没记录配置人（老数据）时只打 WARN。
+async fn notify_chat_ai_failure(rt: &Runtime, chat_id: i64, ai: &ResolvedAi, error: &str) {
+    log::warn(
+        &rt.host,
+        format!(
+            "群 {chat_id} 的自定义 AI 接口调用失败（{} / {}）：{error}",
+            ai.base_url, ai.model
+        ),
+    );
+    let Some(config) = rt.db.config(chat_id).await else {
+        return;
+    };
+    let Some(user_id) = config.ai_configured_by.filter(|id| *id > 0) else {
+        log::warn(
+            &rt.host,
+            format!(
+                "群 {chat_id} 自定义 AI 接口失败，但没记录配置人，无法私聊通知（让配置人重新 /adconfig 一次即可记录）"
+            ),
+        );
+        return;
+    };
+    if !should_notify_ai_failure(chat_id) {
+        return;
+    }
+    let title = rt.td.chat_title(chat_id).await;
+    let body = format!(
+        "⚠️ **你配置的群 AI 接口调用失败**\n\n群：{title}（id: {chat_id}）\n后端：{}\n模型：{}\n错误：{}\n\n该群用的是自定义接口，**失败时不会回退到 Bot 内置的备用模型**，这段时间里这个群的 AI 审核会漏判。\n\n请回群用 /adconfig 重新配置接口，或联系 Bot 主人。\n\n（同一群 10 分钟内最多提醒一条）",
+        ai.base_url,
+        ai.model,
+        truncate(error, 300)
+    );
+    if rt
+        .td
+        .send_text(
+            user_id,
+            text::markdown(&body),
+            None,
+            Vec::new(),
+            None,
+            Some(false),
+        )
+        .await
+        .is_none()
+    {
+        log::warn(
+            &rt.host,
+            format!("群 {chat_id} 的 AI 失败通知没能发给配置人 {user_id}（可能还没私聊过 Bot）"),
+        );
+    }
+}
+
 /// 两个接口配置是否完全一样（避免主/备重复请求同一地址）。
 fn same_endpoint(left: &ResolvedAi, right: &ResolvedAi) -> bool {
     left.api_key == right.api_key && left.base_url == right.base_url && left.model == right.model
@@ -505,7 +636,12 @@ pub async fn review(
     let has_image = photo.is_some();
     let system_prompt = prompt::build(input, has_image);
     let primary = resolve_ai(rt, chat_id, meta.force_default).await;
-    let fallback = resolve_fallback(rt);
+    // 群自定义接口失败时**不许**回退到内置备用模型：备用模型只服务「内置默认接口」。
+    let fallback = if may_use_backup(&primary, meta.force_default) {
+        resolve_fallback(rt)
+    } else {
+        None
+    };
     let mut plans: Vec<(ResolvedAi, bool)> = Vec::new();
 
     if primary.usable() {
@@ -531,7 +667,7 @@ pub async fn review(
                 Some(item) => plans.push((item, true)),
                 None => {
                     log::warn(&rt.host, "token 已超限但没有可用备用接口，继续使用默认接口");
-                    plans.push((primary, false));
+                    plans.push((primary.clone(), false));
                 }
             }
         } else {
@@ -554,7 +690,7 @@ pub async fn review(
         let reason = if chat_id.is_some() {
             "该群未配置AI接口，请管理员在群内使用 /adconfig 并点击「配置AI接口」完成配置"
         } else {
-            "未配置默认AI接口，请在 [plugin.fuyubot.adblock] 里填写 ai_api_key / ai_base_url"
+            "未配置默认AI接口，请在 [plugin.xiaoqvan.adblock] 里填写 ai_api_key / ai_base_url"
         };
         log::warn(
             &rt.host,
@@ -581,8 +717,10 @@ pub async fn review(
         serde_json::to_string_pretty(input).unwrap_or_else(|_| "{}".to_owned())
     );
 
-    let image_base64 = photo.and_then(|path| match std::fs::read(path) {
-        Ok(bytes) => Some(base64_encode(&bytes)),
+    // 本地图片 → (base64, MIME)：合成的 emoji 联系表是 PNG，照片 / 贴纸多是 JPEG /
+    // WebP。写死 image/jpeg 会让不少 OpenAI 兼容接口直接 400。
+    let image = photo.and_then(|path| match std::fs::read(path) {
+        Ok(bytes) => Some((base64_encode(&bytes), image_mime(path))),
         Err(error) => {
             log::debug(
                 &rt.host,
@@ -606,7 +744,11 @@ pub async fn review(
         }
         last_model = ai.model.clone();
         for attempt in 0..MAX_ATTEMPTS {
-            let messages = build_messages(&system_prompt, &user_prompt, image_base64.as_deref());
+            let messages = build_messages(
+                &system_prompt,
+                &user_prompt,
+                image.as_ref().map(|(data, mime)| (data.as_str(), *mime)),
+            );
             match call_api(rt, ai, &messages).await {
                 Ok((content, tokens)) => {
                     // 只统计默认接口的用量；群自定义接口由群自己结算。
@@ -696,6 +838,12 @@ pub async fn review(
     } else {
         format!("AI服务{MAX_ATTEMPTS}次调用均失败: {last_error}")
     };
+    // 群自定义接口失败：不回退内置备用模型，私聊通知配置人（同一群限流）。
+    if primary.source == AiSource::Chat
+        && let Some(chat_id) = chat_id
+    {
+        notify_chat_ai_failure(rt, chat_id, &primary, &last_error).await;
+    }
     let result = ModerationResult::failure(reason.clone());
     write_log(
         rt,
@@ -716,17 +864,17 @@ fn reason_owned(text: &str) -> String {
     text.to_owned()
 }
 
-fn build_messages(system: &str, user: &str, image_base64: Option<&str>) -> Value {
+fn build_messages(system: &str, user: &str, image: Option<(&str, &str)>) -> Value {
     let mut messages = vec![json!({ "role": "system", "content": system })];
-    match image_base64 {
-        Some(image) => messages.push(json!({
+    match image {
+        Some((data, mime)) => messages.push(json!({
             "role": "user",
             "content": [
                 { "type": "text", "text": user },
                 {
                     "type": "image_url",
                     "image_url": {
-                        "url": format!("data:image/jpeg;base64,{image}"),
+                        "url": format!("data:{mime};base64,{data}"),
                         "detail": "auto"
                     }
                 }
@@ -735,6 +883,20 @@ fn build_messages(system: &str, user: &str, image_base64: Option<&str>) -> Value
         None => messages.push(json!({ "role": "user", "content": user })),
     }
     Value::Array(messages)
+}
+
+/// 本地图片路径 → data URL 的 MIME。认不出的按 JPEG（历史行为）。
+fn image_mime(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".webp") {
+        "image/webp"
+    } else if lower.ends_with(".gif") {
+        "image/gif"
+    } else {
+        "image/jpeg"
+    }
 }
 
 /// gpt-5 / o1 / o3 / o4 只接受默认 temperature，传了就是 400。

@@ -360,6 +360,32 @@ impl Td {
             .map(str::to_owned)
     }
 
+    /// downloadFile：按 file.id 直接下载。
+    ///
+    /// 贴纸 / 自定义 emoji 的对象里已经有 file.id（sticker.sticker / thumbnail.file），
+    /// 不用像照片那样先 getRemoteFile 换一次 remote id。
+    pub async fn download_file(&self, file_id: i64) -> Option<String> {
+        let downloaded = self
+            .call(
+                "downloadFile",
+                json!({
+                    "file_id": file_id,
+                    "priority": 1,
+                    "offset": 0,
+                    "limit": 0,
+                    "synchronous": true,
+                }),
+            )
+            .await
+            .ok()?;
+        downloaded
+            .get("local")
+            .and_then(|local| local.get("path"))
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(str::to_owned)
+    }
+
     // ── 群 / 成员判断 ─────────────────────────────────────────────
 
     /// 是「群」吗（超级群的非频道形态，或基本群）。

@@ -50,9 +50,9 @@ fn parse_table_takes_actual_name_from_reply() {
     // shared：服务加了前缀，必须用返回值，不能硬编码。
     assert_eq!(
         parse_table(
-            r#"{"ok":true,"applied":[{"template":"document","table":"fuyubot_music_media_cache","created":true,"statements":1}]}"#
+            r#"{"ok":true,"applied":[{"template":"document","table":"xiaoqvan_music_media_cache","created":true,"statements":1}]}"#
         ),
-        Some("fuyubot_music_media_cache".to_owned())
+        Some("xiaoqvan_music_media_cache".to_owned())
     );
 }
 

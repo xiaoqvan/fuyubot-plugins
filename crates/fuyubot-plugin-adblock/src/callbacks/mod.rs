@@ -74,6 +74,12 @@ pub async fn handle(rt: &Runtime, update: &Value) {
         query_id,
         params,
     };
+    // `chat_allowlist`：按钮对应的群不在列表里就完全忽略（日志频道可能在别的群）。
+    if let Some(group_id) = ctx.group_id()
+        && !crate::flow::chat_enabled(rt, group_id)
+    {
+        return;
+    }
     crate::log::debug(
         &rt.host,
         format!("回调查询 chat={chat_id} sender={sender_user_id} msg={message_id} cmd={command}"),

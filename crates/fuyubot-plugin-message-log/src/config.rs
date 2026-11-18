@@ -1,4 +1,4 @@
-//! 插件配置：`[plugin.fuyubot.message-log]` 那一段。
+//! 插件配置：`[plugin.xiaoqvan.message-log]` 那一段。
 //!
 //! 读的是**自己那段**（`get_config` 传空 section，由宿主换算成
 //! `plugin.<本插件名>`），所以插件 id 里带点、带连字符都不用自己拼路径。
@@ -7,7 +7,7 @@
 //! warn——配置是给人改的，不值得为它拒绝加载。
 //!
 //! ```toml
-//! [plugin.fuyubot.message-log]
+//! [plugin.xiaoqvan.message-log]
 //! enabled = true          # false = 不订阅、什么都不打
 //! ignore_outgoing = false # true = 不记录本账号自己发出的消息
 //! max_text_chars = 4096   # 正文最多保留多少个字符；0 = 不截断
@@ -19,7 +19,7 @@ use serde::Deserialize;
 use crate::log;
 
 /// 插件名（`define_plugin!` 里那个，也是 `[plugin.<名>]` 的段名）。
-pub const PLUGIN_NAME: &str = "fuyubot.message-log";
+pub const PLUGIN_NAME: &str = "xiaoqvan.message-log";
 
 /// 正文默认上限：Telegram 单条文本消息的上限是 4096 个 UTF-16 码元，
 /// 正常消息不会被截；只有富消息 / 超长 caption 才可能触发。

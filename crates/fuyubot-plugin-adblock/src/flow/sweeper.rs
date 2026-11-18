@@ -13,6 +13,7 @@ use crate::simplify::ReplyButton;
 
 use crate::action;
 use crate::api::{Sender, callback_row, unban_callback};
+use crate::flow;
 use crate::log;
 use crate::runtime::Runtime;
 use crate::text;
@@ -27,6 +28,13 @@ pub async fn sweep(rt: &Runtime) {
     log::debug(&rt.host, format!("复审扫描：{} 条到期", records.len()));
 
     for record in records {
+        // `chat_allowlist`：不在列表里的群不处置；把到期记录标通过，避免每轮重复扫。
+        if !flow::chat_enabled(rt, record.chat_id) {
+            rt.db
+                .mark_mute_review_approved(record.chat_id, record.user_id)
+                .await;
+            continue;
+        }
         let sender = Sender::User(record.user_id);
         let status = rt.td.member_status(record.chat_id, sender).await;
         let status = status.as_deref();

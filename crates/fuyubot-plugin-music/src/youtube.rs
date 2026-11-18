@@ -9,7 +9,7 @@
 //!
 //! 取流失败最常见的原因是 YouTube 的 Sign in to confirm you're not a bot：
 //! 数据中心 IP 上很常见，住宅网络一般不会。真遇到时可以在
-//! [plugin.fuyubot.music] 里配 youtube cookie（见 README）。
+//! [plugin.xiaoqvan.music] 里配 youtube cookie（见 README）。
 //!
 //! ## 只管两件事
 //!
@@ -444,7 +444,7 @@ fn playability_message(status: &str, reason: &str) -> String {
     match status {
         "LOGIN_REQUIRED" => format!(
             "YouTube 要求登录验证（{reason}）。数据中心 IP 上很常见：\
-             可以在 [plugin.fuyubot.music] 配置 youtube cookie，或者换一个网络再试"
+             可以在 [plugin.xiaoqvan.music] 配置 youtube cookie，或者换一个网络再试"
         ),
         "ERROR" | "UNPLAYABLE" => format!("YouTube 不能播放这个视频（{reason}）"),
         "" => "YouTube 没有返回播放状态（接口结构可能变了）".to_owned(),

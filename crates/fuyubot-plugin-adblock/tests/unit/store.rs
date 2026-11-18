@@ -32,7 +32,8 @@ fn config_parses_legacy_fields() {
         "unpin_channel_pins": true,
         "ai_api_key": "k",
         "ai_base_url": "https://x",
-        "ai_model": "m"
+        "ai_model": "m",
+        "ai_configured_by": 5895998976i64
     });
     let config = GroupConfig::from_doc(&doc);
     assert_eq!(config.kind, "group");
@@ -50,6 +51,7 @@ fn config_parses_legacy_fields() {
     assert!(config.delete_join_invite_message);
     assert!(config.unpin_channel_pins);
     assert!(config.has_custom_ai());
+    assert_eq!(config.ai_configured_by, Some(5_895_998_976));
 }
 
 #[test]
@@ -59,6 +61,8 @@ fn config_defaults_when_fields_missing() {
     assert_eq!(config.spam_tips_meg_delay, 30);
     assert_eq!(config.limit_mode, LimitMode::Mute);
     assert!(!config.ai_review_enabled);
+    // 老数据没有「配置人」：失败时只记 WARN、不发通知。
+    assert_eq!(config.ai_configured_by, None);
     // 新功能默认关闭：必须由群管理员显式打开。
     assert!(!config.like_guard_enabled);
     // 默认只封禁回应权限，不跟随广告。

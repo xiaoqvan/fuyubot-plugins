@@ -3,7 +3,7 @@
 # 把这一段并进项目的 fuyubot.toml。所有项都可选：不配也能启动。
 # 日志门槛在 [plugins].log_level（默认 info）；调成 warn 后本插件也会被挡掉。
 
-[plugin.fuyubot.message-log]
+[plugin.xiaoqvan.message-log]
 # 总开关。false = 插件照常加载，但不订阅、什么都不打。
 enabled = true
 

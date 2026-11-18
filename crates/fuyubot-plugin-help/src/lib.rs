@@ -1,6 +1,7 @@
-//! FuyuBot `/help` 图片版插件（`fuyubot.help`）。
+//! FuyuBot `/help` 图片版插件（`xiaoqvan.help`）。
 //!
-//! 它**替代框架内置 help 插件**：id 相同（`fuyubot.help`）。从 FuyuBot 0.1.5 起，
+//! 它**替代框架内置 help 插件**：本插件 id 是 `xiaoqvan.help`（内置版是 `fuyubot.help`），
+//! 两者 id 不同但 `/help` 命令名相同，不建议同时启用。从 FuyuBot 0.1.5 起，
 //! 命令表归宿主（`fuyubot.host.commands`）：其它插件在 `start()` 里登记，宿主按
 //! owner 管生命周期，本插件只读 `list` 并渲染。
 //!
@@ -20,12 +21,13 @@
 //!
 //! ## 安装
 //!
-//! 两者 id 相同，**不能同时装**。安装本插件前先把内置的平铺 DLL 移走 / 禁用：
+//! 两者 id 不同，但都注册 `/help`；建议安装本插件前先把内置的平铺 DLL 移走 / 禁用，
+//! 避免同名命令冲突：
 //!
 //! ```text
 //! plugins/
 //! ├── fuyubot_plugin_help.dll          ← 内置 help，必须先移走或改成 .disable
-//! ├── fuyubot.help/                    ← 本插件（目录包）
+//! ├── xiaoqvan.help/                    ← 本插件（目录包）
 //! │   ├── plugin.json
 //! │   └── bin/fuyubot_plugin_help.dll
 //! └── fuyubot.html2img/                ← 硬依赖
@@ -89,7 +91,7 @@ impl Plugin for HelpPlugin {
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
         // `config_json` 是宿主给的环境信息（plugins_dir / spawn …），不是本插件配置；
-        // 自己的配置在 `[plugin.fuyubot.help]`，由 `Config::from_host` 读。
+        // 自己的配置在 `[plugin.xiaoqvan.help]`，由 `Config::from_host` 读。
         let _ = config_json;
         let host = self.host;
         let config = Config::from_host(&host);
@@ -192,7 +194,7 @@ impl Plugin for HelpPlugin {
 
 // 一个 crate 只能展开一次 `define_plugin!`（七个导出符号名是 ABI 定死的）。
 // id 与框架内置 help 相同：这是「替代品」而不是「另一个 help」。
-define_plugin!(HelpPlugin, "fuyubot.help");
+define_plugin!(HelpPlugin, "xiaoqvan.help");
 
 #[cfg(test)]
 #[path = "../tests/unit/lib.rs"]

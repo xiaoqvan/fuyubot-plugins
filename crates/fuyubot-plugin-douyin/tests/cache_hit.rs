@@ -134,7 +134,7 @@ unsafe extern "C" fn service_migrate(
     // 与真 sqlite 插件的 `migrate` 回复同形；`applied[0].table` 是缓存真正使用的表名。
     reply_json(json!({
         "ok": true,
-        "plugin": "fuyubot.douyin",
+        "plugin": "xiaoqvan.douyin",
         "applied": [{
             "template": "document",
             "table": "media_cache",

@@ -38,7 +38,7 @@ use serde_json::Value;
 use crate::config::Config;
 use crate::log;
 use crate::render;
-use crate::td::{Names, Td};
+use crate::td::{Names, SharedBook, Td};
 
 /// 队列上限。正常消息处理是「缓存命中 + 一行日志」，瞬间就能排空；
 /// 这里只是防止 TDLib 卡住时把内存吃光。
@@ -102,7 +102,12 @@ pub struct Worker {
 impl Worker {
     /// 起线程。`runtime` 在这里建好再移进线程：建失败能直接让 `start()` 报错，
     /// 而不是变成一个「线程起来了但什么都干不了」的半死状态。
-    pub fn start(host: HostApi, router: ResponseRouter, config: Config) -> Result<Self, String> {
+    pub fn start(
+        host: HostApi,
+        router: ResponseRouter,
+        config: Config,
+        book: SharedBook,
+    ) -> Result<Self, String> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_time()
             .build()
@@ -123,7 +128,7 @@ impl Worker {
 
         let thread = std::thread::Builder::new()
             .name("messagelog-worker".to_owned())
-            .spawn(move || run(host, router, config, runtime, receiver, stats))
+            .spawn(move || run(host, router, config, runtime, receiver, stats, book))
             .map_err(|error| format!("起消息日志工作线程失败：{error}"))?;
 
         Ok(Self {
@@ -177,9 +182,10 @@ fn run(
     runtime: tokio::runtime::Runtime,
     receiver: Receiver<Value>,
     stats: Arc<Stats>,
+    book: SharedBook,
 ) -> u64 {
-    let td = Td::new(router);
-    let mut names = Names::new();
+    let td = Td::new(host, router);
+    let mut names = Names::new(book);
     let mut recorded = 0u64;
 
     while let Ok(update) = receiver.recv() {

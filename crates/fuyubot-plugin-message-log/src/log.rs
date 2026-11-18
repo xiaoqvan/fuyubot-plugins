@@ -3,7 +3,7 @@
 //! 为什么不自己写文件 / 自己装订阅器：宿主已经把插件日志统一成
 //!
 //! ```text
-//! 2026-11-11 13:45:00 [plugins - fuyubot.message-log] INFO  正文
+//! 2026-11-11 13:45:00 [plugins - xiaoqvan.message-log] INFO  正文
 //! ```
 //!
 //! 并同时投递到控制台、TUI 日志页和 `logs/fuyubot.log`。插件再往里塞时间戳或

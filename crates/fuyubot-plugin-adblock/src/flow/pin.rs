@@ -140,6 +140,9 @@ pub async fn handle_pinned_update(rt: &Runtime, update: &Value) {
     let Some(message_id) = update.get("message_id").and_then(Value::as_i64) else {
         return;
     };
+    if !crate::flow::chat_enabled(rt, chat_id) {
+        return;
+    }
     if !enabled(rt, chat_id).await {
         return;
     }

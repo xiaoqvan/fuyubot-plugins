@@ -50,6 +50,9 @@ pub async fn handle_delete(rt: &Runtime, update: &Value) {
     let Some(chat_id) = update.get("chat_id").and_then(Value::as_i64) else {
         return;
     };
+    if !flow::chat_enabled(rt, chat_id) {
+        return;
+    }
     let ids: Vec<i64> = update
         .get("message_ids")
         .and_then(Value::as_array)
