@@ -1,0 +1,30 @@
+[package]
+name = "fuyubot-plugin-x"
+description = "FuyuBot X 文章解析插件：/x 命令 + 聊天里自动识别 X/Twitter 链接，发图片 / 视频（相册每 10 个一组），纯文本文章用 html2img 出 X 风格卡片"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+# cdylib 给宿主 dlopen；rlib 让单测能直接测解析 / 分片 / 渲染。
+crate-type = ["cdylib", "rlib"]
+
+# examples/render_card.rs 用真实渲染器出 PNG 预览（宿主里走的是 xiaoqvan.html2img，
+# 同一个 hyper-render）。只在开发时用，不进插件产物。
+[dev-dependencies]
+hyper-render.workspace = true
+
+[dependencies]
+fuyubot-abi.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+# 卡片时间戳按宿主本地时区显示（X 的详情页口径）。
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# 把 getMe 下载到本地的小头像内嵌进卡片 SVG。
+base64 = "0.22"

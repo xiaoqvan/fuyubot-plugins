@@ -1,0 +1,42 @@
+# FuyuBot X / Twitter 文章解析插件 —— 配置样例
+#
+# 把这一段并进项目的 fuyubot.toml。所有项都可选：不配也能启动。
+# 纯文本文章出卡片图依赖 xiaoqvan.html2img；没装它就发纯文本。
+
+[plugin.xiaoqvan.x]
+# 解析接口的根地址。默认是 FxTwitter 的公开只读接口，不需要 token。
+api_base = "https://api.fxtwitter.com"
+
+# 聊天里出现 X 链接就自动解析。关掉后只能靠 /x 命令触发。
+auto_parse = true
+
+# 相册每组最多几个媒体。Telegram 只接受 2..=10，写别的会被夹到这个区间。
+# 超过 10 个的媒体会自动切成多条相册消息（23 张图 = 10 + 10 + 3）。
+album_limit = 10
+
+# 一条文章最多发多少个媒体，超出的截断并记一条 WARN。
+max_media = 100
+
+# 有媒体时，正文是否再单独发一条文字消息（相册标题只有 1024 字符，装不下长文）。
+send_text = true
+
+# 单条文字消息的字符上限（Telegram 是 4096）。
+text_chunk = 3500
+
+# 一组相册 / 一个视频的等待预算（毫秒）：TDLib 要先把媒体拿到手再发。
+send_timeout_ms = 120000
+
+# 是否把帖子渲染成 X 帖子风格卡片（图片最多两张、视频只画封面；需要 xiaoqvan.html2img）。
+image_card = true
+
+# 纯文本文章出图失败 / 没装 html2img 时，是否补发文字；有媒体的帖子会回退到相册。
+fallback_text = true
+
+# 卡片尺寸与输出格式。
+card_width = 512
+card_scale = 2.0
+card_format = "jpg"
+card_dark = false
+
+# 卡片里最多画多少字符；超长文章会截断并提示去看原链接。
+card_max_chars = 6000

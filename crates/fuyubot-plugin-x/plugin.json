@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "id": "xiaoqvan.x",
+  "name": "X 解析",
+  "version": "0.1.0",
+  "kind": "native",
+  "entry": "bin/fuyubot_plugin_x.dll",
+  "abi": 6,
+  "platforms": [
+    "windows-x86_64",
+    "windows-aarch64",
+    "linux-x86_64",
+    "linux-aarch64",
+    "macos-aarch64",
+    "android-aarch64",
+    "android-x86_64"
+  ],
+  "optional_depends": [
+    "fuyubot.html2img"
+  ],
+  "description": "X / Twitter 文章解析：/x 命令与自动识别链接，图片视频按 Telegram 相册每 10 个一组发送；纯文本文章交给 fuyubot.html2img 出 X 风格卡片，没装就发纯文本。",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/xiaoqvan/fuyubot-plugins/tree/main/crates/fuyubot-plugin-x"
+}
